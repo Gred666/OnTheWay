@@ -1,0 +1,401 @@
+@import "tailwindcss";
+
+/* ============================================================
+   OnTheWay 设计系统
+   亮色色板直接取自 Prototype/ 原型图，保证 1:1；
+   暗色为手工配平版本，保持同样的暖中性调性。
+   ============================================================ */
+
+@theme {
+  /* ---------- 中性色（暖调，带一点黄绿，不是纯灰） ---------- */
+  --color-ink: #1a1a18; /* 标题、最强文字 */
+  --color-body: #353532; /* 正文 */
+  --color-muted: #74746e; /* 次级文字、元信息 */
+  --color-faint: #a3a39b; /* 占位符、最弱文字 */
+
+  --color-canvas: #ffffff; /* 主内容区 */
+  --color-panel: #fafaf8; /* 中列表栏 */
+  --color-rail: #f1f1ed; /* 左导航栏 */
+  --color-raised: #e5e5df; /* 导航选中、hover 实心 */
+  --color-line: #f1f1ee; /* 分隔线 */
+  --color-line-strong: #e7e7e1; /* 需要更明显的边界 */
+
+  /* ---------- 主色 ---------- */
+  --color-accent: #2f63d8;
+  --color-accent-hover: #2a58c2;
+  --color-accent-ink: #ffffff; /* 主色上的文字 */
+  --color-accent-wash: #f1f4fa; /* 选中卡片底 */
+  --color-accent-wash-2: #f3f6fc; /* 更淡的一层，如日历周行 */
+  --color-accent-line: #dbe4f7;
+
+  /* ---------- 语义色 ---------- */
+  --color-success: #2f8a5b;
+  --color-danger: #c8483d;
+  --color-warning: #b8802a;
+
+  /* ---------- 圆角节奏 ---------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+
+  /* ---------- 动效 token：与样式 token 同源 ---------- */
+  --duration-instant: 80ms;
+  --duration-fast: 140ms;
+  --duration-base: 220ms;
+  --duration-slow: 320ms;
+
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out-sub: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* ---------- 字体 ---------- */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC",
+    system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono",
+    monospace;
+
+  /* ---------- 阴影：极克制，只用于浮层 ---------- */
+  --shadow-card: 0 1px 2px rgb(26 26 24 / 0.04), 0 2px 8px rgb(26 26 24 / 0.04);
+  --shadow-float: 0 2px 4px rgb(26 26 24 / 0.05), 0 8px 24px rgb(26 26 24 / 0.08);
+  --shadow-modal: 0 8px 16px rgb(26 26 24 / 0.08), 0 24px 64px rgb(26 26 24 / 0.16);
+}
+
+/* ============================================================
+   暗色主题
+   两处都要写：系统偏好（未手动指定时）+ 手动指定 dark
+   ============================================================ */
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-ink: #eeeee9;
+    --color-body: #d2d2cb;
+    --color-muted: #8d8d85;
+    --color-faint: #61615b;
+
+    --color-canvas: #1e1e1c;
+    --color-panel: #1a1a18;
+    --color-rail: #141413;
+    --color-raised: #2b2b28;
+    --color-line: #2a2a27;
+    --color-line-strong: #35352f;
+
+    --color-accent: #6b93f0;
+    --color-accent-hover: #82a4f4;
+    --color-accent-ink: #10182b;
+    --color-accent-wash: #1c2437;
+    --color-accent-wash-2: #1a2133;
+    --color-accent-line: #2c3a57;
+
+    --color-success: #58b587;
+    --color-danger: #e0776b;
+    --color-warning: #d5a355;
+
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.24), 0 2px 8px rgb(0 0 0 / 0.2);
+    --shadow-float: 0 2px 4px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.36);
+    --shadow-modal: 0 8px 16px rgb(0 0 0 / 0.36), 0 24px 64px rgb(0 0 0 / 0.5);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-ink: #eeeee9;
+  --color-body: #d2d2cb;
+  --color-muted: #8d8d85;
+  --color-faint: #61615b;
+
+  --color-canvas: #1e1e1c;
+  --color-panel: #1a1a18;
+  --color-rail: #141413;
+  --color-raised: #2b2b28;
+  --color-line: #2a2a27;
+  --color-line-strong: #35352f;
+
+  --color-accent: #6b93f0;
+  --color-accent-hover: #82a4f4;
+  --color-accent-ink: #10182b;
+  --color-accent-wash: #1c2437;
+  --color-accent-wash-2: #1a2133;
+  --color-accent-line: #2c3a57;
+
+  --color-success: #58b587;
+  --color-danger: #e0776b;
+  --color-warning: #d5a355;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.24), 0 2px 8px rgb(0 0 0 / 0.2);
+  --shadow-float: 0 2px 4px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.36);
+  --shadow-modal: 0 8px 16px rgb(0 0 0 / 0.36), 0 24px 64px rgb(0 0 0 / 0.5);
+}
+
+/* ============================================================
+   基础样式
+   ============================================================ */
+
+* {
+  border-color: var(--color-line);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden; /* 桌面应用：不要页面级滚动，只有面板内滚动 */
+}
+
+body {
+  margin: 0;
+  background: var(--color-rail);
+  color: var(--color-body);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.7;
+  letter-spacing: 0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11"; /* Inter 的字形优化 */
+  /* 桌面应用：全局禁止误选中，正文区域再单独开启 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  color: var(--color-ink);
+}
+
+/* ---------- 滚动条：细、无按钮、悬停才明显 ---------- */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color var(--duration-base) var(--ease-out-quint);
+}
+.scroll-thin:hover {
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+.scroll-thin::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+  transition: background-color var(--duration-base) var(--ease-out-quint);
+}
+.scroll-thin:hover::-webkit-scrollbar-thumb {
+  background-color: var(--color-line-strong);
+  background-clip: content-box;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-faint);
+  background-clip: content-box;
+}
+
+/* ---------- 焦点环：只对键盘可见 ---------- */
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ---------- 可选中的文本区域 ---------- */
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: auto;
+}
+
+/* ============================================================
+   排版：文档正文
+   中文需要比英文更大的行高和更松的字距
+   ============================================================ */
+
+.prose-doc {
+  color: var(--color-body);
+  font-size: 15.5px;
+  line-height: 1.85;
+  letter-spacing: 0.012em;
+}
+.prose-doc > * + * {
+  margin-top: 1.15em;
+}
+.prose-doc h2 {
+  color: var(--color-ink);
+  font-size: 21px;
+  font-weight: 650;
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+  margin-top: 2em;
+  margin-bottom: 0.35em;
+}
+.prose-doc h3 {
+  color: var(--color-ink);
+  font-size: 17px;
+  font-weight: 620;
+  line-height: 1.5;
+  margin-top: 1.7em;
+  margin-bottom: 0.3em;
+}
+.prose-doc strong {
+  color: var(--color-ink);
+  font-weight: 620;
+}
+.prose-doc em {
+  font-style: italic;
+}
+.prose-doc a {
+  color: var(--color-accent);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  transition: border-color var(--duration-fast) var(--ease-out-quint);
+}
+.prose-doc a:hover {
+  border-bottom-color: var(--color-accent);
+}
+.prose-doc code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--color-rail);
+  padding: 0.15em 0.4em;
+  border-radius: var(--radius-xs);
+  color: var(--color-ink);
+}
+.prose-doc pre {
+  background: var(--color-rail);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+.prose-doc pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+.prose-doc ul,
+.prose-doc ol {
+  padding-left: 1.4em;
+}
+.prose-doc ul {
+  list-style: disc;
+}
+.prose-doc ol {
+  list-style: decimal;
+}
+.prose-doc li + li {
+  margin-top: 0.35em;
+}
+.prose-doc li::marker {
+  color: var(--color-faint);
+}
+.prose-doc hr {
+  border: none;
+  border-top: 1px solid var(--color-line);
+  margin: 2.2em 0;
+}
+
+/* 双链 [[...]]：不做成链接色，而是一层极淡的底 + 虚线下划线，
+   避免正文里一堆蓝字破坏阅读节奏 */
+.prose-doc .otw-wikilink {
+  color: var(--color-ink);
+  background: var(--color-accent-wash);
+  padding: 0.08em 0.32em;
+  margin: 0 0.06em;
+  border-radius: var(--radius-xs);
+  border-bottom: 1px solid var(--color-accent-line);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out-quint), border-color
+    var(--duration-fast) var(--ease-out-quint);
+}
+.prose-doc .otw-wikilink:hover {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  border-bottom-color: var(--color-accent);
+}
+
+/* 引用型 callout：左侧主色竖线 + 小标签 + 放大的结论句 */
+.prose-doc .callout {
+  border-left: 2.5px solid var(--color-accent);
+  padding: 2px 0 2px 18px;
+  margin-top: 1.6em;
+  margin-bottom: 1.6em;
+}
+.prose-doc .callout-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--color-accent);
+  margin-bottom: 4px;
+}
+.prose-doc .callout-body {
+  font-size: 18px;
+  line-height: 1.65;
+  font-weight: 550;
+  color: var(--color-ink);
+  letter-spacing: 0.005em;
+}
+
+/* ============================================================
+   动效基础
+   ============================================================ */
+
+/* 视图切换：交叉淡入 + 极轻微位移，不做 scale（会让文字发虚） */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--duration-base);
+  animation-timing-function: var(--ease-out-quint);
+}
+::view-transition-old(root) {
+  animation-name: otw-vt-out;
+}
+::view-transition-new(root) {
+  animation-name: otw-vt-in;
+}
+@keyframes otw-vt-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes otw-vt-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* 减少动效：系统偏好 + 应用内开关都走这里 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
+}
+:root[data-reduce-motion="true"] *,
+:root[data-reduce-motion="true"] *::before,
+:root[data-reduce-motion="true"] *::after {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.01ms !important;
+}

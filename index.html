@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>OnTheWay</title>
+    <script>
+      // 在首帧之前定好主题，避免暗色模式闪白。
+      // 始终落一个明确的 data-theme，不留「未指定」态，
+      // 否则 Tailwind 的 dark: 变体在系统暗色下不会生效。
+      (function () {
+        var t = "";
+        try {
+          t = localStorage.getItem("otw.theme") || "";
+        } catch (e) {}
+        if (t !== "light" && t !== "dark") {
+          t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        document.documentElement.setAttribute("data-theme", t);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
