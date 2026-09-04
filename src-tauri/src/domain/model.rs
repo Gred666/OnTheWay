@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /* ============================================================
-   跨 IPC 的领域类型。
-   全部 camelCase —— 和前端 src/data/types.ts 一一对应，
-   由 tauri-specta 生成 TS 定义，不需要手写两遍。
-   ============================================================ */
+跨 IPC 的领域类型。
+全部 camelCase —— 和前端 src/data/types.ts 一一对应，
+由 tauri-specta 生成 TS 定义，不需要手写两遍。
+============================================================ */
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -76,8 +76,6 @@ pub struct Goal {
     pub title: String,
     pub period_start: String,
     pub content_md: String,
-    /// 行动项之后的正文（GOAL 页的「记录」段）
-    pub after_md: String,
     pub action_group: Option<ActionGroup>,
     pub created_at: i64,
     pub updated_at: i64,

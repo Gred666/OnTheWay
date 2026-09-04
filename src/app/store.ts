@@ -41,7 +41,7 @@ interface AppState {
 }
 
 /** 导航顺序 —— 决定切换时主内容往哪个方向位移 */
-const NAV_ORDER: WorkspaceId[] = ["notes", "today", "goal", "calendar", "archive"];
+const NAV_ORDER: WorkspaceId[] = ["notes", "today", "goal", "calendar", "archive", "extensions"];
 
 const LS_KEY = "otw.prefs";
 

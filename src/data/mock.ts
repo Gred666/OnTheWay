@@ -1,12 +1,7 @@
+import { countWords } from "@/lib/markdown";
 import type { Backend } from "./backend";
-import {
-  seedArchivedRaw,
-  seedDayNotes,
-  seedGoalsRaw,
-  seedNotesRaw,
-  seedTasksRaw,
-} from "./seed";
-import type { DayDoc, Goal, Note, NoteSummary, SearchResult, Task } from "./types";
+import { seedArchivedRaw, seedDayNotes, seedGoalsRaw, seedNotesRaw, seedTasksRaw } from "./seed";
+import type { DayDoc, Goal, Note, NoteInput, NoteSummary, SearchResult, Task } from "./types";
 
 /* ============================================================
    浏览器 mock 后端。
@@ -80,15 +75,9 @@ function hydrate(n: Note): Note {
   };
 }
 
-/** 笔记 → 行动项分组的映射。Rust 侧靠 link 表，这里写死。 */
-const seedNoteActions: Record<string, { title: string; taskIds: string[] }> = {
-  "n-autumn": { title: "下阶段行动", taskIds: ["t-autumn-1", "t-autumn-2", "t-autumn-3"] },
-  "n-today": { title: "检查项", taskIds: ["t-focus-1", "t-focus-2", "t-focus-3"] },
-};
+const seedNoteActions: Record<string, { title: string; taskIds: string[] }> = {};
 
-const goalActions: Record<string, { title: string; taskIds: string[] }> = {
-  "g-week": { title: "本周重点", taskIds: ["t-week-1", "t-week-2", "t-week-3", "t-week-4"] },
-};
+const goalActions: Record<string, { title: string; taskIds: string[] }> = {};
 
 function notFound(what: string): never {
   throw { kind: "NotFound", message: what };
@@ -112,6 +101,46 @@ export const mockBackend: Backend = {
     const n = state.notes.find((x) => x.id === id);
     if (!n) notFound(`note ${id}`);
     return hydrate(n);
+  },
+
+  async noteUpsert(input: NoteInput) {
+    await tick();
+    const now = Date.now();
+    const id = input.id ?? crypto.randomUUID();
+    const current = state.notes.find((x) => x.id === id);
+    const contentMd = input.contentMd;
+    const excerpt = contentMd
+      .replace(/^\s*(?:#{1,6}|>|[-*])\s*/gm, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60);
+
+    if (current) {
+      current.title = input.title;
+      current.contentMd = contentMd;
+      current.icon = input.icon ?? current.icon;
+      current.excerpt = excerpt;
+      current.wordCount = countWords(contentMd);
+      current.updatedAt = now;
+    } else {
+      state.notes.unshift({
+        id,
+        title: input.title,
+        contentMd,
+        excerpt,
+        icon: input.icon ?? "file",
+        wordCount: countWords(contentMd),
+        isPinned: false,
+        isArchived: false,
+        archiveCategory: null,
+        archivedAt: null,
+        createdAt: now,
+        updatedAt: now,
+        actionGroup: null,
+      });
+    }
+    save(state);
+    return id;
   },
 
   async noteSetPinned(id, pinned) {
@@ -205,6 +234,15 @@ export const mockBackend: Backend = {
     };
   },
 
+  async goalSave(id, contentMd): Promise<Goal> {
+    await tick();
+    const goal = seedGoalsRaw.find((item) => item.id === id);
+    if (!goal) notFound(`goal ${id}`);
+    goal.contentMd = contentMd;
+    goal.updatedAt = Date.now();
+    return this.goalLatest(goal.horizon);
+  },
+
   async calendarDay(date): Promise<DayDoc> {
     await tick();
     return {
@@ -213,6 +251,12 @@ export const mockBackend: Backend = {
       noteMd: seedDayNotes[date] ?? "",
       updatedAt: Date.now(),
     };
+  },
+
+  async calendarDaySave(date, noteMd): Promise<DayDoc> {
+    await tick();
+    seedDayNotes[date] = noteMd;
+    return this.calendarDay(date);
   },
 
   async calendarMarked(from, to) {

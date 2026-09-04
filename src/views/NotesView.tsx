@@ -9,7 +9,7 @@ import { cn } from "@/lib/cn";
 import { spring, tween } from "@/lib/motion";
 import { Archive, ArrowUpDown, Pin, PinOff, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type SortMode = "updated" | "created" | "title";
 const SORT_LABEL: Record<SortMode, string> = {
@@ -23,16 +23,41 @@ export function NotesList({ notes }: { notes: Note[] }) {
   const selectNote = useApp((s) => s.selectNote);
   const query = useApp((s) => s.noteQuery);
   const setQuery = useApp((s) => s.setNoteQuery);
+  const searchNotes = useData((s) => s.searchNotes);
   const [sort, setSort] = useState<SortMode>("updated");
+  const [matchedIds, setMatchedIds] = useState<Set<string> | null>(null);
+
+  useEffect(() => {
+    const value = query.trim();
+    if (!value) {
+      setMatchedIds(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void searchNotes(value)
+        .then((result) => {
+          if (!cancelled) setMatchedIds(new Set(result.hits.map((hit) => hit.id)));
+        })
+        .catch(() => {
+          if (!cancelled) setMatchedIds(null);
+        });
+    }, 160);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query, searchNotes]);
 
   const { pinned, rest } = useMemo(() => {
     const q = query.trim().toLowerCase();
     const filtered = q
-      ? notes.filter(
-          (n) =>
-            n.title.toLowerCase().includes(q) ||
-            n.excerpt.toLowerCase().includes(q) ||
-            n.contentMd.toLowerCase().includes(q),
+      ? notes.filter((n) =>
+          matchedIds
+            ? matchedIds.has(n.id)
+            : n.title.toLowerCase().includes(q) ||
+              n.excerpt.toLowerCase().includes(q) ||
+              n.contentMd.toLowerCase().includes(q),
         )
       : notes;
 
@@ -46,7 +71,7 @@ export function NotesList({ notes }: { notes: Note[] }) {
       pinned: sorted.filter((n) => n.isPinned),
       rest: sorted.filter((n) => !n.isPinned),
     };
-  }, [notes, query, sort]);
+  }, [matchedIds, notes, query, sort]);
 
   const empty = pinned.length === 0 && rest.length === 0;
 

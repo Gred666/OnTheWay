@@ -7,7 +7,7 @@ import {
   toISODate,
 } from "@/lib/date";
 import { seedReminders } from "./seed";
-import { tasksByIds, useData } from "./store";
+import { useData } from "./store";
 import type { DocumentModel, Reminder } from "./types";
 
 /* ============================================================
@@ -27,7 +27,6 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
 
   const notes = useData((s) => s.notes);
   const archived = useData((s) => s.archived);
-  const tasks = useData((s) => s.tasks);
   const goals = useData((s) => s.goals);
   const dayDocs = useData((s) => s.dayDocs);
   const todayDoc = useData((s) => s.todayDoc);
@@ -47,18 +46,13 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
           key: `note-${note.id}`,
           title: note.title,
           bodyMd: note.contentMd,
-          actionGroup: note.actionGroup
-            ? {
-                title: note.actionGroup.title,
-                tasks: tasksByIds(tasks, note.actionGroup.taskIds),
-              }
-            : undefined,
           statusParts: [
             `${note.wordCount} 字`,
             `创建时间 ${formatTimestampFull(note.createdAt)}`,
             `上次更新 ${formatRelativeTime(note.updatedAt)}`,
           ],
           deletable: true,
+          editor: { target: { kind: "note", id: note.id }, wordCount: note.wordCount },
         },
         reminder: seedReminders.default!,
       };
@@ -66,19 +60,22 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
 
     /* ---------------- 今日 TODO ---------------- */
     case "today": {
+      if (!todayDoc) {
+        return {
+          doc: emptyDoc("今日 TODO 尚未准备好", "数据加载完成后会自动显示。"),
+          reminder: seedReminders.default!,
+        };
+      }
       return {
         doc: {
           key: "today",
           title: todayDoc.title,
           bodyMd: todayDoc.contentMd,
-          actionGroup: {
-            title: todayDoc.actionGroup.title,
-            tasks: tasksByIds(tasks, todayDoc.actionGroup.taskIds),
-          },
           statusParts: [
             `${todayDoc.wordCount} 字`,
             `上次更新 ${new Date(todayDoc.updatedAt).toTimeString().slice(0, 5)}`,
           ],
+          editor: { target: { kind: "note", id: todayDoc.id }, wordCount: todayDoc.wordCount },
         },
         reminder: seedReminders.default!,
       };
@@ -86,7 +83,13 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
 
     /* ---------------- /GOAL ---------------- */
     case "goal": {
-      const goal = goals.find((g) => g.horizon === goalHorizon) ?? goals[0]!;
+      const goal = goals.find((g) => g.horizon === goalHorizon) ?? goals[0];
+      if (!goal) {
+        return {
+          doc: emptyDoc("目标尚未准备好", "数据加载完成后会自动显示。"),
+          reminder: seedReminders.goal!,
+        };
+      }
       return {
         doc: {
           key: `goal-${goal.id}`,
@@ -97,14 +100,14 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
             active: horizonLabel(goalHorizon),
           },
           bodyMd: goal.contentMd,
-          actionGroup: goal.actionGroup
-            ? { title: goal.actionGroup.title, tasks: tasksByIds(tasks, goal.actionGroup.taskIds) }
-            : undefined,
-          bodyAfterMd: goal.afterMd,
           statusParts: [
-            `${countGoalWords(goal.contentMd + (goal.afterMd ?? ""))} 字`,
+            `${countGoalWords(goal.contentMd)} 字`,
             `上次更新 ${formatRelativeTime(goal.updatedAt)}`,
           ],
+          editor: {
+            target: { kind: "goal", id: goal.id },
+            wordCount: countGoalWords(goal.contentMd),
+          },
         },
         reminder: seedReminders.goal!,
       };
@@ -114,7 +117,13 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
     case "calendar": {
       // 分段切到周/月/年时，右侧直接显示对应的 GOAL 文档
       if (calendarScope !== "day") {
-        const goal = goals.find((g) => g.horizon === calendarScope) ?? goals[0]!;
+        const goal = goals.find((g) => g.horizon === calendarScope) ?? goals[0];
+        if (!goal) {
+          return {
+            doc: emptyDoc("目标尚未准备好", "数据加载完成后会自动显示。"),
+            reminder: seedReminders.goal!,
+          };
+        }
         return {
           doc: {
             key: `cal-goal-${goal.id}`,
@@ -125,25 +134,19 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
               active: scopeLabel(calendarScope),
             },
             bodyMd: goal.contentMd,
-            actionGroup: goal.actionGroup
-              ? {
-                  title: goal.actionGroup.title,
-                  tasks: tasksByIds(tasks, goal.actionGroup.taskIds),
-                }
-              : undefined,
-            bodyAfterMd: goal.afterMd,
             statusParts: [`上次更新 ${formatRelativeTime(goal.updatedAt)}`],
+            editor: {
+              target: { kind: "goal", id: goal.id },
+              wordCount: countGoalWords(goal.contentMd),
+            },
           },
           reminder: seedReminders.goal!,
         };
       }
 
       const day = dayDocs.find((d) => d.date === selectedDate);
-      const dayTasks = day ? tasksByIds(tasks, day.taskIds) : [];
-      // 原型的顺序是「任务列表 → 备注」，所以正文整段放到行动项之后
-      const noteMd = day?.noteMd
-        ? `## 备注\n\n${day.noteMd}`
-        : "## 备注\n\n这一天还没有安排。点击左侧其他日期，或在这里写下计划。";
+      const dayTasks = day?.tasks ?? [];
+      const noteMd = day?.noteMd ?? "";
 
       return {
         doc: {
@@ -154,16 +157,16 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
             options: ["日TODO", "周/GOAL", "月/GOAL", "年/GOAL"],
             active: "日TODO",
           },
-          bodyMd: "",
+          bodyMd: noteMd,
           actionGroup: dayTasks.length
             ? { title: "当日安排", tasks: dayTasks, hideHeader: true }
             : undefined,
-          bodyAfterMd: noteMd,
           statusParts: [
             `${dayTasks.length} 项 TODO`,
             `上次更新 ${formatRelativeTime(day?.updatedAt ?? Date.now())}`,
             `内容将在 ${formatMonthDayCN(selectedDate)} 00:00 自动切换到“今日TODO”`,
           ],
+          editor: { target: { kind: "day", id: selectedDate }, wordCount: countGoalWords(noteMd) },
         },
         reminder: seedReminders.goal!,
       };
@@ -192,10 +195,17 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
             `创建时间 ${formatTimestampFull(note.createdAt)}`,
             `最后编辑于 ${formatRelativeTime(note.updatedAt)}`,
           ],
+          editor: { target: { kind: "note", id: note.id }, wordCount: note.wordCount },
         },
         reminder: seedReminders.default!,
       };
     }
+
+    case "extensions":
+      return {
+        doc: emptyDoc("扩展", ""),
+        reminder: seedReminders.default!,
+      };
   }
 }
 

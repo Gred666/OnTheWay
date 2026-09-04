@@ -48,7 +48,8 @@ pub fn for_host(conn: &Connection, host_type: &str, host_id: &str) -> Result<Vec
 
 /// 某一天的任务（日历用）
 pub fn for_date(conn: &Connection, date: &str) -> Result<Vec<Task>> {
-    let sql = format!("{SELECT} WHERE t.due_date = ?1 AND t.deleted_at IS NULL ORDER BY t.sort_key");
+    let sql =
+        format!("{SELECT} WHERE t.due_date = ?1 AND t.deleted_at IS NULL ORDER BY t.sort_key");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![date], from_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -58,21 +59,30 @@ pub fn for_date(conn: &Connection, date: &str) -> Result<Vec<Task>> {
 ///
 /// 无论完成还是重开都往 activity 里写一条 —— 复盘要靠它还原时间线。
 pub fn toggle(conn: &Connection, id: &str) -> Result<Task> {
-    let status: String = conn
-        .query_row("SELECT status FROM task WHERE id = ?1 AND deleted_at IS NULL", params![id], |r| r.get(0))
+    let tx = conn.unchecked_transaction()?;
+    let status: String = tx
+        .query_row(
+            "SELECT status FROM task WHERE id = ?1 AND deleted_at IS NULL",
+            params![id],
+            |r| r.get(0),
+        )
         .map_err(|_| AppError::NotFound(format!("task {id}")))?;
 
     let now = now_ms();
     let done = status == "done";
-    let (next_status, completed_at) = if done { ("todo", None) } else { ("done", Some(now)) };
+    let (next_status, completed_at) = if done {
+        ("todo", None)
+    } else {
+        ("done", Some(now))
+    };
 
-    conn.execute(
+    tx.execute(
         "UPDATE task SET status = ?1, completed_at = ?2, updated_at = ?3 WHERE id = ?4",
         params![next_status, completed_at, now, id],
     )?;
 
     activity::log(
-        conn,
+        &tx,
         "task",
         id,
         if done { "reopened" } else { "completed" },
@@ -80,7 +90,9 @@ pub fn toggle(conn: &Connection, id: &str) -> Result<Task> {
     )?;
 
     let sql = format!("{SELECT} WHERE t.id = ?1");
-    Ok(conn.query_row(&sql, params![id], from_row)?)
+    let task = tx.query_row(&sql, params![id], from_row)?;
+    tx.commit()?;
+    Ok(task)
 }
 
 #[cfg(test)]
@@ -155,7 +167,8 @@ mod tests {
         let conn = test_conn();
         seed_task(&conn, "t1", "还在", "todo");
         seed_task(&conn, "t2", "已删", "todo");
-        conn.execute("UPDATE task SET deleted_at = 1 WHERE id = 't2'", []).unwrap();
+        conn.execute("UPDATE task SET deleted_at = 1 WHERE id = 't2'", [])
+            .unwrap();
 
         for (tid, sk) in [("t1", "a0"), ("t2", "a1")] {
             conn.execute(

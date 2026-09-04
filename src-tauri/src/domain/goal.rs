@@ -12,7 +12,7 @@ use crate::error::{AppError, Result};
 pub fn latest(conn: &Connection, horizon: &str) -> Result<Goal> {
     let row = conn
         .query_row(
-            "SELECT id, horizon, title, period_start, description_md, after_md,
+            "SELECT id, horizon, title, period_start, content_md,
                     action_title, created_at, updated_at
              FROM goal
              WHERE horizon = ?1 AND deleted_at IS NULL
@@ -26,8 +26,7 @@ pub fn latest(conn: &Connection, horizon: &str) -> Result<Goal> {
                         horizon: r.get("horizon")?,
                         title: r.get("title")?,
                         period_start: r.get("period_start")?,
-                        content_md: r.get("description_md")?,
-                        after_md: r.get("after_md")?,
+                        content_md: r.get("content_md")?,
                         action_group: None,
                         created_at: r.get("created_at")?,
                         updated_at: r.get("updated_at")?,
@@ -49,6 +48,22 @@ pub fn latest(conn: &Connection, horizon: &str) -> Result<Goal> {
     Ok(goal)
 }
 
+/// 更新目标正文并返回完整聚合，保证前端拿到一致的时间戳与任务分组。
+pub fn save(conn: &Connection, id: &str, content_md: &str) -> Result<Goal> {
+    let changed = conn.execute(
+        "UPDATE goal SET content_md=?1, updated_at=?2 WHERE id=?3 AND deleted_at IS NULL",
+        params![content_md, now_ms(), id],
+    )?;
+    if changed == 0 {
+        return Err(AppError::NotFound(format!("goal id={id}")));
+    }
+    let horizon: String =
+        conn.query_row("SELECT horizon FROM goal WHERE id=?1", params![id], |row| {
+            row.get(0)
+        })?;
+    latest(conn, &horizon)
+}
+
 /// 日历某一天：当天任务 + 备注
 pub fn day_doc(conn: &Connection, date: &str) -> Result<DayDoc> {
     let (note_md, updated_at) = conn
@@ -66,6 +81,17 @@ pub fn day_doc(conn: &Connection, date: &str) -> Result<DayDoc> {
         note_md,
         updated_at,
     })
+}
+
+pub fn save_day_doc(conn: &Connection, date: &str, note_md: &str) -> Result<DayDoc> {
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO day_doc (date, note_md, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(date) DO UPDATE SET note_md=excluded.note_md, updated_at=excluded.updated_at",
+        params![date, note_md, now],
+    )?;
+    day_doc(conn, date)
 }
 
 /// 日历上需要标小圆点的日期：有任务或有备注的那些天。
@@ -110,7 +136,8 @@ mod tests {
     fn goal_carries_its_action_group() {
         let conn = test_conn();
         seed_goal(&conn, "g1", "week", "2026-08-24", "本周目标");
-        conn.execute("UPDATE goal SET action_title='本周重点' WHERE id='g1'", []).unwrap();
+        conn.execute("UPDATE goal SET action_title='本周重点' WHERE id='g1'", [])
+            .unwrap();
         seed_task(&conn, "t1", "完成原型", "todo");
         conn.execute(
             "INSERT INTO link (id, src_type, src_id, dst_type, dst_id, kind, sort_key, created_at)
@@ -139,7 +166,8 @@ mod tests {
     fn marked_dates_union_tasks_and_notes() {
         let conn = test_conn();
         seed_task(&conn, "t1", "有截止日的任务", "todo");
-        conn.execute("UPDATE task SET due_date='2026-08-12' WHERE id='t1'", []).unwrap();
+        conn.execute("UPDATE task SET due_date='2026-08-12' WHERE id='t1'", [])
+            .unwrap();
         conn.execute(
             "INSERT INTO day_doc (date, note_md, created_at, updated_at)
              VALUES ('2026-08-20','写了点东西',0,0), ('2026-08-25','',0,0)",
@@ -148,7 +176,11 @@ mod tests {
         .unwrap();
 
         let d = marked_dates(&conn, "2026-08-01", "2026-08-31").unwrap();
-        assert_eq!(d, vec!["2026-08-12", "2026-08-20"], "空备注的日期不该被标记");
+        assert_eq!(
+            d,
+            vec!["2026-08-12", "2026-08-20"],
+            "空备注的日期不该被标记"
+        );
     }
 
     #[test]
@@ -163,5 +195,33 @@ mod tests {
 
         let d = marked_dates(&conn, "2026-08-01", "2026-08-31").unwrap();
         assert_eq!(d, vec!["2026-08-15"]);
+    }
+
+    #[test]
+    fn saves_goal_as_one_markdown_document() {
+        let conn = test_conn();
+        seed_goal(&conn, "g1", "week", "2026-08-24", "旧正文");
+
+        let saved = save(&conn, "g1", "# 新正文\n\n包含记录").unwrap();
+
+        assert_eq!(saved.content_md, "# 新正文\n\n包含记录");
+        assert!(saved.updated_at > 0);
+    }
+
+    #[test]
+    fn saves_and_clears_day_markdown() {
+        let conn = test_conn();
+
+        let saved = save_day_doc(&conn, "2026-08-30", "## 备注\n\n第一次写入").unwrap();
+        assert_eq!(saved.note_md, "## 备注\n\n第一次写入");
+        assert_eq!(
+            marked_dates(&conn, "2026-08-01", "2026-08-31").unwrap(),
+            vec!["2026-08-30"]
+        );
+
+        save_day_doc(&conn, "2026-08-30", "").unwrap();
+        assert!(marked_dates(&conn, "2026-08-01", "2026-08-31")
+            .unwrap()
+            .is_empty());
     }
 }

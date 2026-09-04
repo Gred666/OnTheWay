@@ -20,7 +20,7 @@ type Block =
 
 /**
  * 把标题文本转成稳定的锚点 id（中文直接用原文，浏览器支持）。
- * ns 用于隔离 bodyMd 和 bodyAfterMd 两段正文的 id，避免重名。
+ * ns 用于同页多个 Markdown 区域隔离 id。
  */
 function slug(text: string, index: number, ns: string): string {
   return `${ns}-${index}-${text.replace(/\s+/g, "-").slice(0, 24)}`;
@@ -207,38 +207,52 @@ export function renderMarkdown(md: string, ns = "h"): ReactNode[] {
    这样文档结构变了目录自动跟上，不需要单独维护一份。
 */
 
-export function buildOutline(
-  md: string,
-  actionGroupTitle?: string,
-  afterMd?: string,
-): OutlineItem[] {
-  // 按文档顺序收集锚点：## / ### 标题，以及 callout 的标签
-  // （原型里「核心判断」「当时的结论」这类就是 callout，它们是文档的骨架之一）
-  const collect = (src: string, ns: string): OutlineItem[] => {
-    const out: OutlineItem[] = [];
-    for (const b of parseBlocks(src, ns)) {
-      if (b.kind === "h") {
-        out.push({ id: b.id, text: b.text, level: b.level === 2 ? 1 : 2 });
-      } else if (b.kind === "callout") {
-        out.push({ id: b.id, text: b.label, level: 1 });
-      }
+export function buildOutline(md: string, actionGroupTitle?: string): OutlineItem[] {
+  const items: OutlineItem[] = [];
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  let index = 0;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const source = lines[lineIndex]!;
+    const heading = /^\s*(#{1,6})\s+(.+?)\s*$/.exec(source);
+    const setext = lineIndex + 1 < lines.length && /^\s*(=+|-+)\s*$/.exec(lines[lineIndex + 1]!);
+    const callout = /^\s*>\s*\[!(.+?)\]\s*$/.exec(source);
+    if (heading) {
+      const depth = heading[1]!.length;
+      const text = heading[2]!.replace(/\s+#+\s*$/, "").trim();
+      items.push({
+        id: slug(text, index++, "h"),
+        text,
+        level: depth <= 2 ? 1 : 2,
+        line: lineIndex + 1,
+      });
+    } else if (source.trim() && setext) {
+      const text = source.trim();
+      items.push({
+        id: slug(text, index++, "h"),
+        text,
+        level: 1,
+        line: lineIndex + 1,
+      });
+      lineIndex += 1;
+    } else if (callout) {
+      const text = callout[1]!.trim();
+      items.push({ id: slug(text, index++, "h"), text, level: 1, line: lineIndex + 1 });
     }
-    return out;
-  };
-
-  const items: OutlineItem[] = collect(md, "h");
+  }
 
   if (actionGroupTitle) {
-    items.push({ id: "action-group", text: actionGroupTitle, level: 1 });
-  }
-  if (afterMd) {
-    items.push(...collect(afterMd, "after"));
+    items.push({
+      id: "action-group",
+      text: actionGroupTitle,
+      level: 1,
+      line: md.split("\n").length,
+    });
   }
 
   // 开头补一个「概览」锚点回到文档顶部。
   // 只有在下面确实有内容时才加 —— 否则目录里孤零零一个「概览」很傻。
   if (items.length > 0) {
-    items.unshift({ id: "doc-top", text: "概览", level: 1 });
+    items.unshift({ id: "doc-top", text: "概览", level: 1, line: 1 });
   }
   return items;
 }

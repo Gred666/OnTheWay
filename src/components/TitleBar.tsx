@@ -26,10 +26,13 @@ export function TitleBar() {
   return (
     <div
       className="fixed inset-x-0 top-0 z-40 flex h-[38px] items-center justify-end pr-2"
-      data-tauri-drag-region
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onDoubleClick={() => void win.toggleMaximize().then(setMaximized)}
+      onMouseDown={(event) => {
+        if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+        if (event.detail === 2) void win.toggleMaximize().then(setMaximized);
+        else void win.startDragging();
+      }}
     >
       <motion.div
         className="flex items-center gap-0.5"

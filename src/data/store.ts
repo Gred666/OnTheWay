@@ -1,24 +1,6 @@
-import { countWords } from "@/lib/markdown";
 import { create } from "zustand";
-import {
-  seedArchived,
-  seedDayDocs,
-  seedGoals,
-  seedMarkedDates,
-  seedNotes,
-  seedTasks,
-  seedTodayDoc,
-} from "./seed";
-import type { DayDoc, Goal, Note, Task } from "./types";
-
-/* ============================================================
-   数据层。
-   ★ P5 接 Rust 后端时，只有这个文件被替换 ——
-   把每个 action 换成 commands.xxx() 调用 + TanStack Query 缓存，
-   对外暴露的选择器签名保持不变，视图层零改动。
-
-   现在用内存态 + localStorage 顶着，够把交互跑通。
-   ============================================================ */
+import { backend } from "./backend";
+import type { DayDoc, DocumentSaveTarget, Goal, Note, SearchResult, Task } from "./types";
 
 interface DataState {
   notes: Note[];
@@ -26,146 +8,358 @@ interface DataState {
   tasks: Record<string, Task>;
   goals: Goal[];
   dayDocs: DayDoc[];
-  todayDoc: typeof seedTodayDoc;
+  todayDoc: Note | null;
   markedDates: Set<string>;
+  initialized: boolean;
+  loading: boolean;
+  error: string | null;
+  savingNoteIds: Set<string>;
 
-  toggleTask: (id: string) => void;
-  togglePin: (id: string) => void;
-  archiveNote: (id: string) => void;
-  restoreNote: (id: string) => void;
-  deleteNote: (id: string) => void;
+  initialize: () => Promise<void>;
+  loadDay: (date: string) => Promise<void>;
+  searchNotes: (query: string) => Promise<SearchResult>;
+  saveDocument: (target: DocumentSaveTarget, contentMd: string) => Promise<void>;
+  saveNoteTitle: (id: string, title: string) => Promise<void>;
+  toggleTask: (id: string) => Promise<void>;
+  togglePin: (id: string) => Promise<void>;
+  archiveNote: (id: string) => Promise<void>;
+  restoreNote: (id: string) => Promise<void>;
+  deleteNote: (id: string) => Promise<void>;
 }
 
-/* ============================================================
-   持久化。
-   数据量很小（9 篇笔记 + 13 个任务，约 10KB），整份存下来即可 ——
-   跟种子数据做 diff 那套在「归档一篇笔记」这类操作上会算错，
-   而且 P5 上 SQLite 后这一整段都会删掉，不值得做精细。
-   改了 seed.ts 想丢掉旧状态，把 LS_KEY 的版本号 +1。
-   ============================================================ */
+const messageOf = (error: unknown) =>
+  error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : JSON.stringify(error);
 
-const LS_KEY = "otw.data.v2";
+const noteOrder = (a: Note, b: Note) =>
+  a.isPinned === b.isPinned ? b.updatedAt - a.updatedAt : a.isPinned ? -1 : 1;
 
-interface Persisted {
-  tasks: Record<string, Task>;
-  notes: Note[];
-  archived: Note[];
+function taskMapFrom(
+  notes: Note[],
+  todayDoc: Note | null,
+  goals: Goal[],
+  days: DayDoc[],
+): Record<string, Task> {
+  const all = [
+    ...notes.flatMap((note) => note.actionGroup?.tasks ?? []),
+    ...(todayDoc?.actionGroup?.tasks ?? []),
+    ...goals.flatMap((goal) => goal.actionGroup?.tasks ?? []),
+    ...days.flatMap((day) => day.tasks),
+  ];
+  return Object.fromEntries(all.map((task) => [task.id, task]));
 }
 
-function loadPersisted(): Persisted | null {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return null;
-    const p = JSON.parse(raw) as Partial<Persisted>;
-    if (!p.tasks || !Array.isArray(p.notes) || !Array.isArray(p.archived)) return null;
-    return { tasks: p.tasks, notes: p.notes, archived: p.archived };
-  } catch {
-    // 隐私模式 / 数据损坏：回到种子数据，不要让应用打不开
-    return null;
-  }
+function patchTask(state: DataState, id: string, task: Task): Partial<DataState> {
+  const inGroup = (group: Note["actionGroup"]): Note["actionGroup"] =>
+    group ? { ...group, tasks: group.tasks.map((item) => (item.id === id ? task : item)) } : null;
+  return {
+    tasks: { ...state.tasks, [id]: task },
+    notes: state.notes.map((note) => ({ ...note, actionGroup: inGroup(note.actionGroup) })),
+    todayDoc: state.todayDoc
+      ? { ...state.todayDoc, actionGroup: inGroup(state.todayDoc.actionGroup) }
+      : null,
+    goals: state.goals.map((goal) => ({
+      ...goal,
+      actionGroup: goal.actionGroup
+        ? {
+            ...goal.actionGroup,
+            tasks: goal.actionGroup.tasks.map((item) => (item.id === id ? task : item)),
+          }
+        : null,
+    })),
+    dayDocs: state.dayDocs.map((day) => ({
+      ...day,
+      tasks: day.tasks.map((item) => (item.id === id ? task : item)),
+    })),
+  };
 }
 
-function persist(state: DataState) {
-  try {
-    localStorage.setItem(
-      LS_KEY,
-      JSON.stringify({ tasks: state.tasks, notes: state.notes, archived: state.archived }),
-    );
-  } catch {
-    /* 忽略：持久化失败不影响本次会话 */
-  }
-}
-
-/* ---------------- 初始化 ---------------- */
-
-const saved = loadPersisted();
-
-const initialTasks: Record<string, Task> =
-  saved?.tasks ?? Object.fromEntries(seedTasks.map((t) => [t.id, { ...t }]));
-
-const initialNotes: Note[] = saved?.notes ?? seedNotes.map((n) => ({ ...n }));
-const initialArchived: Note[] = saved?.archived ?? seedArchived.map((n) => ({ ...n }));
+let initializePromise: Promise<void> | null = null;
 
 export const useData = create<DataState>((set, get) => ({
-  notes: initialNotes,
-  archived: initialArchived,
-  tasks: initialTasks,
-  goals: seedGoals,
-  dayDocs: seedDayDocs,
-  todayDoc: seedTodayDoc,
-  markedDates: seedMarkedDates,
+  notes: [],
+  archived: [],
+  tasks: {},
+  goals: [],
+  dayDocs: [],
+  todayDoc: null,
+  markedDates: new Set(),
+  initialized: false,
+  loading: false,
+  error: null,
+  savingNoteIds: new Set(),
 
-  toggleTask: (id) => {
-    const cur = get().tasks[id];
-    if (!cur) return;
-    const done = cur.status === "done";
-    const next: Task = {
-      ...cur,
+  initialize: async () => {
+    if (get().initialized) return;
+    if (initializePromise) return initializePromise;
+
+    set({ loading: true, error: null });
+    initializePromise = (async () => {
+      try {
+        const api = await backend();
+        const [activeSummaries, archivedSummaries, goals, marked] = await Promise.all([
+          api.noteList(false),
+          api.noteList(true),
+          Promise.all([api.goalLatest("week"), api.goalLatest("month"), api.goalLatest("year")]),
+          api.calendarMarked("2000-01-01", "2100-12-31"),
+        ]);
+
+        const todaySummary = activeSummaries.find((note) => note.id === "n-today");
+        const noteSummaries = activeSummaries.filter((note) => note.id !== "n-today");
+        const [notes, archived, todayDoc] = await Promise.all([
+          Promise.all(noteSummaries.map((note) => api.noteGet(note.id))),
+          Promise.all(archivedSummaries.map((note) => api.noteGet(note.id))),
+          todaySummary ? api.noteGet(todaySummary.id) : Promise.resolve(null),
+        ]);
+
+        set({
+          notes: notes.sort(noteOrder),
+          archived,
+          todayDoc,
+          goals,
+          tasks: taskMapFrom(notes, todayDoc, goals, []),
+          markedDates: new Set(marked),
+          initialized: true,
+          loading: false,
+        });
+      } catch (error) {
+        set({ error: messageOf(error), loading: false });
+      } finally {
+        initializePromise = null;
+      }
+    })();
+    return initializePromise;
+  },
+
+  loadDay: async (date) => {
+    if (get().dayDocs.some((day) => day.date === date)) return;
+    try {
+      const day = await (await backend()).calendarDay(date);
+      set((state) => {
+        const dayDocs = [...state.dayDocs.filter((item) => item.date !== date), day];
+        return {
+          dayDocs,
+          tasks: {
+            ...state.tasks,
+            ...Object.fromEntries(day.tasks.map((task) => [task.id, task])),
+          },
+        };
+      });
+    } catch (error) {
+      set({ error: messageOf(error) });
+    }
+  },
+
+  searchNotes: async (query) => (await backend()).searchNotes(query, 200),
+
+  saveDocument: async (target, contentMd) => {
+    const id = target.id;
+    if (target.kind === "goal") {
+      const source = get().goals.find((goal) => goal.id === id);
+      if (!source || source.contentMd === contentMd) return;
+      try {
+        const updated = await (await backend()).goalSave(id, contentMd);
+        set((state) => ({
+          goals: state.goals.map((goal) => (goal.id === id ? updated : goal)),
+          error: null,
+        }));
+      } catch (error) {
+        set({ error: messageOf(error) });
+        throw error;
+      }
+      return;
+    }
+    if (target.kind === "day") {
+      const source = get().dayDocs.find((day) => day.date === id);
+      if (source?.noteMd === contentMd) return;
+      try {
+        const updated = await (await backend()).calendarDaySave(id, contentMd);
+        set((state) => ({
+          dayDocs: [...state.dayDocs.filter((day) => day.date !== id), updated],
+          markedDates:
+            contentMd.trim() || updated.tasks.length > 0
+              ? new Set(state.markedDates).add(id)
+              : new Set([...state.markedDates].filter((date) => date !== id)),
+          error: null,
+        }));
+      } catch (error) {
+        set({ error: messageOf(error) });
+        throw error;
+      }
+      return;
+    }
+    const source =
+      get().notes.find((note) => note.id === id) ??
+      get().archived.find((note) => note.id === id) ??
+      (get().todayDoc?.id === id ? get().todayDoc : null);
+    if (!source || source.contentMd === contentMd) return;
+
+    set((state) => ({ savingNoteIds: new Set(state.savingNoteIds).add(id) }));
+    try {
+      const api = await backend();
+      await api.noteUpsert({ id, title: source.title, contentMd, icon: source.icon });
+      const updated = await api.noteGet(id);
+      set((state) => ({
+        notes: state.notes.map((note) => (note.id === id ? updated : note)).sort(noteOrder),
+        archived: state.archived.map((note) => (note.id === id ? updated : note)),
+        todayDoc: state.todayDoc?.id === id ? updated : state.todayDoc,
+        tasks: {
+          ...state.tasks,
+          ...Object.fromEntries((updated.actionGroup?.tasks ?? []).map((task) => [task.id, task])),
+        },
+        error: null,
+      }));
+    } catch (error) {
+      set({ error: messageOf(error) });
+      throw error;
+    } finally {
+      set((state) => {
+        const savingNoteIds = new Set(state.savingNoteIds);
+        savingNoteIds.delete(id);
+        return { savingNoteIds };
+      });
+    }
+  },
+
+  saveNoteTitle: async (id, title) => {
+    const cleanTitle = title.trim();
+    const source =
+      get().notes.find((note) => note.id === id) ??
+      get().archived.find((note) => note.id === id) ??
+      (get().todayDoc?.id === id ? get().todayDoc : null);
+    if (!source || !cleanTitle || source.title === cleanTitle) return;
+
+    try {
+      const api = await backend();
+      await api.noteUpsert({
+        id,
+        title: cleanTitle,
+        contentMd: source.contentMd,
+        icon: source.icon,
+      });
+      const updated = await api.noteGet(id);
+      set((state) => ({
+        notes: state.notes.map((note) => (note.id === id ? updated : note)).sort(noteOrder),
+        archived: state.archived.map((note) => (note.id === id ? updated : note)),
+        todayDoc: state.todayDoc?.id === id ? updated : state.todayDoc,
+        error: null,
+      }));
+    } catch (error) {
+      set({ error: messageOf(error) });
+      throw error;
+    }
+  },
+
+  toggleTask: async (id) => {
+    const current = get().tasks[id];
+    if (!current) return;
+    const done = current.status === "done";
+    const optimistic: Task = {
+      ...current,
       status: done ? "todo" : "done",
-      completedAt: done ? undefined : Date.now(),
+      completedAt: done ? null : Date.now(),
       updatedAt: Date.now(),
     };
-    set((s) => ({ tasks: { ...s.tasks, [id]: next } }));
-    persist(get());
+    set((state) => patchTask(state, id, optimistic));
+    try {
+      const saved = await (await backend()).taskToggle(id);
+      set((state) => patchTask(state, id, saved));
+    } catch (error) {
+      set((state) => ({ ...patchTask(state, id, current), error: messageOf(error) }));
+    }
   },
 
-  togglePin: (id) => {
-    set((s) => ({
-      notes: s.notes.map((n) =>
-        n.id === id ? { ...n, isPinned: !n.isPinned, updatedAt: Date.now() } : n,
-      ),
+  togglePin: async (id) => {
+    const previous = get().notes.find((note) => note.id === id);
+    if (!previous) return;
+    const pinned = !previous.isPinned;
+    set((state) => ({
+      notes: state.notes
+        .map((note) => (note.id === id ? { ...note, isPinned: pinned } : note))
+        .sort(noteOrder),
     }));
-    persist(get());
+    try {
+      await (await backend()).noteSetPinned(id, pinned);
+    } catch (error) {
+      set((state) => ({
+        notes: state.notes.map((note) => (note.id === id ? previous : note)).sort(noteOrder),
+        error: messageOf(error),
+      }));
+    }
   },
 
-  archiveNote: (id) => {
-    const note = get().notes.find((n) => n.id === id);
-    if (!note) return;
-    set((s) => ({
-      notes: s.notes.filter((n) => n.id !== id),
-      archived: [
-        {
-          ...note,
-          isArchived: true,
-          isPinned: false,
-          archivedAt: Date.now(),
-          archiveCategory: note.archiveCategory ?? "笔记",
-        },
-        ...s.archived,
-      ],
+  archiveNote: async (id) => {
+    const previous = get().notes.find((note) => note.id === id);
+    if (!previous) return;
+    const optimistic: Note = {
+      ...previous,
+      isArchived: true,
+      isPinned: false,
+      archiveCategory: previous.archiveCategory ?? "笔记",
+      archivedAt: Date.now(),
+    };
+    set((state) => ({
+      notes: state.notes.filter((note) => note.id !== id),
+      archived: [optimistic, ...state.archived],
     }));
-    persist(get());
+    try {
+      const api = await backend();
+      await api.noteArchive(id);
+      const saved = await api.noteGet(id);
+      set((state) => ({
+        archived: state.archived.map((note) => (note.id === id ? saved : note)),
+      }));
+    } catch (error) {
+      set((state) => ({
+        notes: [previous, ...state.notes].sort(noteOrder),
+        archived: state.archived.filter((note) => note.id !== id),
+        error: messageOf(error),
+      }));
+    }
   },
 
-  restoreNote: (id) => {
-    const note = get().archived.find((n) => n.id === id);
-    if (!note) return;
-    set((s) => ({
-      archived: s.archived.filter((n) => n.id !== id),
-      notes: [{ ...note, isArchived: false }, ...s.notes],
+  restoreNote: async (id) => {
+    const previous = get().archived.find((note) => note.id === id);
+    if (!previous) return;
+    const optimistic = { ...previous, isArchived: false, archivedAt: null };
+    set((state) => ({
+      archived: state.archived.filter((note) => note.id !== id),
+      notes: [optimistic, ...state.notes].sort(noteOrder),
     }));
-    persist(get());
+    try {
+      const api = await backend();
+      await api.noteRestore(id);
+      const saved = await api.noteGet(id);
+      set((state) => ({
+        notes: state.notes.map((note) => (note.id === id ? saved : note)).sort(noteOrder),
+      }));
+    } catch (error) {
+      set((state) => ({
+        archived: [previous, ...state.archived],
+        notes: state.notes.filter((note) => note.id !== id),
+        error: messageOf(error),
+      }));
+    }
   },
 
-  deleteNote: (id) => {
-    set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }));
-    persist(get());
+  deleteNote: async (id) => {
+    const previous = get().notes.find((note) => note.id === id);
+    if (!previous) return;
+    set((state) => ({ notes: state.notes.filter((note) => note.id !== id) }));
+    try {
+      await (await backend()).noteDelete(id);
+    } catch (error) {
+      set((state) => ({
+        notes: [previous, ...state.notes].sort(noteOrder),
+        error: messageOf(error),
+      }));
+    }
   },
 }));
 
-/* ---------------- 派生选择器 ---------------- */
-
-/**
- * 侧栏 badge 的数字 —— 今日 TODO 的**总条目数**。
- * 原型里 badge 是 3、检查项是 1/3，说明它计的是总数而不是剩余数。
- * 若日后想改成「剩余」，把下面换成 filter(status !== 'done').length 即可。
- */
 export function useTodoCount(): number {
-  return useData((s) => s.todayDoc.actionGroup.taskIds.length);
+  return useData((state) => state.todayDoc?.actionGroup?.tasks.length ?? 0);
 }
-
-export function tasksByIds(tasks: Record<string, Task>, ids: string[]): Task[] {
-  return ids.map((id) => tasks[id]).filter((t): t is Task => !!t);
-}
-
-export { countWords };

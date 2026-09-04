@@ -1,4 +1,5 @@
 import type { OutlineItem } from "@/data/types";
+import type { EditorOutlineHandle } from "@/editor/MarkdownEditor";
 import { cn } from "@/lib/cn";
 import { spring, tween } from "@/lib/motion";
 import { motion } from "motion/react";
@@ -15,12 +16,15 @@ export function Outline({
   items,
   scrollRef,
   resetKey,
+  editorHandle,
 }: {
   items: OutlineItem[];
   /** 正文滚动容器 */
   scrollRef: React.RefObject<HTMLElement | null>;
   /** 切换文档时用它重置激活项 */
   resetKey: string;
+  /** 可编辑文档直接使用编辑器行号控制器，不依赖虚假的预览 DOM 锚点。 */
+  editorHandle?: EditorOutlineHandle | null;
 }) {
   const [activeId, setActiveId] = useState<string | null>(items[0]?.id ?? null);
   const ratios = useRef(new Map<string, number>());
@@ -31,10 +35,12 @@ export function Outline({
     ratios.current.clear();
   }, [resetKey, items[0]?.id]);
 
+  useEffect(() => editorHandle?.subscribe(setActiveId), [editorHandle]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey 用于强制重建 observer
   useEffect(() => {
     const root = scrollRef.current;
-    if (!root || items.length === 0) return;
+    if (!root || items.length === 0 || editorHandle) return;
 
     const targets = items
       .map((it) => root.querySelector<HTMLElement>(`[data-outline-id="${it.id}"]`))
@@ -69,9 +75,14 @@ export function Outline({
 
     for (const t of targets) io.observe(t);
     return () => io.disconnect();
-  }, [items, scrollRef, resetKey]);
+  }, [items, scrollRef, resetKey, editorHandle]);
 
   const scrollTo = (id: string) => {
+    if (editorHandle) {
+      editorHandle.scrollTo(id);
+      setActiveId(id);
+      return;
+    }
     const root = scrollRef.current;
     const el = root?.querySelector<HTMLElement>(`[data-outline-id="${id}"]`);
     if (!root || !el) return;

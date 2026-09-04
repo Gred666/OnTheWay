@@ -1,5 +1,6 @@
+import { type Result as IpcResult, commands } from "@/lib/bindings";
 import { isTauri } from "@/lib/tauri";
-import type { DayDoc, Goal, Note, NoteSummary, SearchResult, Task } from "./types";
+import type { DayDoc, Goal, Note, NoteInput, NoteSummary, SearchResult, Task } from "./types";
 
 /* ============================================================
    后端访问层。
@@ -15,6 +16,7 @@ import type { DayDoc, Goal, Note, NoteSummary, SearchResult, Task } from "./type
 export interface Backend {
   noteList(archived: boolean): Promise<NoteSummary[]>;
   noteGet(id: string): Promise<Note>;
+  noteUpsert(input: NoteInput): Promise<string>;
   noteSetPinned(id: string, pinned: boolean): Promise<void>;
   noteArchive(id: string, category?: string): Promise<void>;
   noteRestore(id: string): Promise<void>;
@@ -22,35 +24,45 @@ export interface Backend {
   searchNotes(query: string, limit: number): Promise<SearchResult>;
   taskToggle(id: string): Promise<Task>;
   goalLatest(horizon: "week" | "month" | "year"): Promise<Goal>;
+  goalSave(id: string, contentMd: string): Promise<Goal>;
   calendarDay(date: string): Promise<DayDoc>;
+  calendarDaySave(date: string, noteMd: string): Promise<DayDoc>;
   calendarMarked(from: string, to: string): Promise<string[]>;
 }
 
 /* ---------------- Tauri IPC ---------------- */
 
-type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
-let invokeImpl: InvokeFn | null = null;
-
-async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (!invokeImpl) {
-    const mod = await import("@tauri-apps/api/core");
-    invokeImpl = mod.invoke as InvokeFn;
-  }
-  return invokeImpl<T>(cmd, args);
+async function unwrap<T>(request: Promise<IpcResult<T, unknown>>): Promise<T> {
+  const result = await request;
+  if (result.status === "error") throw result.error;
+  return result.data;
 }
 
 const tauriBackend: Backend = {
-  noteList: (archived) => invoke("note_list", { archived }),
-  noteGet: (id) => invoke("note_get", { id }),
-  noteSetPinned: (id, pinned) => invoke("note_set_pinned", { id, pinned }),
-  noteArchive: (id, category) => invoke("note_archive", { id, category: category ?? null }),
-  noteRestore: (id) => invoke("note_restore", { id }),
-  noteDelete: (id) => invoke("note_delete", { id }),
-  searchNotes: (query, limit) => invoke("search_notes", { query, limit }),
-  taskToggle: (id) => invoke("task_toggle", { id }),
-  goalLatest: (horizon) => invoke("goal_latest", { horizon }),
-  calendarDay: (date) => invoke("calendar_day", { date }),
-  calendarMarked: (from, to) => invoke("calendar_marked", { from, to }),
+  noteList: (archived) => unwrap(commands.noteList(archived)) as Promise<NoteSummary[]>,
+  noteGet: (id) => unwrap(commands.noteGet(id)) as Promise<Note>,
+  noteUpsert: (input) => unwrap(commands.noteUpsert(input)),
+  noteSetPinned: async (id, pinned) => {
+    await unwrap(commands.noteSetPinned(id, pinned));
+  },
+  noteArchive: async (id, category) => {
+    await unwrap(commands.noteArchive(id, category ?? null));
+  },
+  noteRestore: async (id) => {
+    await unwrap(commands.noteRestore(id));
+  },
+  noteDelete: async (id) => {
+    await unwrap(commands.noteDelete(id));
+  },
+  searchNotes: (query, limit) =>
+    unwrap(commands.searchNotes(query, limit)) as Promise<SearchResult>,
+  taskToggle: (id) => unwrap(commands.taskToggle(id)) as Promise<Task>,
+  goalLatest: (horizon) => unwrap(commands.goalLatest(horizon)) as Promise<Goal>,
+  goalSave: (id, contentMd) => unwrap(commands.goalSave(id, contentMd)) as Promise<Goal>,
+  calendarDay: (date) => unwrap(commands.calendarDay(date)) as Promise<DayDoc>,
+  calendarDaySave: (date, noteMd) =>
+    unwrap(commands.calendarDaySave(date, noteMd)) as Promise<DayDoc>,
+  calendarMarked: (from, to) => unwrap(commands.calendarMarked(from, to)),
 };
 
 /* ---------------- 浏览器 mock ---------------- */

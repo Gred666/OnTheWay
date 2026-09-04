@@ -1,4 +1,17 @@
-import type { Goal, Note, Reminder, Task } from "./types";
+import type { DayDoc, Goal, Note, Reminder, Task } from "./types";
+
+type NullableTaskField = "meta" | "dueDate" | "timeLabel" | "category" | "goalId" | "completedAt";
+type SeedTask = Omit<Task, NullableTaskField> & Partial<Pick<Task, NullableTaskField>>;
+type SeedActionGroup = { title: string; taskIds: string[] };
+type SeedNote = Omit<Note, "archiveCategory" | "archivedAt" | "actionGroup"> & {
+  archiveCategory?: string | null;
+  archivedAt?: number | null;
+  actionGroup?: SeedActionGroup;
+};
+type SeedGoal = Omit<Goal, "actionGroup"> & {
+  actionGroup?: SeedActionGroup;
+};
+type SeedDayDoc = Omit<DayDoc, "tasks"> & { taskIds: string[] };
 
 /* ============================================================
    种子数据 —— 文案全部取自 Prototype/ 原型图，保持 1:1。
@@ -17,7 +30,7 @@ const t = (dayOffset: number, hh: number, mm: number) => {
 
 /* ---------------- 任务 ---------------- */
 
-export const seedTasks: Task[] = [
+export const seedTasks: SeedTask[] = [
   // 「秋季项目复盘」的下阶段行动
   {
     id: "t-autumn-1",
@@ -167,7 +180,7 @@ export const seedTasks: Task[] = [
 
 /* ---------------- 笔记 ---------------- */
 
-export const seedNotes: Note[] = [
+export const seedNotes: SeedNote[] = [
   {
     id: "n-autumn",
     title: "秋季项目复盘",
@@ -185,11 +198,13 @@ export const seedNotes: Note[] = [
       "> 最有价值的进展，并不是交付数量，而是产品语言终于开始统一。",
       "",
       "从访谈记录回看，用户对入口的理解成本明显下降；与此同时，跨职能协作的决策链路也从平均三天缩短到一天以内。这说明我们需要继续保护清晰度，而不是急于增加新的功能层。",
+      "",
+      "## 下阶段行动",
+      "",
+      "- [x] 整理访谈中的高频语言",
+      "- [x] 建立每周一次的决策回看",
+      "- [ ] 完成编辑器专注模式原型",
     ].join("\n"),
-    actionGroup: {
-      title: "下阶段行动",
-      taskIds: ["t-autumn-1", "t-autumn-2", "t-autumn-3"],
-    },
   },
   {
     id: "n-kyoto",
@@ -301,7 +316,7 @@ export const seedNotes: Note[] = [
 
 /* ---------------- 归档 ---------------- */
 
-export const seedArchived: Note[] = [
+export const seedArchived: SeedNote[] = [
   {
     id: "a-ia",
     title: "第一版信息架构草稿",
@@ -412,15 +427,15 @@ export const seedArchived: Note[] = [
 export const seedTodayDoc = {
   id: "today",
   title: "完成专注模式原型",
-  contentMd: "为编辑器补充一个真正安静的专注模式：隐藏非必要入口，只保留正文、字数和退出方式。",
-  actionGroup: { title: "检查项", taskIds: ["t-focus-1", "t-focus-2", "t-focus-3"] },
+  contentMd:
+    "为编辑器补充一个真正安静的专注模式：隐藏非必要入口，只保留正文、字数和退出方式。\n\n## 检查项\n\n- [x] 梳理进入与退出路径\n- [ ] 实现快捷键与状态保持\n- [ ] 完成真实内容下的可用性走查",
   wordCount: 842,
   updatedAt: t(0, 20, 14),
 };
 
 /* ---------------- 目标 ---------------- */
 
-export const seedGoals: Goal[] = [
+export const seedGoals: SeedGoal[] = [
   {
     id: "g-week",
     horizon: "week",
@@ -430,15 +445,17 @@ export const seedGoals: Goal[] = [
     updatedAt: t(0, 9, 12),
     contentMd: [
       "这一周，把序笺推进到可以真正交给用户测试的状态；同时保护精力，不让忙碌挤掉思考和运动。",
-    ].join("\n"),
-    actionGroup: {
-      title: "本周重点",
-      taskIds: ["t-week-1", "t-week-2", "t-week-3", "t-week-4"],
-    },
-    afterMd: [
+      "",
       "## 记录",
       "",
       "本周暂时不增加新的功能范围。所有决定先回到用户是否能更快开始记录，以及编辑过程是否足够安静。",
+      "",
+      "## 本周重点",
+      "",
+      "- [ ] 完成编辑器稳定性验证",
+      "- [ ] 整理首次启动体验",
+      "- [ ] 完成日历交互说明",
+      "- [ ] 安排两次力量训练",
     ].join("\n"),
   },
   {
@@ -489,7 +506,7 @@ export const seedGoals: Goal[] = [
 
 /* ---------------- 日历 ---------------- */
 
-export const seedDayDocs: DayDoc[] = [
+export const seedDayDocs: SeedDayDoc[] = [
   {
     date: "2026-08-29",
     taskIds: ["t-cal-1", "t-cal-2", "t-cal-3"],
@@ -513,3 +530,34 @@ export const seedReminders: Record<string, Reminder> = {
   default: { label: "提醒", when: "今天 16:30", what: "回看行动项" },
   goal: { label: "回顾提醒", when: "周日 20:00", what: "更新下一周目标" },
 };
+
+const normalizeTask = (task: SeedTask): Task => ({
+  ...task,
+  meta: task.meta ?? null,
+  dueDate: task.dueDate ?? null,
+  timeLabel: task.timeLabel ?? null,
+  category: task.category ?? null,
+  goalId: task.goalId ?? null,
+  completedAt: task.completedAt ?? null,
+});
+
+const normalizeNote = (note: SeedNote): Note => ({
+  ...note,
+  archiveCategory: note.archiveCategory ?? null,
+  archivedAt: note.archivedAt ?? null,
+  actionGroup: null,
+});
+
+const normalizeGoal = (goal: SeedGoal): Goal => ({
+  ...goal,
+  actionGroup: null,
+});
+
+/** 浏览器 mock 与 Rust 首次启动种子保持同一份内容。 */
+export const seedTasksRaw: Task[] = seedTasks.map(normalizeTask);
+export const seedNotesRaw: Note[] = seedNotes.map(normalizeNote);
+export const seedArchivedRaw: Note[] = seedArchived.map(normalizeNote);
+export const seedGoalsRaw: Goal[] = seedGoals.map(normalizeGoal);
+export const seedDayNotes: Record<string, string> = Object.fromEntries(
+  seedDayDocs.map((day) => [day.date, day.noteMd]),
+);

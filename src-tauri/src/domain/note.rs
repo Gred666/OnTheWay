@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use std::collections::HashSet;
 
 use crate::db::{new_id, now_ms};
 use crate::domain::model::{ActionGroup, Note, NoteInput, NoteSummary, SearchHit, SearchResult};
@@ -22,6 +23,66 @@ fn summary_from_row(r: &Row) -> rusqlite::Result<NoteSummary> {
     })
 }
 
+fn wiki_titles(markdown: &str) -> Vec<String> {
+    let mut rest = markdown;
+    let mut seen = HashSet::new();
+    let mut titles = Vec::new();
+
+    while let Some(open) = rest.find("[[") {
+        rest = &rest[open + 2..];
+        let Some(close) = rest.find("]]") else { break };
+        let title = rest[..close].trim();
+        if !title.is_empty() && !title.contains('\n') && seen.insert(title.to_string()) {
+            titles.push(title.to_string());
+        }
+        rest = &rest[close + 2..];
+    }
+    titles
+}
+
+/// 正文中的双链和 link 表在同一个事务里同步。只记录当前能解析到的实体；
+/// 尚未创建的目标保留在 Markdown 中，下次保存时会再次尝试解析。
+fn sync_wiki_links(conn: &Connection, src_id: &str, markdown: &str, now: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM link WHERE src_type='note' AND src_id=?1 AND kind='ref'",
+        params![src_id],
+    )?;
+
+    for (index, title) in wiki_titles(markdown).into_iter().enumerate() {
+        let target = conn
+            .query_row(
+                "SELECT entity_type, id FROM (
+                   SELECT 'note' AS entity_type, id, 1 AS rank FROM note
+                    WHERE title=?1 AND deleted_at IS NULL
+                   UNION ALL
+                   SELECT 'task', id, 2 FROM task WHERE title=?1 AND deleted_at IS NULL
+                   UNION ALL
+                   SELECT 'goal', id, 3 FROM goal WHERE title=?1 AND deleted_at IS NULL
+                 ) ORDER BY rank LIMIT 1",
+                params![title],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+
+        if let Some((dst_type, dst_id)) = target {
+            conn.execute(
+                "INSERT INTO link
+                   (id, src_type, src_id, dst_type, dst_id, kind, sort_key, created_at)
+                 VALUES (?1,'note',?2,?3,?4,'ref',?5,?6)",
+                params![
+                    new_id(),
+                    src_id,
+                    dst_type,
+                    dst_id,
+                    format!("a{index:04}"),
+                    now
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// 列表：只取摘要列，不带 content_md。
 /// 一个 300px 宽的列表没必要把每篇全文传过来。
 pub fn list(conn: &Connection, archived: bool) -> Result<Vec<NoteSummary>> {
@@ -29,7 +90,11 @@ pub fn list(conn: &Connection, archived: bool) -> Result<Vec<NoteSummary>> {
         "SELECT {SUMMARY_COLS} FROM note
          WHERE deleted_at IS NULL AND is_archived = ?1
          ORDER BY is_pinned DESC, {} DESC",
-        if archived { "archived_at" } else { "updated_at" }
+        if archived {
+            "archived_at"
+        } else {
+            "updated_at"
+        }
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![archived as i64], summary_from_row)?;
@@ -86,50 +151,82 @@ pub fn upsert(conn: &Connection, input: NoteInput) -> Result<String> {
     let excerpt = search::make_excerpt(&input.content_md, 60);
     let words = search::count_words(&input.content_md);
     let icon = input.icon.unwrap_or_else(|| "file".to_string());
+    let content_for_links = input.content_md.clone();
 
-    match input.id {
+    let tx = conn.unchecked_transaction()?;
+    let id = match input.id {
         Some(id) => {
-            let n = conn.execute(
+            let n = tx.execute(
                 "UPDATE note SET title=?1, content_md=?2, content_tokens=?3, excerpt=?4,
                                  word_count=?5, icon=?6, updated_at=?7
                  WHERE id=?8 AND deleted_at IS NULL",
-                params![input.title, input.content_md, tokens, excerpt, words, icon, now, id],
+                params![
+                    input.title,
+                    input.content_md,
+                    tokens,
+                    excerpt,
+                    words,
+                    icon,
+                    now,
+                    id
+                ],
             )?;
             if n == 0 {
                 return Err(AppError::NotFound(format!("note {id}")));
             }
-            activity::log(conn, "note", &id, "updated", None)?;
-            Ok(id)
+            activity::log(&tx, "note", &id, "updated", None)?;
+            id
         }
         None => {
             let id = new_id();
-            conn.execute(
+            tx.execute(
                 "INSERT INTO note (id, title, content_md, content_tokens, excerpt,
                                    word_count, icon, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8)",
-                params![id, input.title, input.content_md, tokens, excerpt, words, icon, now],
+                params![
+                    id,
+                    input.title,
+                    input.content_md,
+                    tokens,
+                    excerpt,
+                    words,
+                    icon,
+                    now
+                ],
             )?;
-            activity::log(conn, "note", &id, "created", None)?;
-            Ok(id)
+            activity::log(&tx, "note", &id, "created", None)?;
+            id
         }
-    }
+    };
+    sync_wiki_links(&tx, &id, &content_for_links, now)?;
+    tx.commit()?;
+    Ok(id)
 }
 
 pub fn set_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<()> {
-    let n = conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let n = tx.execute(
         "UPDATE note SET is_pinned=?1, updated_at=?2 WHERE id=?3 AND deleted_at IS NULL",
         params![pinned as i64, now_ms(), id],
     )?;
     if n == 0 {
         return Err(AppError::NotFound(format!("note {id}")));
     }
-    activity::log(conn, "note", id, if pinned { "pinned" } else { "unpinned" }, None)?;
+    activity::log(
+        &tx,
+        "note",
+        id,
+        if pinned { "pinned" } else { "unpinned" },
+        None,
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
 pub fn archive(conn: &Connection, id: &str, category: Option<String>) -> Result<()> {
     let now = now_ms();
-    let n = conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let n = tx.execute(
         "UPDATE note SET is_archived=1, is_pinned=0, archived_at=?1,
                          archive_category=COALESCE(?2, archive_category, '笔记'), updated_at=?1
          WHERE id=?3 AND deleted_at IS NULL",
@@ -138,12 +235,14 @@ pub fn archive(conn: &Connection, id: &str, category: Option<String>) -> Result<
     if n == 0 {
         return Err(AppError::NotFound(format!("note {id}")));
     }
-    activity::log(conn, "note", id, "archived", None)?;
+    activity::log(&tx, "note", id, "archived", None)?;
+    tx.commit()?;
     Ok(())
 }
 
 pub fn restore(conn: &Connection, id: &str) -> Result<()> {
-    let n = conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let n = tx.execute(
         "UPDATE note SET is_archived=0, archived_at=NULL, updated_at=?1
          WHERE id=?2 AND deleted_at IS NULL",
         params![now_ms(), id],
@@ -151,27 +250,33 @@ pub fn restore(conn: &Connection, id: &str) -> Result<()> {
     if n == 0 {
         return Err(AppError::NotFound(format!("note {id}")));
     }
-    activity::log(conn, "note", id, "restored", None)?;
+    activity::log(&tx, "note", id, "restored", None)?;
+    tx.commit()?;
     Ok(())
 }
 
 /// 软删除。永不物理删除 —— 为将来的同步和「最近删除」留余地。
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
-    let n = conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let n = tx.execute(
         "UPDATE note SET deleted_at=?1, updated_at=?1 WHERE id=?2 AND deleted_at IS NULL",
         params![now_ms(), id],
     )?;
     if n == 0 {
         return Err(AppError::NotFound(format!("note {id}")));
     }
-    activity::log(conn, "note", id, "deleted", None)?;
+    activity::log(&tx, "note", id, "deleted", None)?;
+    tx.commit()?;
     Ok(())
 }
 
 /// 全文搜索。中文分词细节见 domain/search.rs。
 pub fn search_notes(conn: &Connection, query: &str, limit: u32) -> Result<SearchResult> {
     let Some(match_query) = search::build_match_query(query) else {
-        return Ok(SearchResult { hits: vec![], tokens: vec![] });
+        return Ok(SearchResult {
+            hits: vec![],
+            tokens: vec![],
+        });
     };
 
     let mut stmt = conn.prepare(
@@ -228,14 +333,22 @@ mod tests {
 
         assert!(n.word_count > 0, "字数没算");
         assert!(!n.excerpt.is_empty(), "摘要没生成");
-        assert!(!n.excerpt.contains('#'), "摘要里混进了 markdown 标记: {}", n.excerpt);
+        assert!(
+            !n.excerpt.contains('#'),
+            "摘要里混进了 markdown 标记: {}",
+            n.excerpt
+        );
     }
 
     /// 这是整个中文搜索方案要解决的核心问题
     #[test]
     fn finds_note_by_two_char_chinese_word() {
         let conn = test_conn();
-        mk(&conn, "秋季项目复盘", "这一周把季度目标推进到可以交付的状态。");
+        mk(
+            &conn,
+            "秋季项目复盘",
+            "这一周把季度目标推进到可以交付的状态。",
+        );
         mk(&conn, "周末采购", "燕麦奶、灯泡、咖啡豆。");
 
         let r = search_notes(&conn, "季度", 10).unwrap();
@@ -257,8 +370,16 @@ mod tests {
         let conn = test_conn();
         mk(&conn, "京都书店清单", "安静、可以坐一下午的地方。");
 
-        assert_eq!(search_notes(&conn, "京都", 10).unwrap().hits.len(), 1, "标题没进索引");
-        assert_eq!(search_notes(&conn, "安静", 10).unwrap().hits.len(), 1, "正文没进索引");
+        assert_eq!(
+            search_notes(&conn, "京都", 10).unwrap().hits.len(),
+            1,
+            "标题没进索引"
+        );
+        assert_eq!(
+            search_notes(&conn, "安静", 10).unwrap().hits.len(),
+            1,
+            "正文没进索引"
+        );
     }
 
     #[test]
@@ -268,7 +389,11 @@ mod tests {
         assert_eq!(search_notes(&conn, "临时", 10).unwrap().hits.len(), 1);
 
         delete(&conn, &id).unwrap();
-        assert_eq!(search_notes(&conn, "临时", 10).unwrap().hits.len(), 0, "软删除的还能搜到");
+        assert_eq!(
+            search_notes(&conn, "临时", 10).unwrap().hits.len(),
+            0,
+            "软删除的还能搜到"
+        );
     }
 
     /// 更新正文后 FTS 索引必须同步 —— 靠的是迁移里的 note_au 触发器
@@ -289,8 +414,16 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(search_notes(&conn, "原来", 10).unwrap().hits.len(), 0, "旧内容还留在索引里");
-        assert_eq!(search_notes(&conn, "别的", 10).unwrap().hits.len(), 1, "新内容没进索引");
+        assert_eq!(
+            search_notes(&conn, "原来", 10).unwrap().hits.len(),
+            0,
+            "旧内容还留在索引里"
+        );
+        assert_eq!(
+            search_notes(&conn, "别的", 10).unwrap().hits.len(),
+            1,
+            "新内容没进索引"
+        );
     }
 
     #[test]
@@ -347,9 +480,55 @@ mod tests {
     #[test]
     fn mutations_on_missing_note_are_not_found() {
         let conn = test_conn();
-        assert!(matches!(set_pinned(&conn, "x", true), Err(AppError::NotFound(_))));
-        assert!(matches!(archive(&conn, "x", None), Err(AppError::NotFound(_))));
+        assert!(matches!(
+            set_pinned(&conn, "x", true),
+            Err(AppError::NotFound(_))
+        ));
+        assert!(matches!(
+            archive(&conn, "x", None),
+            Err(AppError::NotFound(_))
+        ));
         assert!(matches!(restore(&conn, "x"), Err(AppError::NotFound(_))));
         assert!(matches!(delete(&conn, "x"), Err(AppError::NotFound(_))));
+    }
+
+    #[test]
+    fn upsert_synchronizes_wiki_links_without_duplicates() {
+        let conn = test_conn();
+        let target = mk(&conn, "目标笔记", "正文");
+        let source = mk(
+            &conn,
+            "来源",
+            "关联 [[目标笔记]]、[[不存在]] 和 [[目标笔记]]",
+        );
+
+        let link: (String, String, i64) = conn
+            .query_row(
+                "SELECT dst_type, dst_id, count(*) FROM link
+                 WHERE src_type='note' AND src_id=?1 AND kind='ref'",
+                params![source],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(link, ("note".into(), target, 1));
+
+        upsert(
+            &conn,
+            NoteInput {
+                id: Some(source.clone()),
+                title: "来源".into(),
+                content_md: "已经移除引用".into(),
+                icon: None,
+            },
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM link WHERE src_type='note' AND src_id=?1 AND kind='ref'",
+                params![source],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }

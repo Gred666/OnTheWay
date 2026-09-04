@@ -9,8 +9,10 @@ import { useData, useTodoCount } from "@/data/store";
 import { spring, tween } from "@/lib/motion";
 import { ArchiveList } from "@/views/ArchiveView";
 import { CalendarPanel } from "@/views/CalendarView";
+import { ExtensionsView } from "@/views/ExtensionsView";
 import { NotesList } from "@/views/NotesView";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { useEffect, useState } from "react";
 
 export function Shell() {
   const workspace = useApp((s) => s.workspace);
@@ -18,6 +20,7 @@ export function Shell() {
   const setCalendarScope = useApp((s) => s.setCalendarScope);
   const setGoalHorizon = useApp((s) => s.setGoalHorizon);
   const reduceMotion = useApp((s) => s.reduceMotion);
+  const selectedDate = useApp((s) => s.selectedDate);
 
   const notes = useData((s) => s.notes);
   const archived = useData((s) => s.archived);
@@ -25,10 +28,20 @@ export function Shell() {
   const toggleTask = useData((s) => s.toggleTask);
   const restoreNote = useData((s) => s.restoreNote);
   const deleteNote = useData((s) => s.deleteNote);
+  const loadDay = useData((s) => s.loadDay);
+  const saveDocument = useData((s) => s.saveDocument);
+  const saveNoteTitle = useData((s) => s.saveNoteTitle);
   const todoCount = useTodoCount();
+  // AnimatePresence 首次挂载设置了 initial=false，不会触发完整的入场周期；
+  // 因此首屏可直接挂编辑器。真正的工作区切换仍由 animation callbacks 门控。
+  const [editorReady, setEditorReady] = useState(true);
 
   const { doc, reminder } = useCurrentDocument();
   const showList = hasListColumn(workspace);
+
+  useEffect(() => {
+    if (workspace === "calendar") void loadDay(selectedDate);
+  }, [loadDay, selectedDate, workspace]);
 
   const handleSegment = (v: string) => {
     if (workspace === "goal") setGoalHorizon(labelToHorizon(v));
@@ -87,18 +100,27 @@ export function Shell() {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: navDirection * -10 }}
               transition={{ ...tween.base, x: spring.smooth }}
+              onAnimationStart={() => setEditorReady(false)}
+              onAnimationComplete={() => setEditorReady(true)}
               className="h-full"
             >
-              <DocumentView
-                doc={doc}
-                onToggleTask={toggleTask}
-                onSegmentChange={handleSegment}
-                onDelete={() => deleteNote(doc.key.replace("note-", ""))}
-              />
+              {workspace === "extensions" ? (
+                <ExtensionsView />
+              ) : (
+                <DocumentView
+                  doc={doc}
+                  onToggleTask={toggleTask}
+                  onSegmentChange={handleSegment}
+                  onDelete={() => deleteNote(doc.key.replace("note-", ""))}
+                  onSaveDocument={saveDocument}
+                  onSaveNoteTitle={saveNoteTitle}
+                  editorEnabled={editorReady || reduceMotion}
+                />
+              )}
             </motion.main>
           </AnimatePresence>
 
-          <ReminderCard reminder={reminder} />
+          {workspace !== "extensions" && <ReminderCard reminder={reminder} />}
         </div>
 
         <CommandPalette />

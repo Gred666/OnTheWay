@@ -2,7 +2,7 @@ import { useApp } from "@/app/store";
 import type { WorkspaceId } from "@/data/types";
 import { cn } from "@/lib/cn";
 import { spring, stagger, tween } from "@/lib/motion";
-import { Archive, Bell, CalendarDays, Copy, Target } from "lucide-react";
+import { Archive, Bell, CalendarDays, Copy, Puzzle, Target } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { motion } from "motion/react";
 import { Logo } from "./Logo";
@@ -20,6 +20,7 @@ const NAV: NavItem[] = [
   { id: "goal", label: "/GOAL", icon: Target },
   { id: "calendar", label: "日历", icon: CalendarDays },
   { id: "archive", label: "归档", icon: Archive },
+  { id: "extensions", label: "扩展", icon: Puzzle },
 ];
 
 export function Sidebar({ todoCount }: { todoCount: number }) {

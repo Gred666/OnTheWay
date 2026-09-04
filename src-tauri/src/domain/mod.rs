@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod event;
 pub mod goal;
 pub mod model;
 pub mod note;

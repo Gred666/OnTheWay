@@ -51,14 +51,18 @@ pub fn today_local() -> String {
 /// UTC 毫秒 → 本地日期 'YYYY-MM-DD'
 pub fn local_date_of(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
-        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
         .unwrap_or_else(today_local)
 }
 
 /* ============================================================
-   测试辅助
-   domain/ 不依赖 tauri，所以可以直接用内存库跑单测，不用起 app。
-   ============================================================ */
+测试辅助
+domain/ 不依赖 tauri，所以可以直接用内存库跑单测，不用起 app。
+============================================================ */
 #[cfg(test)]
 pub mod test_support {
     use rusqlite::{params, Connection};

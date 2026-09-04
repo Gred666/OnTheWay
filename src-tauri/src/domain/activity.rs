@@ -4,14 +4,14 @@ use crate::db::{local_date_of, now_ms};
 use crate::error::Result;
 
 /* ============================================================
-   append-only 行为日志。
+append-only 行为日志。
 
-   复盘统计的唯一可信来源。不能从 task 表现状去统计 ——
-   任务被重开、改期、删除之后历史就没了，
-   「本周完成了几件、分别什么时候完成的」将永远算不准。
+复盘统计的唯一可信来源。不能从 task 表现状去统计 ——
+任务被重开、改期、删除之后历史就没了，
+「本周完成了几件、分别什么时候完成的」将永远算不准。
 
-   写入后永不修改。
-   ============================================================ */
+写入后永不修改。
+============================================================ */
 
 pub fn log(
     conn: &Connection,
@@ -24,7 +24,14 @@ pub fn log(
     conn.execute(
         "INSERT INTO activity (at, local_date, entity_type, entity_id, action, payload)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![at, local_date_of(at), entity_type, entity_id, action, payload],
+        params![
+            at,
+            local_date_of(at),
+            entity_type,
+            entity_id,
+            action,
+            payload
+        ],
     )?;
     Ok(())
 }
@@ -44,7 +51,11 @@ mod tests {
 
         // 三条都在，后写的不覆盖先写的
         let n: i64 = conn
-            .query_row("SELECT count(*) FROM activity WHERE entity_id='t1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM activity WHERE entity_id='t1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(n, 3);
 

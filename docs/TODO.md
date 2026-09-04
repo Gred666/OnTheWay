@@ -85,9 +85,9 @@ npx tsc --noEmit
 - [x] **P2 应用外壳与导航动效**
 - [x] **P3 五个视图**
 - [x] **P4 Tauri 外壳接入**
-- [ ] **P5 Rust + SQLite 后端** ← 下一步
-- [ ] **P6 Milkdown 编辑器**
-- [ ] **P7 打磨与性能**
+- [x] **P5 Rust + SQLite 后端**
+- [x] **P6 Milkdown 编辑器**
+- [ ] **P7 打磨与性能** ← 下一步
 
 ---
 
@@ -155,22 +155,36 @@ npx tsc --noEmit
 - 列表栏切换动效修正：`笔记 → 日历` 不再整条收起再展开，只换内容
 - lint / typecheck 全绿
 
-## P5 Rust + SQLite（下一步）
+## P5 Rust + SQLite ✅
 
-- [ ] `0001_init.sql`（表结构见技术方案 §5.3）
-- [ ] 连接池 + PRAGMA（WAL / foreign_keys 每连接都要设）
-- [ ] `domain/` 各模块 + 单测（rrule、时区、迁移链路三块必须有）
-- [ ] jieba 分词 + FTS5（**不要用 trigram**，中文双字词搜不到）
-- [ ] tauri-specta 生成 `src/lib/bindings.ts`
-- [ ] `data/adapter.ts` 和 `data/store.ts` 切到真实 IPC
+- [x] `0001_init.sql`（表结构见技术方案 §5.3）
+- [x] 连接池 + PRAGMA（WAL / foreign_keys 每连接都要设）
+- [x] `domain/` 各模块 + 单测（rrule、时区、迁移链路三块必须有）
+- [x] jieba 分词 + FTS5（**不要用 trigram**，中文双字词搜不到）
+- [x] tauri-specta 生成 `src/lib/bindings.ts`
+- [x] `data/adapter.ts` 和 `data/store.ts` 切到真实 IPC
 
-## P6 Milkdown
+补做：
 
-- [ ] Crepe 集成
-- [ ] **中文 IME composition 门控**（组合期间禁止上层更新，否则吞字）
-- [ ] 编辑器容器「稳定岛」：祖先不得跑 layout 动画
-- [ ] 防抖 400ms + 切换/关窗/失焦强制 flush
-- [ ] 双链 `[[]]` 插件（`lib/markdown.tsx` 里已预留 `.otw-wikilink`）
+- 笔记 / 任务变更与 append-only activity 记录放进同一个 SQLite 事务
+- recurrence 在 Rust 侧展开，覆盖跨年、月末 BYSETPOS、EXDATE、override、DST fold/gap
+- 双链保存时同步 `link(kind='ref')`，不存在的目标保留 Markdown、暂不写脏引用
+- 浏览器开发模式保留 mock backend，Tauri 桌面端使用类型安全 IPC
+
+## P6 Milkdown ✅
+
+- [x] Milkdown CommonMark / GFM 所见即所得编辑器（根据实机反馈移除 Crepe 框架 UI）
+- [x] **中文 IME composition 门控**（组合期间禁止上层更新，否则吞字）
+- [x] 编辑器容器「稳定岛」：祖先不得跑 layout 动画
+- [x] 防抖 400ms + 切换/关窗/失焦强制 flush
+- [x] 双链 `[[]]` 插件（`lib/markdown.tsx` 里已预留 `.otw-wikilink`）
+
+补做：
+
+- Cmd/Ctrl+S、笔记切换、路由切换、失焦和 Tauri 关窗统一走串行 flush
+- 单次保存失败不会阻断后续重试；关窗保存失败时取消退出
+- 超过 50KB / 2.5 万字默认只读，用户确认后才懒加载编辑器
+- Typora 式无边框正文面：`#`、列表、引用、代码块等 Markdown 快捷输入即时转换
 
 ## P7 打磨
 

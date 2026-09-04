@@ -16,6 +16,9 @@ pub enum AppError {
     #[error("参数无效: {0}")]
     Invalid(String),
 
+    #[error("重复规则无效: {0}")]
+    BadRrule(String),
+
     #[error("数据库版本过新（文件 v{found}，本程序支持到 v{supported}）")]
     DbTooNew { found: i64, supported: i64 },
 
@@ -55,6 +58,7 @@ impl From<std::io::Error> for AppError {
     }
 }
 
+#[cfg(feature = "desktop-runtime")]
 impl From<tauri::Error> for AppError {
     fn from(e: tauri::Error) -> Self {
         AppError::Internal(e.to_string())

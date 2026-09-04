@@ -8,7 +8,11 @@ use crate::error::{AppError, Result};
 ///
 /// **一旦发布就不能修改已有条目，只能往后追加。**
 /// 版本号 = 数组下标 + 1，存在 `PRAGMA user_version`。
-const MIGRATIONS: &[&str] = &[include_str!("../../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../../migrations/0001_init.sql"),
+    include_str!("../../migrations/0002_unify_markdown_documents.sql"),
+    include_str!("../../migrations/0003_remove_legacy_action_groups.sql"),
+];
 
 pub fn run(conn: &mut Connection, db_path: &Path) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -68,12 +72,16 @@ mod tests {
         crate::db::pragma::configure(&mut conn).unwrap();
 
         run(&mut conn, Path::new(":memory:")).unwrap();
-        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v, MIGRATIONS.len() as i64);
 
         // 再跑一次不应有任何变化
         run(&mut conn, Path::new(":memory:")).unwrap();
-        let v2: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let v2: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v, v2);
     }
 
@@ -124,5 +132,50 @@ mod tests {
             [],
         );
         assert!(r.is_err(), "指向不存在的 goal 竟然插入成功了");
+    }
+
+    #[test]
+    fn migrates_legacy_action_group_into_markdown() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::pragma::configure(&mut conn).unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.execute_batch(MIGRATIONS[1]).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.execute(
+            "INSERT INTO note (id,title,content_md,content_tokens,action_title,created_at,updated_at)
+             VALUES ('n1','旧笔记','正文','正文','下阶段行动',0,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO task (id,title,status,sort_key,created_at,updated_at)
+             VALUES ('t1','可编辑任务','done','a0',0,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO link (id,src_type,src_id,dst_type,dst_id,kind,sort_key,created_at)
+             VALUES ('l1','note','n1','task','t1','action','a0',0)",
+            [],
+        )
+        .unwrap();
+
+        conn.execute_batch(MIGRATIONS[2]).unwrap();
+
+        let (markdown, action_title): (String, Option<String>) = conn
+            .query_row(
+                "SELECT content_md, action_title FROM note WHERE id='n1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(markdown.contains("## 下阶段行动"));
+        assert!(markdown.contains("- [x] 可编辑任务"));
+        assert!(action_title.is_none());
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM task", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }

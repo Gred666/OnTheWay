@@ -4,12 +4,12 @@ use crate::domain::search;
 use crate::error::Result;
 
 /* ============================================================
-   首次启动的示例内容。
-   文案与 Prototype/ 原型图一致。
+首次启动的示例内容。
+文案与 Prototype/ 原型图一致。
 
-   只在 note 表为空时执行一次；用户删光了也不会再塞回来
-   （靠 setting 里的 seeded 标记）。
-   ============================================================ */
+只在 note 表为空时执行一次；用户删光了也不会再塞回来
+（靠 setting 里的 seeded 标记）。
+============================================================ */
 
 const SEEDED_KEY: &str = "seeded_v1";
 
@@ -141,13 +141,29 @@ fn task(
         "INSERT INTO task (id, title, status, meta, due_date, time_label, category,
                            completed_at, sort_key, created_at, updated_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'a0',?9,?9)",
-        params![id, title, status, meta, due_date, time_label, category, completed_at, created],
+        params![
+            id,
+            title,
+            status,
+            meta,
+            due_date,
+            time_label,
+            category,
+            completed_at,
+            created
+        ],
     )?;
     Ok(())
 }
 
 /// 把 task 挂到宿主文档上。sort_key 决定显示顺序。
-fn link_action(tx: &Connection, host_type: &str, host_id: &str, task_id: &str, i: usize) -> Result<()> {
+fn link_action(
+    tx: &Connection,
+    host_type: &str,
+    host_id: &str,
+    task_id: &str,
+    i: usize,
+) -> Result<()> {
     tx.execute(
         "INSERT INTO link (id, src_type, src_id, dst_type, dst_id, kind, sort_key, created_at)
          VALUES (?1,?2,?3,'task',?4,'action',?5,?6)",
@@ -173,9 +189,13 @@ fn insert_all(tx: &Connection) -> Result<()> {
         "这一次，我们没有把“做得更多”当作衡量标准。真正重要的是：团队是否更清楚为什么而做，用户是否更自然地抵达价值。\n\n\
          > [!核心判断]\n\
          > 最有价值的进展，并不是交付数量，而是产品语言终于开始统一。\n\n\
-         从访谈记录回看，用户对入口的理解成本明显下降；与此同时，跨职能协作的决策链路也从平均三天缩短到一天以内。这说明我们需要继续保护清晰度，而不是急于增加新的功能层。",
+         从访谈记录回看，用户对入口的理解成本明显下降；与此同时，跨职能协作的决策链路也从平均三天缩短到一天以内。这说明我们需要继续保护清晰度，而不是急于增加新的功能层。\n\n\
+         ## 下阶段行动\n\n\
+         - [x] 整理访谈中的高频语言\n\
+         - [x] 建立每周一次的决策回看\n\
+         - [ ] 完成编辑器专注模式原型",
         false,
-        Some("下阶段行动"),
+        None,
         at(-1, 11, 59),
         at(0, 9, 12),
     )?;
@@ -265,9 +285,13 @@ fn insert_all(tx: &Connection) -> Result<()> {
         "n-today",
         "完成专注模式原型",
         "target",
-        "为编辑器补充一个真正安静的专注模式：隐藏非必要入口，只保留正文、字数和退出方式。",
+        "为编辑器补充一个真正安静的专注模式：隐藏非必要入口，只保留正文、字数和退出方式。\n\n\
+         ## 检查项\n\n\
+         - [x] 梳理进入与退出路径\n\
+         - [ ] 实现快捷键与状态保持\n\
+         - [ ] 完成真实内容下的可用性走查",
         false,
-        Some("检查项"),
+        None,
         at(-3, 14, 0),
         at(0, 20, 14),
     )?;
@@ -342,19 +366,18 @@ fn insert_all(tx: &Connection) -> Result<()> {
 
     /* ---------------- 目标 ---------------- */
     tx.execute(
-        "INSERT INTO goal (id, title, horizon, period_start, description_md, after_md,
+        "INSERT INTO goal (id, title, horizon, period_start, content_md,
                            action_title, created_at, updated_at)
-         VALUES ('g-week', '本周目标', 'week', '2026-08-24', ?1, ?2, '本周重点', ?3, ?4)",
+         VALUES ('g-week', '本周目标', 'week', '2026-08-24', ?1, NULL, ?2, ?3)",
         params![
-            "这一周，把序笺推进到可以真正交给用户测试的状态；同时保护精力，不让忙碌挤掉思考和运动。",
-            "## 记录\n\n本周暂时不增加新的功能范围。所有决定先回到用户是否能更快开始记录，以及编辑过程是否足够安静。",
+            "这一周，把序笺推进到可以真正交给用户测试的状态；同时保护精力，不让忙碌挤掉思考和运动。\n\n## 记录\n\n本周暂时不增加新的功能范围。所有决定先回到用户是否能更快开始记录，以及编辑过程是否足够安静。\n\n## 本周重点\n\n- [ ] 完成编辑器稳定性验证\n- [ ] 整理首次启动体验\n- [ ] 完成日历交互说明\n- [ ] 安排两次力量训练",
             at(-5, 9, 0),
             at(0, 9, 12)
         ],
     )?;
 
     tx.execute(
-        "INSERT INTO goal (id, title, horizon, period_start, description_md, created_at, updated_at)
+        "INSERT INTO goal (id, title, horizon, period_start, content_md, created_at, updated_at)
          VALUES ('g-month', '八月目标', 'month', '2026-08-01', ?1, ?2, ?3)",
         params![
             "八月只做一件事：让序笺从「能用」走到「愿意每天打开」。其余需求一律推迟到九月再评估。\n\n\
@@ -368,7 +391,7 @@ fn insert_all(tx: &Connection) -> Result<()> {
     )?;
 
     tx.execute(
-        "INSERT INTO goal (id, title, horizon, period_start, description_md, created_at, updated_at)
+        "INSERT INTO goal (id, title, horizon, period_start, content_md, created_at, updated_at)
          VALUES ('g-year', '2026 年目标', 'year', '2026-01-01', ?1, ?2, ?3)",
         params![
             "今年想把注意力收回到三件事上：做完一个自己会长期用的工具、恢复稳定的运动节奏、重新开始认真读书。\n\n\
@@ -387,34 +410,193 @@ fn insert_all(tx: &Connection) -> Result<()> {
 
     /* ---------------- 任务 ---------------- */
     // 秋季项目复盘 → 下阶段行动
-    task(tx, "t-autumn-1", "整理访谈中的高频语言", "done", Some("负责人 · 以安"), None, None, None, Some(at(-1, 15, 20)), at(-6, 10, 0))?;
-    task(tx, "t-autumn-2", "建立每周一次的决策回看", "done", Some("周一 10:00"), None, None, None, Some(at(-1, 17, 5)), at(-6, 10, 0))?;
-    task(tx, "t-autumn-3", "完成编辑器专注模式原型", "todo", Some("截止 9月4日"), Some("2026-09-04"), None, None, None, at(-6, 10, 0))?;
-    for (i, t) in ["t-autumn-1", "t-autumn-2", "t-autumn-3"].iter().enumerate() {
+    task(
+        tx,
+        "t-autumn-1",
+        "整理访谈中的高频语言",
+        "done",
+        Some("负责人 · 以安"),
+        None,
+        None,
+        None,
+        Some(at(-1, 15, 20)),
+        at(-6, 10, 0),
+    )?;
+    task(
+        tx,
+        "t-autumn-2",
+        "建立每周一次的决策回看",
+        "done",
+        Some("周一 10:00"),
+        None,
+        None,
+        None,
+        Some(at(-1, 17, 5)),
+        at(-6, 10, 0),
+    )?;
+    task(
+        tx,
+        "t-autumn-3",
+        "完成编辑器专注模式原型",
+        "todo",
+        Some("截止 9月4日"),
+        Some("2026-09-04"),
+        None,
+        None,
+        None,
+        at(-6, 10, 0),
+    )?;
+    for (i, t) in ["t-autumn-1", "t-autumn-2", "t-autumn-3"]
+        .iter()
+        .enumerate()
+    {
         link_action(tx, "note", "n-autumn", t, i)?;
     }
 
     // 今日 TODO → 检查项
-    task(tx, "t-focus-1", "梳理进入与退出路径", "done", None, None, None, None, Some(at(0, 11, 40)), at(-3, 14, 0))?;
-    task(tx, "t-focus-2", "完成空状态和动效说明", "todo", None, None, None, None, None, at(-3, 14, 0))?;
-    task(tx, "t-focus-3", "邀请 3 位用户试用", "todo", None, None, None, None, None, at(-3, 14, 0))?;
+    task(
+        tx,
+        "t-focus-1",
+        "梳理进入与退出路径",
+        "done",
+        None,
+        None,
+        None,
+        None,
+        Some(at(0, 11, 40)),
+        at(-3, 14, 0),
+    )?;
+    task(
+        tx,
+        "t-focus-2",
+        "完成空状态和动效说明",
+        "todo",
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(-3, 14, 0),
+    )?;
+    task(
+        tx,
+        "t-focus-3",
+        "邀请 3 位用户试用",
+        "todo",
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(-3, 14, 0),
+    )?;
     for (i, t) in ["t-focus-1", "t-focus-2", "t-focus-3"].iter().enumerate() {
         link_action(tx, "note", "n-today", t, i)?;
     }
 
     // 本周目标 → 本周重点
-    task(tx, "t-week-1", "完成序笺 1.0 核心原型", "todo", None, None, None, None, None, at(-4, 9, 0))?;
-    task(tx, "t-week-2", "完成 4 次深度工作", "done", None, None, None, None, Some(at(-1, 18, 0)), at(-4, 9, 0))?;
-    task(tx, "t-week-3", "完成两次力量训练", "todo", None, None, None, None, None, at(-4, 9, 0))?;
-    task(tx, "t-week-4", "周日完成一次周复盘", "todo", None, None, None, None, None, at(-4, 9, 0))?;
-    for (i, t) in ["t-week-1", "t-week-2", "t-week-3", "t-week-4"].iter().enumerate() {
+    task(
+        tx,
+        "t-week-1",
+        "完成序笺 1.0 核心原型",
+        "todo",
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(-4, 9, 0),
+    )?;
+    task(
+        tx,
+        "t-week-2",
+        "完成 4 次深度工作",
+        "done",
+        None,
+        None,
+        None,
+        None,
+        Some(at(-1, 18, 0)),
+        at(-4, 9, 0),
+    )?;
+    task(
+        tx,
+        "t-week-3",
+        "完成两次力量训练",
+        "todo",
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(-4, 9, 0),
+    )?;
+    task(
+        tx,
+        "t-week-4",
+        "周日完成一次周复盘",
+        "todo",
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(-4, 9, 0),
+    )?;
+    for (i, t) in ["t-week-1", "t-week-2", "t-week-3", "t-week-4"]
+        .iter()
+        .enumerate()
+    {
         link_action(tx, "goal", "g-week", t, i)?;
     }
 
+    // 这些任务已成为可编辑的 Markdown 清单，种子库不保留旧版双轨数据。
+    tx.execute(
+        "DELETE FROM link WHERE kind='action' AND src_type IN ('note','goal')",
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM task WHERE id LIKE 't-autumn-%' OR id LIKE 't-focus-%' OR id LIKE 't-week-%'",
+        [],
+    )?;
+
     // 日历 8月29日
-    task(tx, "t-cal-1", "完成日历交互说明与空状态", "todo", Some("产品 · 上午"), Some("2026-08-29"), Some("上午"), Some("产品"), None, at(-2, 9, 0))?;
-    task(tx, "t-cal-2", "回顾第 35 周目标", "done", Some("/GOAL · 16:00"), Some("2026-08-29"), Some("16:00"), Some("/GOAL"), Some(at(0, 8, 40)), at(-2, 9, 0))?;
-    task(tx, "t-cal-3", "力量训练", "todo", Some("健康 · 18:30"), Some("2026-08-29"), Some("18:30"), Some("健康"), None, at(-2, 9, 0))?;
+    task(
+        tx,
+        "t-cal-1",
+        "完成日历交互说明与空状态",
+        "todo",
+        Some("产品 · 上午"),
+        Some("2026-08-29"),
+        Some("上午"),
+        Some("产品"),
+        None,
+        at(-2, 9, 0),
+    )?;
+    task(
+        tx,
+        "t-cal-2",
+        "回顾第 35 周目标",
+        "done",
+        Some("/GOAL · 16:00"),
+        Some("2026-08-29"),
+        Some("16:00"),
+        Some("/GOAL"),
+        Some(at(0, 8, 40)),
+        at(-2, 9, 0),
+    )?;
+    task(
+        tx,
+        "t-cal-3",
+        "力量训练",
+        "todo",
+        Some("健康 · 18:30"),
+        Some("2026-08-29"),
+        Some("18:30"),
+        Some("健康"),
+        None,
+        at(-2, 9, 0),
+    )?;
 
     /* ---------------- 日历备注 ---------------- */
     tx.execute(
@@ -466,27 +648,33 @@ mod tests {
     }
 
     #[test]
-    fn action_groups_are_linked() {
+    fn legacy_action_groups_are_plain_markdown() {
         let conn = seeded();
 
         let autumn = note::get(&conn, "n-autumn").unwrap();
-        let ag = autumn.action_group.expect("秋季复盘没有行动项");
-        assert_eq!(ag.title, "下阶段行动");
-        assert_eq!(ag.tasks.len(), 3);
-        assert_eq!(ag.tasks[0].title, "整理访谈中的高频语言", "行动项顺序不对");
-        assert_eq!(ag.tasks.iter().filter(|t| t.status == "done").count(), 2);
+        assert!(autumn.action_group.is_none());
+        assert!(autumn.content_md.contains("## 下阶段行动"));
+        assert!(autumn.content_md.contains("- [x] 整理访谈中的高频语言"));
 
         let week = goal::latest(&conn, "week").unwrap();
-        let ag = week.action_group.expect("本周目标没有行动项");
-        assert_eq!(ag.title, "本周重点");
-        assert_eq!(ag.tasks.len(), 4);
+        assert!(week.action_group.is_none());
+        assert!(week.content_md.contains("## 本周重点"));
+
+        let legacy: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM link WHERE kind='action' AND src_type IN ('note','goal')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy, 0, "种子库仍有旧行动项关联");
     }
 
     #[test]
-    fn goal_has_after_md_section() {
+    fn goal_has_single_markdown_body() {
         let conn = seeded();
         let g = goal::latest(&conn, "week").unwrap();
-        assert!(g.after_md.contains("## 记录"), "GOAL 的「记录」段丢了");
+        assert!(g.content_md.contains("## 记录"), "GOAL 的「记录」段丢了");
     }
 
     #[test]
@@ -505,7 +693,11 @@ mod tests {
     #[test]
     fn seeded_content_is_searchable() {
         let conn = seeded();
-        for (q, expect) in [("京都", "京都书店清单"), ("复盘", "秋季项目复盘"), ("咖啡", "周末采购")] {
+        for (q, expect) in [
+            ("京都", "京都书店清单"),
+            ("复盘", "秋季项目复盘"),
+            ("咖啡", "周末采购"),
+        ] {
             let r = note::search_notes(&conn, q, 10).unwrap();
             assert!(
                 r.hits.iter().any(|h| h.title == expect),

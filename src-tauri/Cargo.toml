@@ -6,6 +6,23 @@ authors = ["OnTheWay"]
 edition = "2021"
 rust-version = "1.77"
 
+[features]
+default = ["desktop-runtime"]
+desktop-runtime = [
+  "dep:tauri",
+  "dep:tauri-specta",
+  "dep:tauri-plugin-opener",
+  "dep:tauri-plugin-window-state",
+  "dep:tauri-plugin-single-instance",
+  "tauri/wry",
+  "tauri/compression",
+  "tauri/common-controls-v6",
+  "tauri/dynamic-acl",
+  "tauri/x11",
+  "tauri/dbus",
+]
+typegen = ["dep:tauri", "dep:tauri-specta", "tauri/test"]
+
 [lib]
 # 桌面端二进制和未来的移动端共用这个 lib
 name = "ontheway_lib"
@@ -15,9 +32,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
-tauri-plugin-window-state = "2"
+tauri = { version = "2", default-features = false, features = [], optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-window-state = { version = "2", optional = true }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -36,16 +53,18 @@ jieba-rs = "0.7"
 
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+rrule = "0.14"
 thiserror = "2"
 once_cell = "1"
 
 # --- 类型安全的 IPC 绑定 ---
 specta = { version = "=2.0.0-rc.22", features = ["derive"] }
 specta-typescript = "=0.0.9"
-tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
+tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"], optional = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-single-instance = "2"
+tauri-plugin-single-instance = { version = "2", optional = true }
 
 [profile.release]
 opt-level = "s"
@@ -54,3 +73,7 @@ codegen-units = 1
 panic = "abort"
 strip = true
 incremental = false
+
+[[example]]
+name = "export_bindings"
+required-features = ["typegen"]

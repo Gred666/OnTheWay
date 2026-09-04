@@ -6,11 +6,11 @@ use crate::error::{AppError, Result};
 use crate::state::AppState;
 
 /* ============================================================
-   命令层：只做参数校验和调用，业务逻辑全在 domain/。
+命令层：只做参数校验和调用，业务逻辑全在 domain/。
 
-   每个命令都用 spawn_blocking 把 SQLite 调用挪出 async 线程 ——
-   rusqlite 是同步阻塞的，直接在 tokio 的 worker 上跑会拖住整个运行时。
-   ============================================================ */
+每个命令都用 spawn_blocking 把 SQLite 调用挪出 async 线程 ——
+rusqlite 是同步阻塞的，直接在 tokio 的 worker 上跑会拖住整个运行时。
+============================================================ */
 
 /// 拿一条连接、在阻塞线程池里执行、把结果送回
 async fn with_db<T, F>(state: &AppState, f: F) -> Result<T>
@@ -110,6 +110,12 @@ pub async fn goal_latest(state: State<'_, AppState>, horizon: String) -> Result<
     with_db(&state, move |c| goal::latest(c, &horizon)).await
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn goal_save(state: State<'_, AppState>, id: String, content_md: String) -> Result<Goal> {
+    with_db(&state, move |c| goal::save(c, &id, &content_md)).await
+}
+
 /* ---------------- 日历 ---------------- */
 
 #[tauri::command]
@@ -117,6 +123,17 @@ pub async fn goal_latest(state: State<'_, AppState>, horizon: String) -> Result<
 pub async fn calendar_day(state: State<'_, AppState>, date: String) -> Result<DayDoc> {
     validate_date(&date)?;
     with_db(&state, move |c| goal::day_doc(c, &date)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn calendar_day_save(
+    state: State<'_, AppState>,
+    date: String,
+    note_md: String,
+) -> Result<DayDoc> {
+    validate_date(&date)?;
+    with_db(&state, move |c| goal::save_day_doc(c, &date, &note_md)).await
 }
 
 #[tauri::command]
@@ -137,7 +154,9 @@ pub async fn calendar_marked(
 #[specta::specta]
 pub async fn db_stats(state: State<'_, AppState>) -> Result<DbStats> {
     let path = state.db_path.clone();
-    let bytes = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+    let bytes = std::fs::metadata(&path)
+        .map(|m| m.len() as i64)
+        .unwrap_or(0);
     let path_str = path.to_string_lossy().to_string();
 
     with_db(&state, move |c| {
@@ -161,11 +180,15 @@ fn validate_date(s: &str) -> Result<()> {
     let ok = s.len() == 10
         && s.as_bytes()[4] == b'-'
         && s.as_bytes()[7] == b'-'
-        && s.bytes().enumerate().all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
+        && s.bytes()
+            .enumerate()
+            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
     if ok {
         Ok(())
     } else {
-        Err(AppError::Invalid(format!("日期格式应为 YYYY-MM-DD，收到: {s}")))
+        Err(AppError::Invalid(format!(
+            "日期格式应为 YYYY-MM-DD，收到: {s}"
+        )))
     }
 }
 
@@ -181,7 +204,14 @@ mod tests {
 
     #[test]
     fn rejects_malformed_dates() {
-        for bad in ["2026-8-29", "26-08-29", "2026/08/29", "", "2026-08-29T00:00", "abcd-ef-gh"] {
+        for bad in [
+            "2026-8-29",
+            "26-08-29",
+            "2026/08/29",
+            "",
+            "2026-08-29T00:00",
+            "abcd-ef-gh",
+        ] {
             assert!(validate_date(bad).is_err(), "「{bad}」不该通过校验");
         }
     }

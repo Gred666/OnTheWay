@@ -3,14 +3,15 @@ import type { ISODate } from "@/lib/date";
 /* ============================================================
    领域类型
    与技术方案 §5.3 的表结构一一对应。
-   P5 接 Rust 后端后，这个文件由 tauri-specta 自动生成替换。
+   Rust IPC 的宽类型由 tauri-specta 生成到 lib/bindings.ts；这里保留
+   视图层需要的窄联合类型，由 data/backend.ts 在边界统一转换。
    命名保持 camelCase（Rust 侧用 #[serde(rename_all = "camelCase")]）。
    ============================================================ */
 
 export type EntityType = "note" | "task" | "goal" | "event" | "review";
 
 /** 五个导航区。「一切皆文档」——每个区最终都渲染成 DocumentView。 */
-export type WorkspaceId = "notes" | "today" | "goal" | "calendar" | "archive";
+export type WorkspaceId = "notes" | "today" | "goal" | "calendar" | "archive" | "extensions";
 
 /* ---------------- 笔记 ---------------- */
 
@@ -48,6 +49,13 @@ export interface NoteSummary {
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface NoteInput {
+  id: string | null;
+  title: string;
+  contentMd: string;
+  icon: NoteIcon | null;
 }
 
 export type NoteIcon =
@@ -103,8 +111,6 @@ export interface Goal {
   /** 该周期的起点 */
   periodStart: ISODate;
   contentMd: string;
-  /** 行动项之后的正文，如 GOAL 页的「记录」段 */
-  afterMd: string;
   actionGroup: ActionGroup | null;
   createdAt: number;
   updatedAt: number;
@@ -162,6 +168,8 @@ export interface OutlineItem {
   id: string;
   text: string;
   level: 1 | 2;
+  /** Markdown 源文中的一基行号，用于编辑器精确跳转。 */
+  line: number;
 }
 
 /* ============================================================
@@ -180,7 +188,7 @@ export interface DocumentModel {
   banner?: { icon: "archive"; text: string };
   /** 标题右侧的分段控件 */
   segments?: { group: string; options: string[]; active: string };
-  /** 正文 Markdown（行动项分组之前的部分） */
+  /** 统一的 Markdown 正文。任务仍是独立领域实体，不混入正文。 */
   bodyMd: string;
   /** 行动项分组 */
   actionGroup?: {
@@ -189,14 +197,18 @@ export interface DocumentModel {
     /** 隐藏分组标题。日历的当日安排直接列在标题下，没有小标题。 */
     hideHeader?: boolean;
   };
-  /**
-   * 行动项分组**之后**的正文。
-   * 原型的 GOAL 页顺序是「正文 → 本周重点 → 记录」，
-   * 行动项夹在中间，所以正文要能分成前后两段。
-   */
-  bodyAfterMd?: string;
   /** 底部状态栏的分段文字 */
   statusParts: string[];
   /** 是否显示删除按钮（原型里笔记视图右下角有个红色垃圾桶） */
   deletable?: boolean;
+  /** 所有持久化文档都由同一个 Markdown 编辑器编辑。 */
+  editor?: {
+    target: DocumentSaveTarget;
+    wordCount: number;
+  };
 }
+
+export type DocumentSaveTarget =
+  | { kind: "note"; id: string }
+  | { kind: "goal"; id: string }
+  | { kind: "day"; id: ISODate };

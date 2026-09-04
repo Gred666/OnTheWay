@@ -399,3 +399,242 @@ body {
   animation-duration: 0.01ms !important;
   transition-duration: 0.01ms !important;
 }
+
+/* ============================================================
+   Typora 风格的 Milkdown 编辑器稳定岛
+   ============================================================ */
+
+.otw-editor {
+  min-height: 360px;
+}
+
+/* CodeMirror 保留 Markdown 源文，语法标记仅在光标不处于对应语法范围时隐藏。 */
+.otw-editor .cm-editor {
+  min-height: inherit;
+  background: transparent;
+  color: var(--color-body);
+  font-family: var(--font-sans);
+  font-size: 17px;
+  line-height: 1.82;
+  letter-spacing: 0.012em;
+}
+
+.otw-editor .cm-editor.cm-focused {
+  outline: none;
+}
+
+.otw-editor .cm-scroller {
+  overflow: visible;
+  font-family: inherit;
+}
+
+.otw-editor .cm-content {
+  min-height: 360px;
+  padding: 0 0 72px;
+  caret-color: var(--color-accent);
+}
+
+.otw-editor .cm-line {
+  position: relative;
+  padding: 0;
+}
+
+.otw-editor .cm-selectionBackground,
+.otw-editor .cm-content ::selection {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent) !important;
+}
+
+.otw-editor .cm-cursor {
+  border-left-color: var(--color-accent);
+}
+
+.otw-editor .cm-activeLine {
+  background: transparent;
+}
+
+/* Typora 式聚焦编辑：未聚焦的标记由 decoration 折叠，当前语法范围按原位展开。 */
+.otw-editor .cm-otw-syntax-marker {
+  color: var(--color-faint);
+  font-size: 0.78em;
+  white-space: nowrap;
+  vertical-align: 0.08em;
+}
+
+.otw-editor .cm-gutters {
+  display: none;
+}
+
+.otw-editor :is(.cm-otw-h1, .cm-otw-h2, .cm-otw-h3, .cm-otw-h4, .cm-otw-h5, .cm-otw-h6) {
+  color: var(--color-ink);
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.otw-editor .cm-otw-h1 {
+  border-bottom: 1px solid var(--color-line);
+  padding-bottom: 0.18em;
+  font-size: 2.25em;
+  line-height: 1.2;
+}
+.otw-editor .cm-otw-h2 {
+  border-bottom: 1px solid var(--color-line);
+  padding-bottom: 0.16em;
+  font-size: 1.75em;
+  line-height: 1.225;
+}
+.otw-editor .cm-otw-h3 {
+  font-size: 1.5em;
+  line-height: 1.43;
+}
+.otw-editor .cm-otw-h4 {
+  font-size: 1.25em;
+  line-height: 1.55;
+  font-weight: 650;
+}
+.otw-editor .cm-otw-h5 {
+  color: var(--color-body);
+  font-size: 1em;
+  line-height: 1.7;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+.otw-editor .cm-otw-h6 {
+  color: var(--color-muted);
+  font-size: 1em;
+  line-height: 1.7;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.otw-editor .cm-otw-strong {
+  color: var(--color-ink);
+  font-weight: 700;
+}
+.otw-editor .cm-otw-emphasis {
+  font-style: italic;
+}
+.otw-editor .cm-otw-strike {
+  color: var(--color-muted);
+  text-decoration: line-through;
+}
+.otw-editor .cm-otw-underline {
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+.otw-editor .cm-otw-code {
+  border-radius: 4px;
+  background: var(--color-rail);
+  color: var(--color-danger);
+  font-family: var(--font-mono);
+}
+.otw-editor .cm-otw-code-text {
+  font-family: var(--font-mono);
+}
+.otw-editor .cm-otw-link {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-accent) 42%, transparent);
+  text-underline-offset: 3px;
+}
+.otw-editor .cm-otw-quote {
+  border-left: 3px solid var(--color-accent-line);
+  padding-left: 1em;
+  color: var(--color-muted);
+}
+.otw-editor .cm-otw-code-block {
+  border-right: 1px solid var(--color-line-strong);
+  border-left: 1px solid var(--color-line-strong);
+  background: var(--color-panel);
+  padding-right: 14px;
+  padding-left: 14px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.otw-editor .cm-otw-table {
+  border-bottom: 1px solid var(--color-line);
+  background: color-mix(in srgb, var(--color-panel) 72%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+.otw-editor .cm-otw-table-widget {
+  width: 100%;
+  margin: 0.9em 0;
+  border-collapse: collapse;
+  overflow: hidden;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 8px;
+  background: var(--color-canvas);
+  font-size: 14px;
+}
+.otw-editor .cm-otw-table-widget th,
+.otw-editor .cm-otw-table-widget td {
+  min-width: 90px;
+  border: 1px solid var(--color-line-strong);
+  padding: 8px 11px;
+  color: var(--color-body);
+}
+.otw-editor .cm-otw-table-widget th {
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-weight: 650;
+}
+.otw-editor .cm-otw-list-item {
+  padding-left: 0.35em;
+}
+.otw-editor .cm-otw-list-marker {
+  display: inline-block;
+  min-width: 0.85em;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.otw-editor .cm-otw-html,
+.otw-editor .cm-otw-escape,
+.otw-editor .cm-otw-reference {
+  color: var(--color-faint);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.otw-editor .cm-otw-task {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  margin: 0 0.42em 0 0.1em;
+  place-items: center;
+  border: 1.5px solid var(--color-line-strong);
+  border-radius: 4px;
+  color: white;
+  font-size: 11px;
+  line-height: 1;
+  vertical-align: -2px;
+}
+.otw-editor .cm-otw-task.is-checked {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+.otw-editor .cm-otw-code-info {
+  position: absolute;
+  top: 0.35em;
+  right: 12px;
+  color: var(--color-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+}
+.otw-editor .cm-otw-hr {
+  display: inline-block;
+  width: 100%;
+  height: 1px;
+  margin: 0.65em 0;
+  background: var(--color-line-strong);
+  vertical-align: middle;
+}
+.otw-editor .cm-otw-image {
+  display: block;
+  max-width: min(100%, 680px);
+  max-height: 520px;
+  margin: 0.8em 0;
+  border-radius: 8px;
+  object-fit: contain;
+}

@@ -1,12 +1,17 @@
-import type { DocumentModel } from "@/data/types";
+import type { DocumentModel, DocumentSaveTarget } from "@/data/types";
+import type { EditorOutlineHandle } from "@/editor/MarkdownEditor";
 import { buildOutline, renderMarkdown } from "@/lib/markdown";
 import { spring, tween } from "@/lib/motion";
 import { Archive, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useMemo, useRef } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { ActionGroup } from "./ActionItem";
 import { Outline } from "./Outline";
 import { Segmented } from "./Segmented";
+
+const MarkdownEditor = lazy(() =>
+  import("@/editor/MarkdownEditor").then((module) => ({ default: module.MarkdownEditor })),
+);
 
 /* ============================================================
    统一文档视图。
@@ -20,36 +25,41 @@ export function DocumentView({
   onToggleTask,
   onSegmentChange,
   onDelete,
+  onSaveDocument,
+  onSaveNoteTitle,
+  editorEnabled = true,
 }: {
   doc: DocumentModel;
   onToggleTask: (id: string) => void;
   onSegmentChange?: (v: string) => void;
   onDelete?: () => void;
+  onSaveDocument?: (target: DocumentSaveTarget, markdown: string) => Promise<void>;
+  onSaveNoteTitle?: (id: string, title: string) => Promise<void>;
+  editorEnabled?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [forceLargeEdit, setForceLargeEdit] = useState(false);
+  const [editorOutline, setEditorOutline] = useState<EditorOutlineHandle | null>(null);
 
   const outline = useMemo(
     () =>
-      buildOutline(
-        doc.bodyMd,
-        doc.actionGroup?.hideHeader ? undefined : doc.actionGroup?.title,
-        doc.bodyAfterMd,
-      ),
-    [doc.bodyMd, doc.actionGroup?.title, doc.actionGroup?.hideHeader, doc.bodyAfterMd],
+      buildOutline(doc.bodyMd, doc.actionGroup?.hideHeader ? undefined : doc.actionGroup?.title),
+    [doc.bodyMd, doc.actionGroup?.title, doc.actionGroup?.hideHeader],
   );
 
   const body = useMemo(() => renderMarkdown(doc.bodyMd), [doc.bodyMd]);
-  const bodyAfter = useMemo(
-    () => (doc.bodyAfterMd ? renderMarkdown(doc.bodyAfterMd, "after") : null),
-    [doc.bodyAfterMd],
-  );
 
   // 切换文档时滚回顶部。用 instant 而不是 smooth ——
   // 换了一篇文档还看到旧位置平滑滚动，是错误的心智模型。
   // biome-ignore lint/correctness/useExhaustiveDependencies: 只应在 doc.key 变化时触发
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
+    setForceLargeEdit(false);
+    setEditorOutline(null);
   }, [doc.key]);
+
+  const largeDocument = (doc.editor?.wordCount ?? 0) > 25_000 || doc.bodyMd.length > 50_000;
+  const canEdit = !!doc.editor && !!onSaveDocument && editorEnabled;
 
   return (
     <div className="flex h-full min-w-0 flex-1 bg-canvas">
@@ -80,17 +90,25 @@ export function DocumentView({
           >
             <div className="min-w-0 flex-1 overflow-hidden">
               <AnimatePresence mode="popLayout" initial={false}>
-                <motion.h1
-                  key={doc.key}
-                  initial={{ opacity: 0, y: 16 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -14 }}
-                  transition={spring.smooth}
-                  className="selectable text-[38px] font-bold leading-[1.25] tracking-[-0.02em]
-                             text-ink"
-                >
-                  {doc.title}
-                </motion.h1>
+                {doc.editor?.target.kind === "note" && onSaveNoteTitle ? (
+                  <EditableDocumentTitle
+                    key={doc.key}
+                    title={doc.title}
+                    onSave={(title) => onSaveNoteTitle(doc.editor!.target.id, title)}
+                  />
+                ) : (
+                  <motion.h1
+                    key={doc.key}
+                    initial={{ opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -14 }}
+                    transition={spring.smooth}
+                    className="selectable text-[38px] font-bold leading-[1.25] tracking-[-0.02em]
+                               text-ink"
+                  >
+                    {doc.title}
+                  </motion.h1>
+                )}
               </AnimatePresence>
             </div>
 
@@ -117,16 +135,37 @@ export function DocumentView({
           />
 
           {/* ---------- 正文 ---------- */}
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={doc.key}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ ...tween.base, delay: 0.04 }}
-              className="flex-1"
-            >
-              <article className="prose-doc selectable mt-7">{body}</article>
+          {doc.editor ? (
+            // 编辑器稳定岛：这里以及编辑器自身都没有 Motion layout/transform。
+            // Shell 会等工作区入场动画结束后才把 canEdit 置为 true。
+            <div className="flex-1">
+              {canEdit && (!largeDocument || forceLargeEdit) ? (
+                <Suspense
+                  fallback={<article className="prose-doc selectable mt-7">{body}</article>}
+                >
+                  <MarkdownEditor
+                    key={`${doc.editor.target.kind}-${doc.editor.target.id}`}
+                    initialMarkdown={doc.bodyMd}
+                    onSave={(markdown) => onSaveDocument(doc.editor!.target, markdown)}
+                    outlineItems={outline}
+                    onOutlineHandle={setEditorOutline}
+                  />
+                </Suspense>
+              ) : (
+                <>
+                  <article className="prose-doc selectable mt-7">{body}</article>
+                  {largeDocument && editorEnabled && (
+                    <button
+                      type="button"
+                      onClick={() => setForceLargeEdit(true)}
+                      className="mt-5 rounded-md bg-accent-wash px-3 py-1.5 text-[12px]
+                                 font-medium text-accent hover:bg-accent-line/60"
+                    >
+                      文档较大，点击进入编辑模式
+                    </button>
+                  )}
+                </>
+              )}
 
               {doc.actionGroup && doc.actionGroup.tasks.length > 0 && (
                 <ActionGroup
@@ -137,18 +176,95 @@ export function DocumentView({
                   onToggle={onToggleTask}
                 />
               )}
+            </div>
+          ) : (
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={doc.key}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ ...tween.base, delay: 0.04 }}
+                className="flex-1"
+              >
+                <article className="prose-doc selectable mt-7">{body}</article>
 
-              {bodyAfter && <article className="prose-doc selectable mt-9">{bodyAfter}</article>}
-            </motion.div>
-          </AnimatePresence>
+                {doc.actionGroup && doc.actionGroup.tasks.length > 0 && (
+                  <ActionGroup
+                    title={doc.actionGroup.title}
+                    tasks={doc.actionGroup.tasks}
+                    counterMode={doc.actionGroup.title === "本周重点" ? "count" : "progress"}
+                    hideHeader={doc.actionGroup.hideHeader}
+                    onToggle={onToggleTask}
+                  />
+                )}
+              </motion.div>
+            </AnimatePresence>
+          )}
 
           {/* ---------- 底部状态栏 ---------- */}
           <StatusBar parts={doc.statusParts} onDelete={doc.deletable ? onDelete : undefined} />
         </div>
       </div>
 
-      <Outline items={outline} scrollRef={scrollRef} resetKey={doc.key} />
+      <Outline
+        items={outline}
+        scrollRef={scrollRef}
+        resetKey={doc.key}
+        editorHandle={editorOutline}
+      />
     </div>
+  );
+}
+
+function EditableDocumentTitle({
+  title,
+  onSave,
+}: {
+  title: string;
+  onSave: (title: string) => Promise<void>;
+}) {
+  const [value, setValue] = useState(title);
+  const [saving, setSaving] = useState(false);
+
+  const commit = async () => {
+    const clean = value.trim();
+    if (!clean) {
+      setValue(title);
+      return;
+    }
+    if (clean === title) return;
+    setSaving(true);
+    try {
+      await onSave(clean);
+      setValue(clean);
+    } catch {
+      setValue(title);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <motion.input
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: saving ? 0.65 : 1, y: 0 }}
+      transition={spring.smooth}
+      value={value}
+      disabled={saving}
+      aria-label="笔记标题"
+      onChange={(event) => setValue(event.target.value.replace(/[\r\n]/g, ""))}
+      onBlur={() => void commit()}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        if (event.key === "Escape") {
+          setValue(title);
+          event.currentTarget.blur();
+        }
+      }}
+      className="w-full min-w-0 border-0 bg-transparent p-0 text-[38px] font-bold leading-[1.25]
+                 tracking-[-0.02em] text-ink outline-none placeholder:text-faint"
+    />
   );
 }
 

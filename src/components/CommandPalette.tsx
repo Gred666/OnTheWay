@@ -11,6 +11,7 @@ import {
   CornerDownLeft,
   Monitor,
   Moon,
+  Puzzle,
   Search,
   Sparkles,
   Sun,
@@ -53,6 +54,7 @@ export function CommandPalette() {
   /* ---- 全局快捷键 ---- */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setOpen(!useApp.getState().paletteOpen);
@@ -90,6 +92,7 @@ export function CommandPalette() {
       nav("goal", "/GOAL", Target),
       nav("calendar", "日历", CalendarDays),
       nav("archive", "归档", Archive),
+      nav("extensions", "扩展", Puzzle),
 
       ...notes.map<Cmd>((n) => ({
         id: `note-${n.id}`,
