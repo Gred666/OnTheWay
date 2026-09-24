@@ -60,3 +60,58 @@ function splitRow(line: string): string[] {
   cells.push(cell.trim());
   return cells;
 }
+
+/**
+ * ```csv / ```tsv 围栏里的表格。第一行是表头。
+ * 按 RFC 4180 的规矩处理引号：`"a, b"` 是一个格，`""` 是一个引号；
+ * 空行跳过，短行用空格补齐。
+ */
+export function parseDelimitedTable(
+  source: string,
+  delimiter: "," | "\t",
+): MarkdownTableModel | null {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  const text = source.replace(/\r\n?/g, "\n");
+
+  const endRow = () => {
+    row.push(cell);
+    cell = "";
+    if (row.some((value) => value.trim())) rows.push(row);
+    row = [];
+  };
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i]!;
+    if (quoted) {
+      if (char === '"') {
+        if (text[i + 1] === '"') {
+          cell += '"';
+          i += 1;
+        } else quoted = false;
+      } else cell += char;
+    } else if (char === '"' && cell === "") {
+      quoted = true;
+    } else if (char === delimiter) {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      endRow();
+    } else {
+      cell += char;
+    }
+  }
+  if (cell || row.length) endRow();
+
+  const [header, ...body] = rows;
+  if (!header || header.length === 0) return null;
+  return {
+    header: header.map((value) => value.trim()),
+    rows: body.map((line) =>
+      Array.from({ length: header.length }, (_, index) => (line[index] ?? "").trim()),
+    ),
+    alignments: header.map(() => null),
+  };
+}

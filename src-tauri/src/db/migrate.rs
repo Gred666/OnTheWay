@@ -12,6 +12,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0001_init.sql"),
     include_str!("../../migrations/0002_unify_markdown_documents.sql"),
     include_str!("../../migrations/0003_remove_legacy_action_groups.sql"),
+    include_str!("../../migrations/0004_day_doc_title.sql"),
 ];
 
 pub fn run(conn: &mut Connection, db_path: &Path) -> Result<()> {

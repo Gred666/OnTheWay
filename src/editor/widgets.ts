@@ -1,0 +1,785 @@
+import { EditorView, WidgetType } from "@codemirror/view";
+import { type CalloutHead, type CalloutKind, calloutIcon } from "./callout";
+import { hasRenderableHtml, safeHref, sanitizeHtml } from "./html";
+import { inlinePlainText, renderInline } from "./inlineDom";
+import { openExternal } from "./links";
+import type { MarkdownTableModel } from "./markdownTable";
+
+/* ============================================================
+   编辑器里所有的 DOM 替身。
+
+   两条硬规则（都是 CodeMirror 用 getBoundingClientRect 量高度带来的）：
+   1. 块级 widget 的留白只能用外层容器的 padding，绝不能用 margin ——
+      margin 不在边框盒里，高度图会比真实布局短，点击就会落到错误的行。
+   2. widget 内部的动画只能动 transform / opacity / stroke，不能改尺寸。
+   ============================================================ */
+
+/** 点一下把光标放回源码位置。所有「点击即编辑」的替身都用它。 */
+function jumpToSource(view: EditorView, position: number) {
+  view.dispatch({ selection: { anchor: position } });
+  view.focus();
+}
+
+/**
+ * 块级替身自己在文档里的位置：点击时再问 CodeMirror，而不是构造时存进来。
+ *
+ * 位置一旦进了 widget 的身份（eq），在它上方打一个字，后面所有替身的位置都变了，
+ * 每一个都会被判定为「换了个 widget」而重建 DOM —— 表格重排、图表重新走一遍
+ * mermaid、公式重新走一遍 KaTeX，一个字 50ms。大块头一律用这个。
+ */
+export function positionOf(view: EditorView, dom: HTMLElement): number {
+  return view.posAtDOM(dom);
+}
+
+function svg(viewBox: string, d: string, className: string): SVGSVGElement {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  node.setAttribute("viewBox", viewBox);
+  node.setAttribute("fill", "none");
+  node.setAttribute("stroke", "currentColor");
+  node.setAttribute("stroke-width", "2");
+  node.setAttribute("stroke-linecap", "round");
+  node.setAttribute("stroke-linejoin", "round");
+  node.setAttribute("aria-hidden", "true");
+  node.setAttribute("class", className);
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", d);
+  path.setAttribute("pathLength", "1");
+  node.append(path);
+  return node;
+}
+
+/* ---------------- 任务勾选框 ---------------- */
+
+export class TaskWidget extends WidgetType {
+  constructor(
+    private readonly checked: boolean,
+    private readonly from: number,
+    private readonly to: number,
+  ) {
+    super();
+  }
+
+  eq(other: TaskWidget) {
+    return other.checked === this.checked && other.from === this.from && other.to === this.to;
+  }
+
+  toDOM(view: EditorView) {
+    const box = document.createElement("span");
+    box.className = `cm-otw-task${this.checked ? " is-checked" : ""}`;
+    box.setAttribute("role", "checkbox");
+    box.setAttribute("aria-checked", String(this.checked));
+    // 对勾是一条 SVG 路径：勾上时从左到右描出来（stroke-dashoffset），
+    // 比直接冒出一个 ✓ 字符有「动作」感。
+    box.append(svg("0 0 16 16", "M3.5 8.5l3 3 6-6.5", "cm-otw-task-check"));
+    box.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      view.dispatch({
+        changes: { from: this.from, to: this.to, insert: this.checked ? "[ ]" : "[x]" },
+      });
+      view.focus();
+    });
+    return box;
+  }
+}
+
+/* ---------------- 列表符号 ---------------- */
+
+/**
+ * 显示什么由调用方算好传进来：有序列表按在列表里的位置自动编号（源码里写
+ * `1. 1. 1.` 也显示 1 2 3），无序列表按嵌套深度换 • ◦ ▪。
+ */
+export class ListMarkerWidget extends WidgetType {
+  constructor(
+    private readonly display: string,
+    private readonly sourcePosition: number,
+  ) {
+    super();
+  }
+
+  eq(other: ListMarkerWidget) {
+    return other.display === this.display && other.sourcePosition === this.sourcePosition;
+  }
+
+  toDOM(view: EditorView) {
+    const marker = document.createElement("span");
+    marker.className = "cm-otw-list-marker";
+    marker.textContent = this.display;
+    marker.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      jumpToSource(view, this.sourcePosition);
+    });
+    return marker;
+  }
+}
+
+/* ---------------- 代码块 ---------------- */
+
+export class CodeInfoWidget extends WidgetType {
+  constructor(
+    private readonly language: string,
+    private readonly sourcePosition: number,
+  ) {
+    super();
+  }
+
+  eq(other: CodeInfoWidget) {
+    return other.language === this.language && other.sourcePosition === this.sourcePosition;
+  }
+
+  toDOM(view: EditorView) {
+    const label = document.createElement("span");
+    label.className = "cm-otw-code-info";
+    label.textContent = this.language;
+    label.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      jumpToSource(view, this.sourcePosition);
+    });
+    return label;
+  }
+}
+
+const COPY_ICON =
+  "M8 4H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-2M8 4V3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v1M8 4h6a2 2 0 0 1 2 2v6";
+const DONE_ICON = "M4 9.5l3.5 3.5L15 5";
+
+/** 折叠掉的围栏行本身的替身：代码块的上下封口，开头那条顺带显示语言名和复制按钮。 */
+export class CodeFenceWidget extends WidgetType {
+  constructor(
+    private readonly side: "open" | "close",
+    private readonly language: string,
+    private readonly code: string,
+  ) {
+    super();
+  }
+
+  eq(other: CodeFenceWidget) {
+    return other.side === this.side && other.language === this.language && other.code === this.code;
+  }
+
+  toDOM(view: EditorView) {
+    // 外层只负责留白（padding，见文件头）。
+    const block = document.createElement("div");
+    block.className = `cm-otw-fence-block is-${this.side}`;
+    const cap = document.createElement("div");
+    cap.className = `cm-otw-code-fence is-${this.side}`;
+    if (this.side === "open") {
+      if (this.language) {
+        const label = document.createElement("span");
+        label.className = "cm-otw-code-lang";
+        label.textContent = this.language;
+        cap.append(label);
+      }
+      cap.append(this.copyButton(view));
+    }
+    block.append(cap);
+    return block;
+  }
+
+  private copyButton(view: EditorView): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cm-otw-code-copy";
+    button.setAttribute("aria-label", "复制代码");
+    button.title = "复制代码";
+    const icon = svg("0 0 20 20", COPY_ICON, "cm-otw-code-copy-icon");
+    const text = document.createElement("span");
+    text.textContent = "复制";
+    button.append(icon, text);
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // mousedown 要拦掉：否则点按钮的同时光标会被 CodeMirror 放进代码块，
+    // 块一激活封口就消失了，按钮在手指底下不见。
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => {
+      void copyText(this.code, view).then((copied) => {
+        if (!copied) return;
+        button.classList.add("is-done");
+        icon.firstElementChild?.setAttribute("d", DONE_ICON);
+        text.textContent = "已复制";
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          button.classList.remove("is-done");
+          icon.firstElementChild?.setAttribute("d", COPY_ICON);
+          text.textContent = "复制";
+        }, 1400);
+      });
+    });
+    return button;
+  }
+}
+
+/**
+ * 写剪贴板。异步 API 在没有权限的宿主里会直接 reject（WebView 偶尔也会），
+ * 退回老式的 execCommand；两条路都不通就安静地放弃，别在控制台甩未处理的拒绝。
+ */
+async function copyText(text: string, view: EditorView): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    /* 走下面的退路 */
+  }
+  try {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    const copied = document.execCommand("copy");
+    area.remove();
+    // 临时文本域抢走了焦点，还回编辑器
+    view.focus();
+    return copied;
+  } catch {
+    return false;
+  }
+}
+
+/* ---------------- 分隔线 ---------------- */
+
+class HorizontalRuleWidget extends WidgetType {
+  toDOM() {
+    const rule = document.createElement("div");
+    rule.className = "cm-otw-hr";
+    return rule;
+  }
+}
+
+export const horizontalRuleWidget = new HorizontalRuleWidget();
+
+/* ---------------- 图片 ---------------- */
+
+export interface ImageSpec {
+  alt: string;
+  source: string;
+  title: string;
+  /** Obsidian 式 `![alt|300]` / `![alt|300x200]` */
+  width: number | null;
+  height: number | null;
+}
+
+export class ImageWidget extends WidgetType {
+  constructor(private readonly image: ImageSpec) {
+    super();
+  }
+
+  eq(other: ImageWidget) {
+    const a = this.image;
+    const b = other.image;
+    return (
+      a.alt === b.alt &&
+      a.source === b.source &&
+      a.title === b.title &&
+      a.width === b.width &&
+      a.height === b.height
+    );
+  }
+
+  toDOM() {
+    const image = document.createElement("img");
+    image.className = "cm-otw-image";
+    image.alt = this.image.alt;
+    if (this.image.title) image.title = this.image.title;
+    if (this.image.width) image.style.width = `${this.image.width}px`;
+    if (this.image.height) image.style.height = `${this.image.height}px`;
+    image.loading = "lazy";
+    image.decoding = "async";
+    // 加载完再淡入。直接出现的话大图会「啪」地把下面的正文顶下去。
+    const settle = (state: "is-loaded" | "is-error") => image.classList.add(state);
+    image.addEventListener("load", () => settle("is-loaded"));
+    image.addEventListener("error", () => settle("is-error"));
+    image.src = this.image.source;
+    if (image.complete && image.naturalWidth > 0) settle("is-loaded");
+    return image;
+  }
+}
+
+/* ---------------- 表格 ---------------- */
+
+export class TableWidget extends WidgetType {
+  private readonly key: string;
+
+  constructor(private readonly table: MarkdownTableModel) {
+    super();
+    this.key = JSON.stringify(table);
+  }
+
+  eq(other: TableWidget) {
+    return other.key === this.key;
+  }
+
+  toDOM(view: EditorView) {
+    // 外层只负责留白，理由同 CodeFenceWidget：margin 不计入 CodeMirror 的高度图。
+    const block = document.createElement("div");
+    block.className = "cm-otw-table-block";
+    const table = document.createElement("table");
+    table.className = "cm-otw-table-widget";
+    table.title = "点击编辑表格";
+    table.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      jumpToSource(view, positionOf(view, block));
+    });
+    const head = table.createTHead().insertRow();
+    this.table.header.forEach((value, index) => {
+      const cell = document.createElement("th");
+      cell.append(...renderInline(value));
+      cell.style.textAlign = this.table.alignments[index] ?? "left";
+      head.append(cell);
+    });
+    const body = table.createTBody();
+    for (const row of this.table.rows) {
+      const tr = body.insertRow();
+      row.forEach((value, index) => {
+        const cell = tr.insertCell();
+        cell.append(...renderInline(value));
+        cell.style.textAlign = this.table.alignments[index] ?? "left";
+      });
+    }
+    block.append(table);
+    return block;
+  }
+}
+
+/* ---------------- 行内小替身：Emoji / 实体 / 硬换行 ---------------- */
+
+/** `:smile:` → 😄 / `&mdash;` → — / `---` → —。点一下光标回到源码，可以继续改。 */
+export class GlyphWidget extends WidgetType {
+  constructor(
+    private readonly kind: "emoji" | "entity" | "smart",
+    private readonly glyph: string,
+    private readonly source: string,
+    private readonly sourcePosition: number,
+  ) {
+    super();
+  }
+
+  eq(other: GlyphWidget) {
+    return (
+      other.kind === this.kind &&
+      other.glyph === this.glyph &&
+      other.source === this.source &&
+      other.sourcePosition === this.sourcePosition
+    );
+  }
+
+  toDOM(view: EditorView) {
+    const node = document.createElement("span");
+    node.className = `cm-otw-glyph is-${this.kind}`;
+    node.textContent = this.glyph;
+    node.title = this.source;
+    node.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      jumpToSource(view, this.sourcePosition);
+    });
+    return node;
+  }
+}
+
+/** 硬换行（行尾两个空格或反斜杠）：留一个极淡的 ↵，否则谁也看不出这里有东西。 */
+export class HardBreakWidget extends WidgetType {
+  constructor(private readonly sourcePosition: number) {
+    super();
+  }
+
+  eq(other: HardBreakWidget) {
+    return other.sourcePosition === this.sourcePosition;
+  }
+
+  toDOM(view: EditorView) {
+    const node = document.createElement("span");
+    node.className = "cm-otw-hard-break";
+    node.textContent = "↵";
+    node.title = "硬换行";
+    node.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      jumpToSource(view, this.sourcePosition);
+    });
+    return node;
+  }
+}
+
+/* ---------------- Callout 标签 ---------------- */
+
+const CHEVRON = "M6 9l6 6 6-6";
+
+/** 把 `[!标签]-` 的折叠符在 `-` / `+` 之间翻转。状态就存在源码里，不用另外记。 */
+export function toggleCalloutFold(view: EditorView, foldPosition: number): void {
+  const current = view.state.sliceDoc(foldPosition, foldPosition + 1);
+  if (current !== "-" && current !== "+") return;
+  view.dispatch({
+    changes: { from: foldPosition, to: foldPosition + 1, insert: current === "-" ? "+" : "-" },
+  });
+}
+
+export class CalloutBadgeWidget extends WidgetType {
+  constructor(
+    private readonly head: Pick<CalloutHead, "label" | "kind" | "fold">,
+    private readonly sourcePosition: number,
+    /** 折叠符在文档里的位置；不可折叠时是 null */
+    private readonly foldPosition: number | null,
+  ) {
+    super();
+  }
+
+  eq(other: CalloutBadgeWidget) {
+    return (
+      other.head.label === this.head.label &&
+      other.head.kind === this.head.kind &&
+      other.head.fold === this.head.fold &&
+      other.sourcePosition === this.sourcePosition &&
+      other.foldPosition === this.foldPosition
+    );
+  }
+
+  toDOM(view: EditorView) {
+    const badge = document.createElement("span");
+    badge.className = `cm-otw-callout-badge is-${this.head.kind}`;
+    const text = document.createElement("span");
+    text.textContent = this.head.label;
+    badge.append(calloutIcon(this.head.kind), text);
+    const foldPosition = this.foldPosition;
+    if (this.head.fold && foldPosition !== null) {
+      badge.classList.add(this.head.fold === "-" ? "is-collapsed" : "is-expanded");
+      badge.title = this.head.fold === "-" ? "展开" : "收起";
+      badge.append(svg("0 0 24 24", CHEVRON, "cm-otw-callout-chevron"));
+    }
+    badge.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      if (this.head.fold && foldPosition !== null) toggleCalloutFold(view, foldPosition);
+      else jumpToSource(view, this.sourcePosition);
+    });
+    return badge;
+  }
+}
+
+/** 收起的 callout 正文的替身：一行「… 展开 N 行」。 */
+export class CalloutFoldWidget extends WidgetType {
+  constructor(
+    private readonly lineCount: number,
+    private readonly kind: CalloutKind,
+    private readonly foldPosition: number,
+  ) {
+    super();
+  }
+
+  eq(other: CalloutFoldWidget) {
+    return (
+      other.lineCount === this.lineCount &&
+      other.kind === this.kind &&
+      other.foldPosition === this.foldPosition
+    );
+  }
+
+  toDOM(view: EditorView) {
+    const block = document.createElement("div");
+    block.className = `cm-otw-callout-fold is-${this.kind}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cm-otw-callout-fold-button";
+    button.textContent = `… 展开 ${this.lineCount} 行`;
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      toggleCalloutFold(view, this.foldPosition);
+    });
+    block.append(button);
+    return block;
+  }
+}
+
+/* ---------------- 脚注 ---------------- */
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** `[^id]: …` 定义行的起点；没有定义返回 null。 */
+export function footnoteDefinitionAt(view: EditorView, id: string): number | null {
+  const pattern = new RegExp(`^\\[\\^${escapeRegExp(id)}\\]:`, "m");
+  const match = pattern.exec(view.state.doc.toString());
+  return match ? match.index : null;
+}
+
+/** 正文里第一处 `[^id]` 引用（不算定义行）的起点；没有返回 null。 */
+export function footnoteReferenceAt(view: EditorView, id: string): number | null {
+  const pattern = new RegExp(`\\[\\^${escapeRegExp(id)}\\](?!:)`);
+  const match = pattern.exec(view.state.doc.toString());
+  return match ? match.index : null;
+}
+
+/**
+ * 脚注徽章。引用端悬停能看到脚注内容，点一下跳到定义；定义端点一下跳回第一处引用。
+ * 要改脚注本身，点徽章旁边的文字就行。
+ */
+export class FootnoteWidget extends WidgetType {
+  constructor(
+    private readonly id: string,
+    private readonly role: "ref" | "def",
+    private readonly sourcePosition: number,
+    private readonly preview = "",
+  ) {
+    super();
+  }
+
+  eq(other: FootnoteWidget) {
+    return (
+      other.id === this.id &&
+      other.role === this.role &&
+      other.sourcePosition === this.sourcePosition &&
+      other.preview === this.preview
+    );
+  }
+
+  toDOM(view: EditorView) {
+    const node = document.createElement(this.role === "ref" ? "sup" : "span");
+    node.className = `cm-otw-footnote is-${this.role}`;
+    node.textContent = this.id;
+    node.title =
+      this.role === "ref"
+        ? this.preview
+          ? `${this.preview}\n\n点击跳到脚注`
+          : `脚注 ${this.id}（还没有写定义）`
+        : `脚注 ${this.id} · 点击回到引用处`;
+    node.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      const target =
+        this.role === "ref"
+          ? footnoteDefinitionAt(view, this.id)
+          : footnoteReferenceAt(view, this.id);
+      if (target === null) {
+        jumpToSource(view, this.sourcePosition);
+        return;
+      }
+      view.dispatch({
+        selection: { anchor: target },
+        effects: EditorView.scrollIntoView(target, { y: "center" }),
+      });
+      view.focus();
+    });
+    return node;
+  }
+}
+
+/* ---------------- [TOC] ---------------- */
+
+export interface TocEntry {
+  level: number;
+  text: string;
+  from: number;
+}
+
+/** 按层级 + 文字找标题所在行的起点；找不到返回 null。 */
+function findHeading(view: EditorView, level: number, text: string): number | null {
+  const pattern = new RegExp(`^\\s{0,3}#{${level}}\\s+`);
+  for (let number = 1; number <= view.state.doc.lines; number += 1) {
+    const line = view.state.doc.line(number);
+    if (!pattern.test(line.text)) continue;
+    const plain = inlinePlainText(
+      line.text
+        .replace(pattern, "")
+        .replace(/\s+#+\s*$/, "")
+        .trim(),
+    );
+    if (plain === text) return line.from;
+  }
+  return null;
+}
+
+export class TocWidget extends WidgetType {
+  private readonly key: string;
+
+  constructor(private readonly entries: TocEntry[]) {
+    super();
+    // 身份只看层级和文字：位置会随上方的编辑漂移，不能进 eq
+    this.key = entries.map((entry) => `${entry.level}:${entry.text}`).join("\n");
+  }
+
+  eq(other: TocWidget) {
+    return other.key === this.key;
+  }
+
+  toDOM(view: EditorView) {
+    const block = document.createElement("div");
+    block.className = "cm-otw-toc-block";
+    const nav = document.createElement("nav");
+    nav.className = "cm-otw-toc";
+    nav.setAttribute("aria-label", "目录");
+    nav.title = "点击空白处编辑";
+    nav.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      if ((event.target as HTMLElement).closest("button")) return;
+      jumpToSource(view, positionOf(view, block));
+    });
+
+    const title = document.createElement("div");
+    title.className = "cm-otw-toc-title";
+    title.textContent = "目录";
+    nav.append(title);
+
+    if (this.entries.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "cm-otw-toc-empty";
+      empty.textContent = "还没有标题";
+      nav.append(empty);
+    } else {
+      const list = document.createElement("ol");
+      list.className = "cm-otw-toc-list";
+      // 最浅的标题顶格，其余按层级缩进 —— 全文只有 H2/H3 时不该空出 H1 那一档。
+      const base = Math.min(...this.entries.map((entry) => entry.level));
+      for (const entry of this.entries) {
+        const item = document.createElement("li");
+        item.className = "cm-otw-toc-item";
+        item.style.setProperty("--depth", String(entry.level - base));
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = entry.text;
+        button.addEventListener("click", () => {
+          // 条目里存的位置可能已经过时（上方编辑过），按文字重新找一遍
+          const target = findHeading(view, entry.level, entry.text) ?? entry.from;
+          view.dispatch({
+            selection: { anchor: target },
+            effects: EditorView.scrollIntoView(target, { y: "start", yMargin: 72 }),
+          });
+          view.focus();
+        });
+        item.append(button);
+        list.append(item);
+      }
+      nav.append(list);
+    }
+    block.append(nav);
+    return block;
+  }
+}
+
+/* ---------------- Front matter ---------------- */
+
+/** 折叠掉的 `---` 行的替身：给属性块封上下两个口。 */
+export class FrontMatterFenceWidget extends WidgetType {
+  constructor(
+    private readonly side: "open" | "close",
+    private readonly sourcePosition: number,
+  ) {
+    super();
+  }
+
+  eq(other: FrontMatterFenceWidget) {
+    return other.side === this.side && other.sourcePosition === this.sourcePosition;
+  }
+
+  toDOM(view: EditorView) {
+    const block = document.createElement("div");
+    block.className = `cm-otw-frontmatter-block is-${this.side}`;
+    const cap = document.createElement("div");
+    cap.className = `cm-otw-frontmatter-fence is-${this.side}`;
+    if (this.side === "open") {
+      const label = document.createElement("span");
+      label.className = "cm-otw-frontmatter-label";
+      label.textContent = "属性";
+      cap.append(label);
+    }
+    cap.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      jumpToSource(view, this.sourcePosition);
+    });
+    block.append(cap);
+    return block;
+  }
+}
+
+/* ---------------- HTML ---------------- */
+
+/** `<br>`：真的换一行，前面留一个极淡的 ↵ 提示这里有东西。 */
+export class LineBreakWidget extends WidgetType {
+  constructor(private readonly sourcePosition: number) {
+    super();
+  }
+
+  eq(other: LineBreakWidget) {
+    return other.sourcePosition === this.sourcePosition;
+  }
+
+  toDOM(view: EditorView) {
+    const node = document.createElement("span");
+    node.className = "cm-otw-br";
+    const hint = document.createElement("span");
+    hint.className = "cm-otw-hard-break";
+    hint.textContent = "↵";
+    hint.title = "<br>";
+    hint.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      jumpToSource(view, this.sourcePosition);
+    });
+    node.append(hint, document.createElement("br"));
+    return node;
+  }
+}
+
+/** HTML 注释：藏成一个小小的「注释」标记，点一下展开源码。 */
+export class CommentWidget extends WidgetType {
+  constructor(
+    private readonly block: boolean,
+    private readonly sourcePosition: number,
+  ) {
+    super();
+  }
+
+  eq(other: CommentWidget) {
+    return other.block === this.block && other.sourcePosition === this.sourcePosition;
+  }
+
+  toDOM(view: EditorView) {
+    const pill = document.createElement("span");
+    pill.className = "cm-otw-comment";
+    pill.textContent = "注释";
+    pill.title = "HTML 注释 · 点击查看";
+    pill.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      jumpToSource(view, this.sourcePosition);
+    });
+    if (!this.block) return pill;
+    const wrapper = document.createElement("div");
+    wrapper.className = "cm-otw-comment-block";
+    wrapper.append(pill);
+    return wrapper;
+  }
+}
+
+/**
+ * 块级 HTML 的替身：源码经白名单净化后重建成真实节点。
+ * 点空白处回到源码编辑；<details> 的开合和 <a> 的点击照常工作。
+ */
+export class HtmlBlockWidget extends WidgetType {
+  constructor(private readonly source: string) {
+    super();
+  }
+
+  eq(other: HtmlBlockWidget) {
+    return other.source === this.source;
+  }
+
+  toDOM(view: EditorView) {
+    const block = document.createElement("div");
+    block.className = "cm-otw-html-widget-block";
+    const host = document.createElement("div");
+    host.className = "cm-otw-html-widget";
+    host.title = "点击空白处编辑 HTML";
+    if (hasRenderableHtml(this.source)) host.append(sanitizeHtml(this.source));
+    else host.textContent = this.source;
+    host.addEventListener("mousedown", (event) => {
+      const target = event.target as HTMLElement;
+      const link = target.closest("a");
+      if (link) {
+        event.preventDefault();
+        const href = safeHref(link.getAttribute("href") ?? undefined);
+        if (href) void openExternal(href);
+        return;
+      }
+      // <details> 的开合交给浏览器；别一点就把整块切回源码
+      if (target.closest("summary")) return;
+      event.preventDefault();
+      jumpToSource(view, positionOf(view, block));
+    });
+    block.append(host);
+    return block;
+  }
+}

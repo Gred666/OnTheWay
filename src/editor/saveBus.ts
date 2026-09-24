@@ -1,3 +1,4 @@
+import { useData } from "@/data/store";
 import { isTauri, win } from "@/lib/tauri";
 
 export type FlushEditor = () => Promise<void>;
@@ -13,9 +14,23 @@ export async function flushAllEditors(): Promise<void> {
   await Promise.all([...flushers].map((flush) => flush()));
 }
 
+const messageOf = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object" && "message" in error) {
+    const { message } = error as { message: unknown };
+    if (typeof message === "string" && message) return message;
+  }
+  return String(error);
+};
+
 /**
  * close() 先触发 Tauri 的关闭请求；前端阻止默认关闭、等待所有编辑器落盘，
  * 再调用 forceClose() 真正销毁窗口。
+ *
+ * 保存失败时**不能**把窗口永久锁死 —— debouncedSave 会把失败的那一版放回队列，
+ * 下一次 flush 还是同一版、还是失败，用户会陷在一个点关闭没反应的窗口里。
+ * 所以失败时把原因显示到界面上并放行下一次关闭：再点一次 = 明确表示放弃未保存内容。
  */
 export async function installCloseGuard(): Promise<() => void> {
   if (!isTauri) {
@@ -28,15 +43,26 @@ export async function installCloseGuard(): Promise<() => void> {
 
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   let closing = false;
+  let discardOnNextRequest = false;
   return getCurrentWindow().onCloseRequested(async (event) => {
     if (closing) return;
+    if (discardOnNextRequest) {
+      closing = true;
+      await win.forceClose();
+      return;
+    }
     event.preventDefault();
     try {
       await flushAllEditors();
       closing = true;
       await win.forceClose();
     } catch (error) {
-      console.error("保存失败，已取消关闭窗口", error);
+      discardOnNextRequest = true;
+      const reason = messageOf(error);
+      console.error("保存失败，已取消本次关闭", error);
+      useData.setState({
+        saveError: `${reason}（内容尚未保存；再次点击关闭将放弃这些修改）`,
+      });
     }
   });
 }

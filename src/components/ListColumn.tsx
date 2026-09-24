@@ -1,7 +1,7 @@
 import { cn } from "@/lib/cn";
 import { tween } from "@/lib/motion";
 import { motion } from "motion/react";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 /**
  * 中列表栏的统一外壳。
@@ -61,35 +61,44 @@ export function ListColumn({
   );
 }
 
-/** 列表栏顶部的小图标按钮（排序、今天） */
+/**
+ * 列表栏顶部的小图标按钮（排序、今天）。
+ * 其余 props（含 ref）原样透传，这样它能直接当 Radix 菜单的触发元素：
+ * Slot 会把 ref、data-state、键盘/指针事件合并进来。
+ *
+ * 按下的反馈只用颜色，**不缩放**。原来是 whileTap scale 0.94：当它是菜单的
+ * 触发器时，菜单在 pointerdown 那一刻按缩小了的按钮定位，松手后按钮用 100ms
+ * 弹回原大，floating-ui 的位移监听（IntersectionObserver 盯着触发器的包围盒）
+ * 每一帧都跟着重新定位 —— 整个菜单跟着按钮的回弹抖一小段。
+ */
 export function ColumnButton({
   children,
-  onClick,
   label,
   wide,
-}: {
+  className,
+  ...rest
+}: ComponentProps<"button"> & {
   children: ReactNode;
-  onClick?: () => void;
   label: string;
   wide?: boolean;
 }) {
   return (
-    <motion.button
+    <button
       type="button"
-      onClick={onClick}
       aria-label={label}
       title={label}
-      whileTap={{ scale: 0.94 }}
-      transition={{ duration: 0.1 }}
       className={cn(
         "flex h-[30px] items-center justify-center gap-1.5 rounded-lg border border-line-strong",
         "bg-canvas text-muted transition-colors duration-[140ms] hover:border-faint/40",
-        "hover:text-ink",
+        "hover:text-ink active:bg-raised/60",
+        "data-[state=open]:border-faint/40 data-[state=open]:bg-raised/60 data-[state=open]:text-ink",
         wide ? "px-2.5 text-[11.5px]" : "w-[30px]",
+        className,
       )}
+      {...rest}
     >
       {children}
-    </motion.button>
+    </button>
   );
 }
 

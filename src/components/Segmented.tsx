@@ -51,9 +51,10 @@ export function Segmented<T extends string>({
                 transition={spring.smooth}
               />
             )}
+            {/* 字重不过渡：中文每个小数字重都要重新匹配字体，一帧十几毫秒（见 Sidebar） */}
             <span
               className={cn(
-                "relative z-10 whitespace-nowrap transition-[font-weight] duration-[140ms]",
+                "relative z-10 whitespace-nowrap",
                 active ? "font-semibold" : "font-normal",
               )}
             >

@@ -72,6 +72,51 @@ export function startOfMonth(s: ISODate): ISODate {
   return toISODate(d);
 }
 
+export function startOfYear(s: ISODate): ISODate {
+  return `${s.slice(0, 4)}-01-01`;
+}
+
+/* ---------- 目标周期 ----------
+   一个周期一篇 GOAL，键是它的起点。这里的算法必须和 Rust 侧的校验一致：
+   周 → 周一，月 → 1 号，年 → 1 月 1 日。 */
+
+export type PeriodHorizon = "week" | "month" | "year";
+
+/** 某一天所在周期的起点 */
+export function periodStartOf(horizon: PeriodHorizon, s: ISODate): ISODate {
+  if (horizon === "week") return startOfWeek(s);
+  if (horizon === "month") return startOfMonth(s);
+  return startOfYear(s);
+}
+
+/** 周期最后一天（含） */
+export function periodEndOf(horizon: PeriodHorizon, periodStart: ISODate): ISODate {
+  if (horizon === "week") return addDays(periodStart, 6);
+  if (horizon === "month") return addDays(addMonths(periodStart, 1), -1);
+  return `${periodStart.slice(0, 4)}-12-31`;
+}
+
+/**
+ * GOAL 文档的标题，按周期算而不是存在库里 ——
+ * 「本周目标」这种相对说法过了这周就不对了。
+ * 「第 37 周目标」「九月目标」「2026 年目标」
+ */
+export function goalTitle(horizon: PeriodHorizon, periodStart: ISODate): string {
+  if (horizon === "week") return `第 ${isoWeekNumber(periodStart)} 周目标`;
+  if (horizon === "month") return `${formatMonthCN(periodStart)}目标`;
+  return `${formatYear(periodStart)} 年目标`;
+}
+
+/** 周期的范围说明，放在状态栏：「9月14日 – 9月20日」「2026年9月」「2026年」 */
+export function formatPeriodCN(horizon: PeriodHorizon, periodStart: ISODate): string {
+  if (horizon === "week") {
+    return `${formatMonthDayCN(periodStart)} – ${formatMonthDayCN(periodEndOf("week", periodStart))}`;
+  }
+  const d = fromISODate(periodStart);
+  if (horizon === "month") return `${d.getFullYear()}年${d.getMonth() + 1}月`;
+  return `${d.getFullYear()}年`;
+}
+
 /** ISO 8601 周数。日历左列显示的「35」就是它。 */
 export function isoWeekNumber(s: ISODate): number {
   const d = fromISODate(s);
@@ -120,6 +165,11 @@ export function formatWeekdayCN(s: ISODate): string {
 export function formatMonthDayCN(s: ISODate): string {
   const d = fromISODate(s);
   return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+/** 「8月29日 · 周六」，日历某天文档标题上方的小字 */
+export function formatDayEyebrowCN(s: ISODate): string {
+  return `${formatMonthDayCN(s)} · 周${formatWeekdayCN(s)}`;
 }
 
 /** 「2026年8月18日」 */

@@ -21,13 +21,15 @@ export function SearchInput({
       className={cn(
         "relative flex h-9 items-center gap-2 rounded-lg px-2.5",
         "transition-colors duration-[160ms]",
-        focused ? "bg-canvas ring-1 ring-accent-line" : "bg-raised/55 hover:bg-raised/80",
+        // 聚焦只做「底色提亮 + 一圈中性描边」。原来这里是 ring-accent-line，
+        // 那圈蓝色比输入的文字还抢眼，看着像报错或者选中状态。
+        focused ? "bg-canvas ring-1 ring-line-strong" : "bg-raised/55 hover:bg-raised/80",
       )}
     >
       <motion.span
-        animate={{ scale: focused ? 1.06 : 1, color: focused ? "var(--color-accent)" : undefined }}
+        animate={{ scale: focused ? 1.06 : 1 }}
         transition={spring.snappy}
-        className="shrink-0 text-faint"
+        className={cn("shrink-0 transition-colors", focused ? "text-muted" : "text-faint")}
       >
         <Search size={13} strokeWidth={2} />
       </motion.span>

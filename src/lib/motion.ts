@@ -1,4 +1,5 @@
 import type { Transition, Variants } from "motion/react";
+import { useSyncExternalStore } from "react";
 
 /* ============================================================
    动效 token
@@ -7,6 +8,33 @@ import type { Transition, Variants } from "motion/react";
    2. 不动画化 backdrop-filter / box-shadow
    3. 时长 80–320ms，spring 必须可打断
    ============================================================ */
+
+/* ---------- 系统「减少动效」偏好 ---------- */
+
+const REDUCE_QUERY = "(prefers-reduced-motion: reduce)";
+
+const subscribeReduce = (onChange: () => void) => {
+  const mq = window.matchMedia(REDUCE_QUERY);
+  mq.addEventListener("change", onChange);
+  return () => mq.removeEventListener("change", onChange);
+};
+
+/**
+ * 系统是否要求减少动效。
+ *
+ * 不要用 motion 自己的 useReducedMotion()：Shell 上的 MotionConfig 只要设过一次
+ * reducedMotion="always"，motion 就把「要减少」写进了它的全局状态，之后即使切回
+ * "user" 也不会重新去读系统值 —— 表现就是应用内开关关掉以后，那个 hook 仍然一直
+ * 返回 true，靠它做判断的动画直到刷新页面才会回来。
+ * 直接问 matchMedia 不受这层影响。
+ */
+export function usePrefersReducedMotion(): boolean {
+  return useSyncExternalStore(
+    subscribeReduce,
+    () => window.matchMedia(REDUCE_QUERY).matches,
+    () => false,
+  );
+}
 
 export const spring = {
   /** 按钮、勾选、开关 —— 快，几乎不回弹 */

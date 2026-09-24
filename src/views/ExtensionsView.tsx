@@ -1,3 +1,4 @@
+import { OverlayScrollbar } from "@/components/OverlayScrollbar";
 import {
   type CatalogExtension,
   type ExtensionCategory,
@@ -16,6 +17,7 @@ const CATEGORY_LABEL: Record<"all" | ExtensionCategory, string> = {
 };
 
 export function ExtensionsView() {
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [extensions, setExtensions] = useState<CatalogExtension[]>([]);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<"all" | ExtensionCategory>("all");
@@ -58,97 +60,104 @@ export function ExtensionsView() {
   };
 
   return (
-    <div className="scroll-thin h-full overflow-y-auto bg-canvas">
-      <main className="mx-auto w-full max-w-[1120px] px-14 pt-[58px] pb-16">
-        <header className="flex items-start justify-between gap-8">
-          <div>
-            <h1 className="text-[38px] font-bold leading-tight tracking-[-0.025em] text-ink">
-              扩展
-            </h1>
-            <p className="mt-2 text-[13px] text-muted">下载社区扩展，或导入待发布的扩展清单。</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => inputRef.current?.click()}
-            className="flex h-9 items-center gap-2 rounded-lg bg-ink px-3.5 text-[12.5px]
+    // 和 DocumentView 用同一套：原生滚动条不画也不占位，滑块自己叠一个。
+    // relative 必须在滚动容器这一层，滑块才贴得住它的右边缘。
+    <div className="relative h-full bg-canvas">
+      <div ref={scrollRef} className="scroll-none h-full overflow-y-auto">
+        <main className="mx-auto w-full max-w-[1120px] px-14 pt-[58px] pb-16">
+          <header className="flex items-start justify-between gap-8">
+            <div>
+              <h1 className="text-[38px] font-bold leading-tight tracking-[-0.025em] text-ink">
+                扩展
+              </h1>
+              <p className="mt-2 text-[13px] text-muted">下载社区扩展，或导入待发布的扩展清单。</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              className="flex h-9 items-center gap-2 rounded-lg bg-ink px-3.5 text-[12.5px]
                        font-medium text-canvas transition-opacity hover:opacity-85"
-          >
-            <Upload size={14} />
-            上传扩展
-          </button>
-          <input
-            ref={inputRef}
-            type="file"
-            accept=".json,.otwx,application/json"
-            className="hidden"
-            onChange={(event) => void importFile(event.target.files?.[0])}
-          />
-        </header>
-
-        <div className="mt-8 flex items-center gap-3 border-y border-line py-4">
-          <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg bg-panel px-3">
-            <Search size={14} className="text-faint" />
+            >
+              <Upload size={14} />
+              上传扩展
+            </button>
             <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索扩展、作者或功能"
-              className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none"
+              ref={inputRef}
+              type="file"
+              accept=".json,.otwx,application/json"
+              className="hidden"
+              onChange={(event) => void importFile(event.target.files?.[0])}
             />
-          </label>
-          <div className="flex items-center gap-1 rounded-lg bg-panel p-1">
-            {(Object.keys(CATEGORY_LABEL) as ("all" | ExtensionCategory)[]).map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setCategory(value)}
-                className={cn(
-                  "rounded-md px-2.5 py-1.5 text-[11.5px] transition-colors",
-                  category === value ? "bg-canvas font-medium text-ink shadow-card" : "text-muted",
-                )}
-              >
-                {CATEGORY_LABEL[value]}
-              </button>
-            ))}
-          </div>
-        </div>
+          </header>
 
-        {message && (
-          <button
-            type="button"
-            onClick={() => setMessage(null)}
-            className="mt-4 w-full rounded-lg bg-accent-wash px-3 py-2 text-left text-[12px] text-accent"
-          >
-            {message}
-          </button>
-        )}
-
-        {loading ? (
-          <p className="py-16 text-center text-[13px] text-faint">正在加载扩展目录…</p>
-        ) : visible.length === 0 ? (
-          <div className="grid place-items-center py-20 text-center">
-            <PackageOpen size={28} className="text-faint" />
-            <p className="mt-3 text-[13px] text-muted">没有匹配的扩展</p>
-          </div>
-        ) : (
-          <section className="mt-6 grid grid-cols-1 gap-3 lg:grid-cols-2">
-            {visible.map((extension) => (
-              <ExtensionCard
-                key={`${extension.source}-${extension.id}`}
-                extension={extension}
-                onDownload={() => void localExtensionCatalog.download(extension)}
-                onRemove={
-                  extension.source === "local"
-                    ? async () => {
-                        await localExtensionCatalog.removeLocal(extension.id);
-                        await reload();
-                      }
-                    : undefined
-                }
+          <div className="mt-8 flex items-center gap-3 border-y border-line py-4">
+            <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg bg-panel px-3">
+              <Search size={14} className="text-faint" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索扩展、作者或功能"
+                className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none"
               />
-            ))}
-          </section>
-        )}
-      </main>
+            </label>
+            <div className="flex items-center gap-1 rounded-lg bg-panel p-1">
+              {(Object.keys(CATEGORY_LABEL) as ("all" | ExtensionCategory)[]).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setCategory(value)}
+                  className={cn(
+                    "rounded-md px-2.5 py-1.5 text-[11.5px] transition-colors",
+                    category === value
+                      ? "bg-canvas font-medium text-ink shadow-card"
+                      : "text-muted",
+                  )}
+                >
+                  {CATEGORY_LABEL[value]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {message && (
+            <button
+              type="button"
+              onClick={() => setMessage(null)}
+              className="mt-4 w-full rounded-lg bg-accent-wash px-3 py-2 text-left text-[12px] text-accent"
+            >
+              {message}
+            </button>
+          )}
+
+          {loading ? (
+            <p className="py-16 text-center text-[13px] text-faint">正在加载扩展目录…</p>
+          ) : visible.length === 0 ? (
+            <div className="grid place-items-center py-20 text-center">
+              <PackageOpen size={28} className="text-faint" />
+              <p className="mt-3 text-[13px] text-muted">没有匹配的扩展</p>
+            </div>
+          ) : (
+            <section className="mt-6 grid grid-cols-1 gap-3 lg:grid-cols-2">
+              {visible.map((extension) => (
+                <ExtensionCard
+                  key={`${extension.source}-${extension.id}`}
+                  extension={extension}
+                  onDownload={() => void localExtensionCatalog.download(extension)}
+                  onRemove={
+                    extension.source === "local"
+                      ? async () => {
+                          await localExtensionCatalog.removeLocal(extension.id);
+                          await reload();
+                        }
+                      : undefined
+                  }
+                />
+              ))}
+            </section>
+          )}
+        </main>
+      </div>
+      <OverlayScrollbar targetRef={scrollRef} />
     </div>
   );
 }

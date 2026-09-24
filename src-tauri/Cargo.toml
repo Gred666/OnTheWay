@@ -20,6 +20,8 @@ desktop-runtime = [
   "tauri/dynamic-acl",
   "tauri/x11",
   "tauri/dbus",
+  # 笔记里 `![](C:\…\a.png)` 这类本机图片走 asset 协议（tauri.conf.json 里开了 assetProtocol）
+  "tauri/protocol-asset",
 ]
 typegen = ["dep:tauri", "dep:tauri-specta", "tauri/test"]
 

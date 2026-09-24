@@ -101,28 +101,46 @@ pub async fn task_toggle(state: State<'_, AppState>, id: String) -> Result<Task>
 
 /* ---------------- 目标 ---------------- */
 
+/// 某个周期的目标。period_start 由前端按 horizon 算好（周一 / 1 号 / 1 月 1 日），
+/// domain 层会校验它确实是周期起点。没写过的周期返回空文档。
 #[tauri::command]
 #[specta::specta]
-pub async fn goal_latest(state: State<'_, AppState>, horizon: String) -> Result<Goal> {
-    if !matches!(horizon.as_str(), "week" | "month" | "year") {
-        return Err(AppError::Invalid(format!("未知的时间尺度: {horizon}")));
-    }
-    with_db(&state, move |c| goal::latest(c, &horizon)).await
+pub async fn goal_get(
+    state: State<'_, AppState>,
+    horizon: String,
+    period_start: String,
+) -> Result<Goal> {
+    validate_date(&period_start)?;
+    with_db(&state, move |c| goal::get_for_period(c, &horizon, &period_start)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn goal_save(state: State<'_, AppState>, id: String, content_md: String) -> Result<Goal> {
-    with_db(&state, move |c| goal::save(c, &id, &content_md)).await
+pub async fn goal_save(
+    state: State<'_, AppState>,
+    horizon: String,
+    period_start: String,
+    content_md: String,
+) -> Result<Goal> {
+    validate_date(&period_start)?;
+    with_db(&state, move |c| {
+        goal::save_for_period(c, &horizon, &period_start, &content_md)
+    })
+    .await
 }
 
 /* ---------------- 日历 ---------------- */
 
+/// `carry_over` 只在请求「今天」时传 true：今天还没写过就延续之前最近的一天。
 #[tauri::command]
 #[specta::specta]
-pub async fn calendar_day(state: State<'_, AppState>, date: String) -> Result<DayDoc> {
+pub async fn calendar_day(
+    state: State<'_, AppState>,
+    date: String,
+    carry_over: bool,
+) -> Result<DayDoc> {
     validate_date(&date)?;
-    with_db(&state, move |c| goal::day_doc(c, &date)).await
+    with_db(&state, move |c| goal::day_doc(c, &date, carry_over)).await
 }
 
 #[tauri::command]
@@ -130,10 +148,11 @@ pub async fn calendar_day(state: State<'_, AppState>, date: String) -> Result<Da
 pub async fn calendar_day_save(
     state: State<'_, AppState>,
     date: String,
+    title: String,
     note_md: String,
 ) -> Result<DayDoc> {
     validate_date(&date)?;
-    with_db(&state, move |c| goal::save_day_doc(c, &date, &note_md)).await
+    with_db(&state, move |c| goal::save_day_doc(c, &date, &title, &note_md)).await
 }
 
 #[tauri::command]

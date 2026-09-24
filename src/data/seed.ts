@@ -11,7 +11,7 @@ type SeedNote = Omit<Note, "archiveCategory" | "archivedAt" | "actionGroup"> & {
 type SeedGoal = Omit<Goal, "actionGroup"> & {
   actionGroup?: SeedActionGroup;
 };
-type SeedDayDoc = Omit<DayDoc, "tasks"> & { taskIds: string[] };
+type SeedDayDoc = Omit<DayDoc, "tasks" | "carriedFrom"> & { taskIds: string[] };
 
 /* ============================================================
    种子数据 —— 文案全部取自 Prototype/ 原型图，保持 1:1。
@@ -506,12 +506,24 @@ export const seedGoals: SeedGoal[] = [
 
 /* ---------------- 日历 ---------------- */
 
+// 「今日TODO」就是这一天的文档 —— 和 Rust 侧 seed / 迁移 0004 保持同一份内容。
 export const seedDayDocs: SeedDayDoc[] = [
   {
     date: "2026-08-29",
+    title: "完成专注模式原型",
     taskIds: ["t-cal-1", "t-cal-2", "t-cal-3"],
-    noteMd: "今天只安排最重要的三件事。给深度工作留下完整时间，不把未完成的事项带入下一天。",
-    updatedAt: t(0, 9, 12),
+    noteMd: [
+      "为编辑器补充一个真正安静的专注模式：隐藏非必要入口，只保留正文、字数和退出方式。",
+      "",
+      "## 检查项",
+      "",
+      "- [x] 梳理进入与退出路径",
+      "- [ ] 实现快捷键与状态保持",
+      "- [ ] 完成真实内容下的可用性走查",
+      "",
+      "今天只安排最重要的三件事。给深度工作留下完整时间，不把未完成的事项带入下一天。",
+    ].join("\n"),
+    updatedAt: t(0, 20, 14),
   },
 ];
 
@@ -558,6 +570,11 @@ export const seedTasksRaw: Task[] = seedTasks.map(normalizeTask);
 export const seedNotesRaw: Note[] = seedNotes.map(normalizeNote);
 export const seedArchivedRaw: Note[] = seedArchived.map(normalizeNote);
 export const seedGoalsRaw: Goal[] = seedGoals.map(normalizeGoal);
-export const seedDayNotes: Record<string, string> = Object.fromEntries(
-  seedDayDocs.map((day) => [day.date, day.noteMd]),
-);
+/** 日历某天的文档（不含任务），按日期索引；mock 直接在上面读写 */
+export const seedDayNotes: Record<string, { title: string; noteMd: string; updatedAt: number }> =
+  Object.fromEntries(
+    seedDayDocs.map((day) => [
+      day.date,
+      { title: day.title, noteMd: day.noteMd, updatedAt: day.updatedAt },
+    ]),
+  );

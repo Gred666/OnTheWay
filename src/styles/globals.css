@@ -32,6 +32,8 @@
   --color-success: #2f8a5b;
   --color-danger: #c8483d;
   --color-warning: #b8802a;
+  /* callout 的 IMPORTANT：主色系里没有紫，单独给一个 */
+  --color-callout-important: #7c5cd6;
 
   /* ---------- 圆角节奏 ---------- */
   --radius-xs: 4px;
@@ -62,6 +64,9 @@
   --shadow-card: 0 1px 2px rgb(26 26 24 / 0.04), 0 2px 8px rgb(26 26 24 / 0.04);
   --shadow-float: 0 2px 4px rgb(26 26 24 / 0.05), 0 8px 24px rgb(26 26 24 / 0.08);
   --shadow-modal: 0 8px 16px rgb(26 26 24 / 0.08), 0 24px 64px rgb(26 26 24 / 0.16);
+
+  /* 日历选中日画出来的那一圈：比主色浅一档的蓝 */
+  --color-calendar-ring: color-mix(in srgb, var(--color-accent) 50%, white);
 }
 
 /* ============================================================
@@ -95,10 +100,13 @@
     --color-success: #58b587;
     --color-danger: #e0776b;
     --color-warning: #d5a355;
+    --color-callout-important: #a78bfa;
 
     --shadow-card: 0 1px 2px rgb(0 0 0 / 0.24), 0 2px 8px rgb(0 0 0 / 0.2);
     --shadow-float: 0 2px 4px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.36);
     --shadow-modal: 0 8px 16px rgb(0 0 0 / 0.36), 0 24px 64px rgb(0 0 0 / 0.5);
+
+    --color-calendar-ring: color-mix(in srgb, var(--color-accent) 80%, white);
   }
 }
 
@@ -125,18 +133,24 @@
   --color-success: #58b587;
   --color-danger: #e0776b;
   --color-warning: #d5a355;
+  --color-callout-important: #a78bfa;
 
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.24), 0 2px 8px rgb(0 0 0 / 0.2);
   --shadow-float: 0 2px 4px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.36);
   --shadow-modal: 0 8px 16px rgb(0 0 0 / 0.36), 0 24px 64px rgb(0 0 0 / 0.5);
+
+  --color-calendar-ring: color-mix(in srgb, var(--color-accent) 80%, white);
 }
 
 /* ============================================================
    基础样式
    ============================================================ */
 
-* {
-  border-color: var(--color-line);
+/* 放进 base 层：不然这条无层级的规则会压过所有 border-* 颜色工具类 */
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
 }
 
 html,
@@ -201,14 +215,67 @@ body {
   background-clip: content-box;
 }
 
-/* ---------- 焦点环：只对键盘可见 ---------- */
-:focus {
-  outline: none;
+/* ---------- 完全不画滚动条（编辑区） ----------
+   写字的时候鼠标一直落在正文里，.scroll-thin 的 :hover 规则等于让滑块常驻
+   在右边距上。而且 Windows 的滚动条是占位的（实测 10px）—— 文档一超过一屏，
+   整列文字就往左跳一次。这里两个问题一起解决：不画、也不占位。
+   滚轮 / 触控板 / 键盘 / 编程式滚动都不受影响。
+
+   两条都要写：Chromium 121+ 和 Firefox 认标准属性 scrollbar-width，
+   而 Safari 到 18.2 才支持它 —— 构建目标里的 safari16 得靠 -webkit- 伪元素兜底。
+   （注意反过来不行：Chromium 上只要设了 scrollbar-width，
+   ::-webkit-scrollbar 就会被忽略。） */
+.scroll-none {
+  scrollbar-width: none;
 }
-:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-  border-radius: var(--radius-sm);
+.scroll-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---------- 覆盖式滚动条的滑块（编辑区） ----------
+   位置和高度由 OverlayScrollbar.tsx 每帧写 style，这里只管长相和显隐。
+   隐藏时必须一起关掉 pointer-events —— 否则右边缘会留一条看不见但能拖的
+   条子，正文最右侧那几个字就选不中了。
+   淡入比淡出快：出现要跟手，消失要不打扰。 */
+.otw-scroll-thumb {
+  opacity: 0;
+  pointer-events: none;
+  background-color: var(--color-line-strong);
+  transition: opacity 380ms var(--ease-out-quint), background-color var(--duration-fast) linear;
+}
+.otw-scroll-thumb[data-visible="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 120ms var(--ease-out-quint), background-color var(--duration-fast) linear;
+}
+/* 这里没有 height / transform 的 transition，是故意的。
+   缩放动画由 OverlayScrollbar 每帧自己算（文档高度做指数缓动），
+   再叠一层 CSS 过渡两边会互相追，反而更黏。CSS 只管透明度。 */
+.otw-scroll-thumb[data-visible="true"]:hover {
+  background-color: var(--color-faint);
+}
+
+/* ---------- 焦点环：只对键盘可见 ----------
+   必须放进 @layer base。这两条以前是无层的，而无层样式优先级高于所有
+   @layer —— 包括 Tailwind 的 utilities 层。结果就是各个输入框上写的
+   `outline-none` 一直是空写：`:focus-visible` 照样盖上 2px 主色轮廓。
+
+   而 `:focus-visible` 对 <input> / <textarea> 是「一聚焦就命中」（规范如此，
+   文本框预期要接键盘输入），鼠标点一下也会亮 —— 跟标题说的「只对键盘可见」
+   正好相反。搜索框自己已经画了聚焦态（底色提亮 + 一圈中性描边），再套一圈
+   蓝色轮廓就是多余的。
+
+   进了 base 层之后 utilities 层的 `outline-none` 才真的生效：写了的元素
+   （搜索框、命令面板、标题输入）安静下来，按钮 / 链接的键盘焦点环照旧。 */
+@layer base {
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
 }
 
 /* ---------- 可选中的文本区域 ---------- */
@@ -240,6 +307,58 @@ body {
   letter-spacing: -0.005em;
   margin-top: 2em;
   margin-bottom: 0.35em;
+}
+.prose-doc h1 {
+  color: var(--color-ink);
+  font-size: 26px;
+  font-weight: 680;
+  line-height: 1.35;
+  letter-spacing: -0.015em;
+}
+.prose-doc h4,
+.prose-doc h5,
+.prose-doc h6 {
+  color: var(--color-ink);
+  font-size: 15.5px;
+  font-weight: 620;
+  line-height: 1.6;
+}
+.prose-doc .prose-table-wrap {
+  overflow-x: auto;
+}
+.prose-doc table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 8px;
+  font-size: 14px;
+}
+.prose-doc th,
+.prose-doc td {
+  min-width: 90px;
+  border: 1px solid var(--color-line-strong);
+  padding: 8px 11px;
+}
+.prose-doc th {
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-weight: 650;
+}
+.prose-doc ul.prose-tasks {
+  padding-left: 0.1em;
+  list-style: none;
+}
+.prose-doc ul.prose-tasks li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5em;
+}
+.prose-doc ul.prose-tasks input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  accent-color: var(--color-accent);
+  translate: 0 2px;
 }
 .prose-doc h3 {
   color: var(--color-ink);
@@ -400,8 +519,100 @@ body {
   transition-duration: 0.01ms !important;
 }
 
+/* ------------------------------------------------------------
+   下拉菜单（ActionMenu）的进出场
+
+   用 CSS 关键帧而不是 Motion：Motion 动 scale / y 是逐帧用 JS 写
+   style.transform，Chromium 看到的只是「transform 又变了」，每一帧都
+   按新的缩放重新栅格化一遍 —— 文字在动画期间是抖着的、发虚的，停下来
+   才实，看着就是「菜单出来之后又渲染了一下」。CSS 动画由合成器驱动，
+   只按终态 1:1 栅格化一次，前几帧缩小显示的是同一张位图。
+
+   收起靠 Radix 自己的 Presence：data-state 翻到 closed 时它读到
+   animation-name 变了，就等 animationend 再卸载。所以进出场必须是
+   **两个不同名字**的动画。
+
+   起点 scale 0.96 + 上移 4px，从触发器那一角（transform-origin 由 Radix
+   算好）长出来；160ms，前快后缓。收起 100ms 淡掉、微微缩回。
+   ------------------------------------------------------------ */
+.otw-menu {
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin);
+}
+.otw-menu[data-state="open"] {
+  animation: otw-menu-in 160ms var(--ease-out-quint) both;
+}
+.otw-menu[data-state="closed"] {
+  animation: otw-menu-out 100ms var(--ease-in-out-sub) both;
+}
+@keyframes otw-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+}
+@keyframes otw-menu-out {
+  to {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.98);
+  }
+}
+
+/* ------------------------------------------------------------
+   手写 Logo 的描边循环
+   一轮 6.6s：0→9% 描出这一笔，挂到 55%，67% 之前沿同方向收回，
+   剩下的时间留白。每笔靠 animation-delay 错开 0.22s（见 Logo.tsx），
+   所以九笔写完在 2.35s，整词完整停留约 1.3s。
+
+   dasharray 用 `1 3` 而不是 `1`：pathLength 归一化后路径长就是 1，
+   间隔留短了的话 offset 推到 ±1 时下一段虚线会从另一头探进来，
+   round linecap 就在笔画尾巴上留一个点。
+   ------------------------------------------------------------ */
+.otw-logo-stroke {
+  stroke-dasharray: 1 3;
+  /* 静止态 = 写完。动画被降级掉时落在这里，而不是空白 */
+  stroke-dashoffset: 0;
+  animation: otw-logo-write 6.6s infinite backwards;
+}
+@keyframes otw-logo-write {
+  0% {
+    stroke-dashoffset: 1.02;
+    animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1);
+  }
+  9% {
+    stroke-dashoffset: 0;
+    animation-timing-function: linear;
+  }
+  55% {
+    stroke-dashoffset: 0;
+    animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
+  }
+  67% {
+    stroke-dashoffset: -1.02;
+  }
+  100% {
+    stroke-dashoffset: -1.02;
+  }
+}
+
+/* 减少动效：上面那两条全局兜底只压时长，无限循环会被压成高频闪烁，
+   这里直接掐掉动画，停在写完的状态。必须排在全局规则之后。 */
+@media (prefers-reduced-motion: reduce) {
+  .otw-logo-stroke {
+    animation: none !important;
+  }
+}
+:root[data-reduce-motion="true"] .otw-logo-stroke {
+  animation: none !important;
+}
+
 /* ============================================================
-   Typora 风格的 Milkdown 编辑器稳定岛
+   Typora 风格的 CodeMirror 编辑器稳定岛
+
+   约定：
+   - 这里所有动画只动 opacity / transform / stroke，绝不动尺寸 ——
+     CodeMirror 用 getBoundingClientRect 量 widget 高度，尺寸一动高度图就错。
+   - 块级 widget 的留白一律用外层容器的 padding，不用 margin（同一原因）。
+   - 减少动效由文件前面的全局规则统一收掉（animation-duration 0.01ms）。
    ============================================================ */
 
 .otw-editor {
@@ -434,6 +645,16 @@ body {
   caret-color: var(--color-accent);
 }
 
+/* 后面还跟着别的内容（日历当日安排）：不撑高、不留大段底部空白，
+   正文写到哪，任务列表就接在哪。 */
+.otw-editor.is-compact,
+.otw-editor.is-compact .cm-content {
+  min-height: 0;
+}
+.otw-editor.is-compact .cm-content {
+  padding-bottom: 8px;
+}
+
 .otw-editor .cm-line {
   position: relative;
   padding: 0;
@@ -452,22 +673,97 @@ body {
   background: transparent;
 }
 
-/* Typora 式聚焦编辑：未聚焦的标记由 decoration 折叠，当前语法范围按原位展开。 */
+.otw-editor .cm-gutters {
+  display: none;
+}
+
+/* ---------- 通用的进出场 ---------- */
+
+/* 光标离开语法范围时替身才出现：给它一个极短的淡入，别「啪」地冒出来 */
+@keyframes otw-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* 块级替身：淡入 + 往上 3px 落定 */
+@keyframes otw-block-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Typora 式聚焦编辑：未聚焦的标记由 decoration 折叠，当前语法范围按原位展开。
+   展开的瞬间标记淡入，和替身淡出的节奏对上。 */
 .otw-editor .cm-otw-syntax-marker {
   color: var(--color-faint);
   font-size: 0.78em;
   white-space: nowrap;
   vertical-align: 0.08em;
+  animation: otw-fade-in 160ms var(--ease-out-quint) both;
 }
 
-.otw-editor .cm-gutters {
-  display: none;
-}
+/* ---------- 标题 ---------- */
 
 .otw-editor :is(.cm-otw-h1, .cm-otw-h2, .cm-otw-h3, .cm-otw-h4, .cm-otw-h5, .cm-otw-h6) {
   color: var(--color-ink);
   font-weight: 650;
   letter-spacing: -0.015em;
+}
+
+/* 悬停时在左侧浮出层级提示（H2），平时不占位、不可见 */
+.otw-editor :is(.cm-otw-h1, .cm-otw-h2, .cm-otw-h3, .cm-otw-h4, .cm-otw-h5, .cm-otw-h6)::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 100%;
+  display: flex;
+  align-items: center;
+  width: max-content;
+  margin-right: 0.75em;
+  color: var(--color-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(4px);
+  transition: opacity var(--duration-fast) var(--ease-out-quint), transform var(--duration-fast)
+    var(--ease-out-quint);
+  pointer-events: none;
+}
+.otw-editor .cm-otw-h1::before {
+  content: "H1";
+}
+.otw-editor .cm-otw-h2::before {
+  content: "H2";
+}
+.otw-editor .cm-otw-h3::before {
+  content: "H3";
+}
+.otw-editor .cm-otw-h4::before {
+  content: "H4";
+}
+.otw-editor .cm-otw-h5::before {
+  content: "H5";
+}
+.otw-editor .cm-otw-h6::before {
+  content: "H6";
+}
+.otw-editor
+  :is(.cm-otw-h1, .cm-otw-h2, .cm-otw-h3, .cm-otw-h4, .cm-otw-h5, .cm-otw-h6):hover::before {
+  opacity: 1;
+  transform: none;
 }
 
 .otw-editor .cm-otw-h1 {
@@ -506,6 +802,8 @@ body {
   letter-spacing: 0.01em;
 }
 
+/* ---------- 行内样式 ---------- */
+
 .otw-editor .cm-otw-strong {
   color: var(--color-ink);
   font-weight: 700;
@@ -521,6 +819,29 @@ body {
   text-decoration: underline;
   text-underline-offset: 0.16em;
 }
+/* ==高亮==：像荧光笔那样只涂文字下半截，不是整块色底 */
+.otw-editor .cm-otw-highlight {
+  border-radius: 2px;
+  background: linear-gradient(
+    transparent 32%,
+    color-mix(in srgb, var(--color-warning) 38%, transparent) 32%,
+    color-mix(in srgb, var(--color-warning) 38%, transparent) 92%,
+    transparent 92%
+  );
+  padding: 0 0.08em;
+  color: var(--color-ink);
+}
+.otw-editor .cm-otw-sub,
+.otw-editor .cm-otw-sup {
+  font-size: 0.72em;
+  line-height: 0;
+}
+.otw-editor .cm-otw-sub {
+  vertical-align: -0.35em;
+}
+.otw-editor .cm-otw-sup {
+  vertical-align: 0.55em;
+}
 .otw-editor .cm-otw-code {
   border-radius: 4px;
   background: var(--color-rail);
@@ -530,17 +851,203 @@ body {
 .otw-editor .cm-otw-code-text {
   font-family: var(--font-mono);
 }
+
+/* 链接：平时下划线是淡的，悬停实起来；按住 Mod 时变成手形 */
 .otw-editor .cm-otw-link {
   color: var(--color-accent);
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, var(--color-accent) 42%, transparent);
   text-underline-offset: 3px;
+  transition: text-decoration-color var(--duration-fast) var(--ease-out-quint);
 }
+.otw-editor .cm-otw-link:hover {
+  text-decoration-color: var(--color-accent);
+}
+.otw-editor .cm-content[data-mod-key] .cm-otw-link,
+.otw-editor .cm-content[data-mod-key] .cm-otw-wikilink {
+  cursor: pointer;
+}
+
+/* [[双链]]：和只读排版里的 .otw-wikilink 同一副样子 */
+.otw-editor .cm-otw-wikilink {
+  color: var(--color-ink);
+  background: var(--color-accent-wash);
+  padding: 0.08em 0.32em;
+  border-radius: var(--radius-xs);
+  border-bottom: 1px solid var(--color-accent-line);
+  transition: background-color var(--duration-fast) var(--ease-out-quint), border-color
+    var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .cm-otw-wikilink:hover {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  border-bottom-color: var(--color-accent);
+}
+
+.otw-editor .cm-otw-html,
+.otw-editor .cm-otw-reference,
+.otw-editor .cm-otw-glyph-source,
+.otw-editor .cm-otw-footnote-source,
+.otw-editor .cm-otw-callout-label {
+  color: var(--color-faint);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.otw-editor .cm-otw-html-block {
+  color: var(--color-faint);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* Emoji / 实体替身；硬换行的 ↵ 提示 */
+.otw-editor .cm-otw-glyph {
+  animation: otw-fade-in 140ms var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-glyph.is-emoji {
+  font-size: 1.05em;
+  line-height: 1;
+}
+.otw-editor .cm-otw-hard-break {
+  margin-left: 0.25em;
+  color: var(--color-faint);
+  font-size: 0.72em;
+  opacity: 0.75;
+  user-select: none;
+  animation: otw-fade-in 140ms var(--ease-out-quint) both;
+}
+
+/* 脚注：正文里是小小的上标徽章，定义行开头是同款徽章 */
+.otw-editor .cm-otw-footnote {
+  display: inline-block;
+  min-width: 1.4em;
+  border-radius: 999px;
+  background: var(--color-accent-wash);
+  color: var(--color-accent);
+  font-family: var(--font-sans);
+  font-size: 0.7em;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  padding: 0 0.42em;
+  animation: otw-fade-in 140ms var(--ease-out-quint) both;
+  transition: background-color var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .cm-otw-footnote.is-ref {
+  vertical-align: super;
+  line-height: 1.35;
+  margin: 0 0.1em;
+}
+.otw-editor .cm-otw-footnote.is-def {
+  margin-right: 0.5em;
+  vertical-align: 0.1em;
+}
+.otw-editor .cm-otw-footnote:hover {
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+.otw-editor .cm-otw-footnote-def {
+  color: var(--color-muted);
+  font-size: 0.92em;
+}
+
+/* ---------- 引用块：按嵌套层数叠竖线 ---------- */
+
 .otw-editor .cm-otw-quote {
-  border-left: 3px solid var(--color-accent-line);
+  --quote-bar: var(--color-accent-line);
+  border-left: 3px solid var(--quote-bar);
   padding-left: 1em;
   color: var(--color-muted);
+  background-repeat: no-repeat;
 }
+.otw-editor .cm-otw-quote-d2 {
+  padding-left: 2.1em;
+  background-image: linear-gradient(var(--quote-bar), var(--quote-bar));
+  background-size: 3px 100%;
+  background-position: 1.1em 0;
+}
+.otw-editor .cm-otw-quote-d3 {
+  padding-left: 3.2em;
+  background-image: linear-gradient(var(--quote-bar), var(--quote-bar)),
+    linear-gradient(var(--quote-bar), var(--quote-bar));
+  background-size: 3px 100%, 3px 100%;
+  background-position: 1.1em 0, 2.2em 0;
+}
+.otw-editor .cm-otw-quote-d4 {
+  padding-left: 4.3em;
+  background-image: linear-gradient(var(--quote-bar), var(--quote-bar)),
+    linear-gradient(var(--quote-bar), var(--quote-bar)),
+    linear-gradient(var(--quote-bar), var(--quote-bar));
+  background-size: 3px 100%, 3px 100%, 3px 100%;
+  background-position: 1.1em 0, 2.2em 0, 3.3em 0;
+}
+
+/* ---------- Callout：`> [!标签]` ---------- */
+
+/* 中文自定义标签（核心判断 / 当时的结论）走原型的样子：主色竖线、无底色、
+   正文放大加重；GitHub 的五种语义标签则按语义配色并铺一层极淡的底。 */
+.otw-editor .cm-otw-callout {
+  --callout: var(--color-accent);
+  --callout-fill: transparent;
+  border-left: 3px solid var(--callout);
+  background: var(--callout-fill);
+  padding-left: 1em;
+  padding-right: 0.8em;
+  color: var(--color-ink);
+  font-size: 1.04em;
+  font-weight: 550;
+  line-height: 1.7;
+  letter-spacing: 0.005em;
+}
+.otw-editor .cm-otw-callout.is-note,
+.otw-editor .cm-otw-callout.is-tip,
+.otw-editor .cm-otw-callout.is-important,
+.otw-editor .cm-otw-callout.is-warning,
+.otw-editor .cm-otw-callout.is-caution {
+  --callout-fill: color-mix(in srgb, var(--callout) 7%, transparent);
+  color: var(--color-body);
+  font-size: 1em;
+  font-weight: 450;
+}
+.otw-editor .cm-otw-callout.is-tip {
+  --callout: var(--color-success);
+}
+.otw-editor .cm-otw-callout.is-important {
+  --callout: var(--color-callout-important);
+}
+.otw-editor .cm-otw-callout.is-warning {
+  --callout: var(--color-warning);
+}
+.otw-editor .cm-otw-callout.is-caution {
+  --callout: var(--color-danger);
+}
+.otw-editor .cm-otw-callout-head {
+  padding-top: 0.45em;
+  border-top-right-radius: 8px;
+}
+.otw-editor .cm-otw-callout-tail {
+  padding-bottom: 0.4em;
+  border-bottom-right-radius: 8px;
+}
+.otw-editor .cm-otw-callout-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--callout);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  line-height: 1.6;
+  text-transform: uppercase;
+  vertical-align: 0.05em;
+  animation: otw-fade-in 160ms var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-callout-badge svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+/* ---------- 代码块 ---------- */
+
 .otw-editor .cm-otw-code-block {
   border-right: 1px solid var(--color-line-strong);
   border-left: 1px solid var(--color-line-strong);
@@ -549,68 +1056,6 @@ body {
   padding-left: 14px;
   font-family: var(--font-mono);
   font-size: 0.9em;
-}
-.otw-editor .cm-otw-table {
-  border-bottom: 1px solid var(--color-line);
-  background: color-mix(in srgb, var(--color-panel) 72%, transparent);
-  font-family: var(--font-mono);
-  font-size: 0.88em;
-}
-.otw-editor .cm-otw-table-widget {
-  width: 100%;
-  margin: 0.9em 0;
-  border-collapse: collapse;
-  overflow: hidden;
-  border: 1px solid var(--color-line-strong);
-  border-radius: 8px;
-  background: var(--color-canvas);
-  font-size: 14px;
-}
-.otw-editor .cm-otw-table-widget th,
-.otw-editor .cm-otw-table-widget td {
-  min-width: 90px;
-  border: 1px solid var(--color-line-strong);
-  padding: 8px 11px;
-  color: var(--color-body);
-}
-.otw-editor .cm-otw-table-widget th {
-  background: var(--color-panel);
-  color: var(--color-ink);
-  font-weight: 650;
-}
-.otw-editor .cm-otw-list-item {
-  padding-left: 0.35em;
-}
-.otw-editor .cm-otw-list-marker {
-  display: inline-block;
-  min-width: 0.85em;
-  color: var(--color-muted);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-.otw-editor .cm-otw-html,
-.otw-editor .cm-otw-escape,
-.otw-editor .cm-otw-reference {
-  color: var(--color-faint);
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-}
-.otw-editor .cm-otw-task {
-  display: inline-grid;
-  width: 16px;
-  height: 16px;
-  margin: 0 0.42em 0 0.1em;
-  place-items: center;
-  border: 1.5px solid var(--color-line-strong);
-  border-radius: 4px;
-  color: white;
-  font-size: 11px;
-  line-height: 1;
-  vertical-align: -2px;
-}
-.otw-editor .cm-otw-task.is-checked {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
 }
 .otw-editor .cm-otw-code-info {
   position: absolute;
@@ -622,19 +1067,856 @@ body {
   font-weight: 500;
   line-height: 1;
 }
-.otw-editor .cm-otw-hr {
+
+/* 折叠掉的围栏行的替身：给代码块封上下两个口，
+   顺带在开头那条显示语言名和复制按钮。 */
+.otw-editor .cm-otw-code-fence {
+  display: flex;
+  height: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  box-sizing: border-box;
+  border-right: 1px solid var(--color-line-strong);
+  border-left: 1px solid var(--color-line-strong);
+  background: var(--color-panel);
+  padding: 0 8px 0 12px;
+  animation: otw-fade-in 140ms var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-fence-block.is-open {
+  padding-top: 0.5em;
+}
+.otw-editor .cm-otw-fence-block.is-close {
+  padding-bottom: 0.5em;
+}
+.otw-editor .cm-otw-code-fence.is-open {
+  height: 28px;
+  border-top: 1px solid var(--color-line-strong);
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+.otw-editor .cm-otw-code-fence.is-close {
+  border-bottom: 1px solid var(--color-line-strong);
+  border-bottom-right-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+.otw-editor .cm-otw-code-lang {
+  color: var(--color-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+.otw-editor .cm-otw-code-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 3px 6px;
+  color: var(--color-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity var(--duration-fast) var(--ease-out-quint), background-color
+    var(--duration-fast) var(--ease-out-quint), color var(--duration-fast) var(--ease-out-quint),
+    transform var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .cm-otw-code-fence:hover .cm-otw-code-copy,
+.otw-editor .cm-otw-code-copy:focus-visible {
+  opacity: 1;
+}
+.otw-editor .cm-otw-code-copy:hover {
+  background: var(--color-raised);
+  color: var(--color-body);
+}
+.otw-editor .cm-otw-code-copy:active {
+  transform: scale(0.94);
+}
+.otw-editor .cm-otw-code-copy.is-done {
+  color: var(--color-success);
+  opacity: 1;
+}
+.otw-editor .cm-otw-code-copy-icon {
+  width: 12px;
+  height: 12px;
+}
+.otw-editor .cm-otw-code-copy.is-done .cm-otw-code-copy-icon path {
+  stroke-dasharray: 1;
+  animation: otw-check-draw 220ms var(--ease-out-quint) both;
+}
+
+/* 代码高亮的调色板：只在编辑器里生效，亮暗各一套 */
+.otw-editor {
+  --code-keyword: #8b3fc9;
+  --code-string: #2f7d4f;
+  --code-comment: #9a9a92;
+  --code-number: #b45d1f;
+  --code-function: #2f63d8;
+  --code-definition: #1f5fb8;
+  --code-type: #0e7c86;
+  --code-property: #3b5bcc;
+  --code-tag: #2f8a5b;
+  --code-operator: #74746e;
+  --code-punct: #8d8d85;
+  --code-meta: #8d8d85;
+  --code-invalid: #c8483d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .otw-editor {
+    --code-keyword: #c792ea;
+    --code-string: #98c379;
+    --code-comment: #6f6f68;
+    --code-number: #e5a06b;
+    --code-function: #82a4f4;
+    --code-definition: #9cbcff;
+    --code-type: #5fc4cf;
+    --code-property: #8fa9f5;
+    --code-tag: #7fd1a3;
+    --code-operator: #a7a79f;
+    --code-punct: #8d8d85;
+    --code-meta: #8d8d85;
+    --code-invalid: #e0776b;
+  }
+}
+:root[data-theme="dark"] .otw-editor {
+  --code-keyword: #c792ea;
+  --code-string: #98c379;
+  --code-comment: #6f6f68;
+  --code-number: #e5a06b;
+  --code-function: #82a4f4;
+  --code-definition: #9cbcff;
+  --code-type: #5fc4cf;
+  --code-property: #8fa9f5;
+  --code-tag: #7fd1a3;
+  --code-operator: #a7a79f;
+  --code-punct: #8d8d85;
+  --code-meta: #8d8d85;
+  --code-invalid: #e0776b;
+}
+.otw-editor .tok-keyword {
+  color: var(--code-keyword);
+}
+.otw-editor .tok-string {
+  color: var(--code-string);
+}
+.otw-editor .tok-comment {
+  color: var(--code-comment);
+  font-style: italic;
+}
+.otw-editor .tok-number {
+  color: var(--code-number);
+}
+.otw-editor .tok-function {
+  color: var(--code-function);
+}
+.otw-editor .tok-definition {
+  color: var(--code-definition);
+}
+.otw-editor .tok-type {
+  color: var(--code-type);
+}
+.otw-editor .tok-property {
+  color: var(--code-property);
+}
+.otw-editor .tok-tag {
+  color: var(--code-tag);
+}
+.otw-editor .tok-operator {
+  color: var(--code-operator);
+}
+.otw-editor .tok-punct {
+  color: var(--code-punct);
+}
+.otw-editor .tok-meta {
+  color: var(--code-meta);
+}
+.otw-editor .tok-invalid {
+  color: var(--code-invalid);
+  text-decoration: wavy underline;
+}
+
+/* ---------- 表格 ---------- */
+
+.otw-editor .cm-otw-table {
+  border-bottom: 1px solid var(--color-line);
+  background: color-mix(in srgb, var(--color-panel) 72%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+/* 块级 widget 的间距一律用外层容器的 padding，绝不能用 margin ——
+   CodeMirror 用 getBoundingClientRect()（边框盒）测量 widget 高度，
+   margin 不在边框盒里，会让高度图比真实布局短，进而导致点击定位到错误的行。 */
+.otw-editor .cm-otw-table-block {
+  /* font-size 跟表格保持一致，0.9em 才能解析出和以前相同的 12.6px 留白。 */
+  font-size: 14px;
+  padding: 0.9em 0;
+}
+.otw-editor .cm-otw-table-widget {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  overflow: hidden;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 8px;
+  background: var(--color-canvas);
+  font-size: 14px;
+  cursor: text;
+  animation: otw-block-in var(--duration-base) var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-table-widget th,
+.otw-editor .cm-otw-table-widget td {
+  min-width: 90px;
+  border: 1px solid var(--color-line-strong);
+  padding: 8px 11px;
+  color: var(--color-body);
+  transition: background-color var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .cm-otw-table-widget th {
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-weight: 650;
+}
+.otw-editor .cm-otw-table-widget tbody tr:hover td {
+  background: var(--color-accent-wash-2);
+}
+.otw-editor .cm-otw-table-widget .cm-otw-code {
+  padding: 0 4px;
+  font-size: 0.92em;
+}
+
+/* ---------- 列表 / 任务 ---------- */
+
+.otw-editor .cm-otw-list-item {
+  padding-left: 0.35em;
+}
+.otw-editor .cm-otw-list-marker {
   display: inline-block;
+  min-width: 0.85em;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  animation: otw-fade-in 140ms var(--ease-out-quint) both;
+}
+
+/* 勾选框：悬停亮边、按下微缩、勾上时盒子弹一下 + 对勾从左到右描出来 */
+@keyframes otw-check-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes otw-task-pop {
+  0% {
+    transform: scale(0.82);
+  }
+  55% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.otw-editor .cm-otw-task {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  margin: 0 0.42em 0 0.1em;
+  place-items: center;
+  border: 1.5px solid var(--color-line-strong);
+  border-radius: 4px;
+  color: var(--color-accent-ink);
+  line-height: 1;
+  vertical-align: -2px;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out-quint), background-color
+    var(--duration-fast) var(--ease-out-quint), box-shadow var(--duration-fast)
+    var(--ease-out-quint), transform var(--duration-instant) var(--ease-out-quint);
+}
+.otw-editor .cm-otw-task:hover {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+.otw-editor .cm-otw-task:active {
+  transform: scale(0.88);
+}
+.otw-editor .cm-otw-task.is-checked {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  animation: otw-task-pop 260ms var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-task-check {
+  width: 11px;
+  height: 11px;
+  stroke-width: 2.6;
+  opacity: 0;
+}
+.otw-editor .cm-otw-task-check path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+.otw-editor .cm-otw-task.is-checked .cm-otw-task-check {
+  opacity: 1;
+}
+.otw-editor .cm-otw-task.is-checked .cm-otw-task-check path {
+  stroke-dashoffset: 0;
+  animation: otw-check-draw 220ms var(--ease-out-quint) 60ms both;
+}
+
+/* ---------- 分隔线 ---------- */
+
+.otw-editor .cm-otw-hr {
+  display: block;
+  box-sizing: content-box;
   width: 100%;
   height: 1px;
-  margin: 0.65em 0;
-  background: var(--color-line-strong);
-  vertical-align: middle;
+  /* 留白必须进边框盒。padding 撑开盒子，背景只画在 1px 的内容盒里。 */
+  padding: 0.9em 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-line-strong) 10%,
+    var(--color-line-strong) 90%,
+    transparent
+  );
+  background-clip: content-box;
+  animation: otw-fade-in 160ms var(--ease-out-quint) both;
 }
+
+/* ---------- 图片 ---------- */
+
 .otw-editor .cm-otw-image {
   display: block;
+  /* 行内 widget 同样别用 margin：块级子元素的上下 margin 会穿透 .cm-line
+     折叠出去，那一行量到的高度就少了。padding 不会折叠。 */
+  box-sizing: content-box;
   max-width: min(100%, 680px);
   max-height: 520px;
-  margin: 0.8em 0;
+  padding: 0.8em 0;
   border-radius: 8px;
   object-fit: contain;
+  /* 加载完再淡入，别让大图「啪」地把正文顶下去 */
+  opacity: 0;
+  transition: opacity var(--duration-slow) var(--ease-out-quint);
+}
+.otw-editor .cm-otw-image.is-loaded,
+.otw-editor .cm-otw-image.is-error {
+  opacity: 1;
+}
+.otw-editor .cm-otw-image.is-error {
+  color: var(--color-faint);
+  font-size: 0.9em;
+}
+
+/* ---------- [TOC] ---------- */
+
+.otw-editor .cm-otw-toc-block {
+  padding: 0.6em 0;
+}
+.otw-editor .cm-otw-toc {
+  border: 1px solid var(--color-line-strong);
+  border-radius: 10px;
+  background: var(--color-panel);
+  padding: 12px 14px 10px;
+  cursor: text;
+  animation: otw-block-in var(--duration-base) var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-toc-title {
+  margin-bottom: 6px;
+  padding: 0 8px;
+  color: var(--color-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+}
+.otw-editor .cm-otw-toc-empty {
+  padding: 0 8px;
+  color: var(--color-faint);
+  font-size: 0.9em;
+}
+.otw-editor .cm-otw-toc-list {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.otw-editor .cm-otw-toc-item {
+  padding-left: calc(var(--depth, 0) * 1.1em);
+}
+.otw-editor .cm-otw-toc-item button {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 8px;
+  color: var(--color-body);
+  font-family: var(--font-sans);
+  font-size: 0.92em;
+  line-height: 1.55;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out-quint), color
+    var(--duration-fast) var(--ease-out-quint), transform var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .cm-otw-toc-item button:hover {
+  background: var(--color-accent-wash);
+  color: var(--color-accent);
+  transform: translateX(2px);
+}
+.otw-editor .cm-otw-toc-source {
+  color: var(--color-faint);
+  font-family: var(--font-mono);
+}
+
+/* ---------- Front matter ---------- */
+
+.otw-editor .cm-otw-frontmatter {
+  border-right: 1px solid var(--color-line-strong);
+  border-left: 1px solid var(--color-line-strong);
+  background: var(--color-panel);
+  padding-right: 14px;
+  padding-left: 14px;
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  line-height: 1.7;
+}
+.otw-editor .cm-otw-frontmatter-fence-line {
+  color: var(--color-faint);
+}
+.otw-editor .cm-otw-frontmatter-block.is-close {
+  padding-bottom: 0.8em;
+}
+.otw-editor .cm-otw-frontmatter-fence {
+  display: flex;
+  height: 10px;
+  align-items: center;
+  box-sizing: border-box;
+  border-right: 1px solid var(--color-line-strong);
+  border-left: 1px solid var(--color-line-strong);
+  background: var(--color-panel);
+  padding: 0 12px;
+  cursor: text;
+  animation: otw-fade-in 140ms var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-frontmatter-fence.is-open {
+  height: 26px;
+  border-top: 1px solid var(--color-line-strong);
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+.otw-editor .cm-otw-frontmatter-fence.is-close {
+  border-bottom: 1px solid var(--color-line-strong);
+  border-bottom-right-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+.otw-editor .cm-otw-frontmatter-label {
+  color: var(--color-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+
+/* ---------- 行内 HTML：<kbd> <small> <big> <span style> <abbr> ---------- */
+
+.otw-editor .cm-otw-kbd {
+  display: inline-block;
+  border: 1px solid var(--color-line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--color-panel);
+  padding: 0 0.38em;
+  color: var(--color-body);
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  line-height: 1.55;
+  vertical-align: 0.08em;
+}
+.otw-editor .cm-otw-small {
+  font-size: 0.85em;
+}
+.otw-editor .cm-otw-big {
+  font-size: 1.2em;
+}
+/* 缩写：点状下划线，悬停看全称（title） */
+.otw-editor .cm-otw-abbr {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--color-muted);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.otw-editor .cm-otw-abbr-def {
+  color: var(--color-faint);
+  font-size: 0.9em;
+}
+/* <br>：↵ 提示之后真的换一行 */
+.otw-editor .cm-otw-br {
+  display: inline;
+}
+/* HTML 注释：一个小小的「注释」标记 */
+.otw-editor .cm-otw-comment {
+  display: inline-block;
+  border: 1px dashed var(--color-line-strong);
+  border-radius: 999px;
+  padding: 0 0.55em;
+  color: var(--color-faint);
+  font-family: var(--font-sans);
+  font-size: 0.72em;
+  line-height: 1.6;
+  vertical-align: 0.12em;
+  user-select: none;
+  cursor: text;
+  animation: otw-fade-in 140ms var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-comment-block {
+  padding: 0.25em 0;
+}
+
+/* ---------- 块级 HTML 的替身 ---------- */
+
+.otw-editor .cm-otw-html-widget-block {
+  padding: 0.35em 0;
+}
+.otw-editor .cm-otw-html-widget {
+  cursor: text;
+  animation: otw-block-in var(--duration-base) var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-html-widget :is(h1, h2, h3, h4, h5, h6) {
+  margin: 0.5em 0 0.25em;
+  color: var(--color-ink);
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+}
+.otw-editor .cm-otw-html-widget h1 {
+  font-size: 1.7em;
+}
+.otw-editor .cm-otw-html-widget h2 {
+  font-size: 1.4em;
+}
+.otw-editor .cm-otw-html-widget h3 {
+  font-size: 1.18em;
+}
+.otw-editor .cm-otw-html-widget :is(h4, h5, h6) {
+  font-size: 1em;
+}
+.otw-editor .cm-otw-html-widget p {
+  margin: 0.4em 0;
+}
+.otw-editor .cm-otw-html-widget :is(ul, ol) {
+  margin: 0.3em 0;
+  padding-left: 1.6em;
+}
+.otw-editor .cm-otw-html-widget ul {
+  list-style: disc;
+}
+.otw-editor .cm-otw-html-widget ol {
+  list-style: decimal;
+}
+.otw-editor .cm-otw-html-widget table {
+  border-collapse: collapse;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 8px;
+  background: var(--color-canvas);
+  font-size: 14px;
+}
+.otw-editor .cm-otw-html-widget :is(th, td) {
+  min-width: 60px;
+  border: 1px solid var(--color-line-strong);
+  padding: 7px 11px;
+}
+.otw-editor .cm-otw-html-widget th {
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-weight: 650;
+}
+.otw-editor .cm-otw-html-widget blockquote {
+  margin: 0.4em 0;
+  border-left: 3px solid var(--color-accent-line);
+  padding-left: 1em;
+  color: var(--color-muted);
+}
+.otw-editor .cm-otw-html-widget pre {
+  overflow-x: auto;
+  border-radius: 8px;
+  background: var(--color-panel);
+  padding: 10px 14px;
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+.otw-editor .cm-otw-html-widget :is(code, kbd) {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.otw-editor .cm-otw-html-widget details {
+  border: 1px solid var(--color-line-strong);
+  border-radius: 8px;
+  padding: 0.4em 0.9em;
+}
+.otw-editor .cm-otw-html-widget summary {
+  color: var(--color-ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+.otw-editor .cm-otw-html-widget hr {
+  border: 0;
+  border-top: 1px solid var(--color-line-strong);
+  margin: 0.8em 0;
+}
+.otw-editor .cm-otw-html-widget img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+.otw-editor .cm-otw-html-widget a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.otw-editor .cm-otw-html-widget mark {
+  background: color-mix(in srgb, var(--color-warning) 38%, transparent);
+  color: inherit;
+}
+
+/* ---------- 数学公式 ---------- */
+
+.otw-editor .cm-otw-math {
+  cursor: text;
+  animation: otw-fade-in 140ms var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-math.is-inline {
+  padding: 0 0.1em;
+}
+.otw-editor .cm-otw-math.is-loading,
+.otw-editor .cm-otw-math.is-error,
+.otw-editor .cm-otw-math-source {
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.otw-editor .cm-otw-math.is-error {
+  color: var(--color-danger);
+  text-decoration: wavy underline;
+}
+.otw-editor .cm-otw-math-block {
+  padding: 0.5em 0;
+}
+.otw-editor .cm-otw-math.is-block {
+  overflow-x: auto;
+  text-align: center;
+}
+.otw-editor .cm-otw-math .katex {
+  font-size: 1.05em;
+}
+.otw-editor .cm-otw-math .katex-display {
+  margin: 0;
+}
+
+/* ---------- 图表 ---------- */
+
+.otw-editor .cm-otw-diagram-block {
+  padding: 0.5em 0;
+}
+.otw-editor .cm-otw-diagram {
+  overflow-x: auto;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 8px;
+  background: var(--color-canvas);
+  padding: 14px 16px;
+  text-align: center;
+  cursor: text;
+  animation: otw-block-in var(--duration-base) var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-diagram.is-loading,
+.otw-editor .cm-otw-diagram.is-error {
+  color: var(--color-muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-align: left;
+}
+.otw-editor .cm-otw-diagram.is-error {
+  color: var(--color-danger);
+}
+.otw-editor .cm-otw-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+/* 暗色主题：mermaid 的 neutral 主题是浅底，整体反色比重新渲染一遍便宜得多 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .otw-editor .cm-otw-diagram svg {
+    filter: invert(0.88) hue-rotate(180deg);
+  }
+}
+:root[data-theme="dark"] .otw-editor .cm-otw-diagram svg {
+  filter: invert(0.88) hue-rotate(180deg);
+}
+
+/* ---------- 定义列表 ---------- */
+
+.otw-editor .cm-otw-dt {
+  color: var(--color-ink);
+  font-weight: 650;
+}
+.otw-editor .cm-otw-dd {
+  padding-left: 1.6em;
+}
+
+/* ---------- 智能标点替身：和普通文字一样，不需要特别样式 ---------- */
+
+.otw-editor .cm-otw-glyph.is-smart {
+  animation: none;
+}
+
+/* ---------- Callout 变体：标题、折叠 ---------- */
+
+.otw-editor .cm-otw-callout-title {
+  margin-left: 0.4em;
+  color: var(--color-ink);
+  font-weight: 650;
+}
+.otw-editor .cm-otw-callout-badge.is-collapsed,
+.otw-editor .cm-otw-callout-badge.is-expanded {
+  cursor: pointer;
+}
+.otw-editor .cm-otw-callout-chevron {
+  width: 12px;
+  height: 12px;
+  margin-left: 1px;
+  opacity: 0.7;
+  transition: transform var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .cm-otw-callout-badge.is-collapsed .cm-otw-callout-chevron {
+  transform: rotate(-90deg);
+}
+.otw-editor .cm-otw-callout-fold {
+  --callout: var(--color-accent);
+  border-left: 3px solid var(--callout);
+  padding: 0 0.8em 0.45em 1em;
+  border-bottom-right-radius: 8px;
+}
+.otw-editor .cm-otw-callout-fold.is-tip {
+  --callout: var(--color-success);
+}
+.otw-editor .cm-otw-callout-fold.is-important {
+  --callout: var(--color-callout-important);
+}
+.otw-editor .cm-otw-callout-fold.is-warning {
+  --callout: var(--color-warning);
+}
+.otw-editor .cm-otw-callout-fold.is-caution {
+  --callout: var(--color-danger);
+}
+.otw-editor .cm-otw-callout-fold.is-note,
+.otw-editor .cm-otw-callout-fold.is-tip,
+.otw-editor .cm-otw-callout-fold.is-important,
+.otw-editor .cm-otw-callout-fold.is-warning,
+.otw-editor .cm-otw-callout-fold.is-caution {
+  background: color-mix(in srgb, var(--callout) 7%, transparent);
+}
+.otw-editor .cm-otw-callout-fold-button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-muted);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .cm-otw-callout-fold-button:hover {
+  color: var(--callout);
+}
+
+/* ---------- 搜索面板 ---------- */
+
+/* CodeMirror 的搜索面板默认是一块没有样式的灰盒子，
+   飘在正文中间还全是英文。这里让它贴住顶部并跟界面对齐。 */
+.otw-editor .cm-panels {
+  border: 0;
+  background: transparent;
+  color: var(--color-body);
+}
+.otw-editor .cm-panels-top {
+  position: sticky;
+  z-index: 5;
+  top: 0;
+  border-bottom: 0;
+}
+.otw-editor .cm-panel.cm-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 10px;
+  background: var(--color-canvas);
+  padding: 8px 10px;
+  box-shadow: var(--shadow-card, 0 6px 20px rgb(0 0 0 / 8%));
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+}
+.otw-editor .cm-panel.cm-search label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-muted);
+  font-size: 11.5px;
+}
+.otw-editor .cm-panel.cm-search .cm-textfield {
+  min-width: 140px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 6px;
+  background: var(--color-panel);
+  padding: 4px 8px;
+  color: var(--color-ink);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+.otw-editor .cm-panel.cm-search .cm-textfield:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+.otw-editor .cm-panel.cm-search .cm-button {
+  border: 1px solid var(--color-line-strong);
+  border-radius: 6px;
+  background: var(--color-panel);
+  padding: 4px 9px;
+  color: var(--color-body);
+  font-family: inherit;
+  font-size: 12px;
+  background-image: none;
+}
+.otw-editor .cm-panel.cm-search .cm-button:hover {
+  border-color: var(--color-accent-line);
+  background: var(--color-accent-wash);
+  color: var(--color-accent);
+}
+.otw-editor .cm-panel.cm-search [name="close"] {
+  position: static;
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  padding: 2px 6px;
+  color: var(--color-faint);
+  font-size: 15px;
+}
+.otw-editor .cm-searchMatch {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+.otw-editor .cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--color-accent) 45%, transparent);
 }

@@ -103,12 +103,18 @@ export interface Task {
 
 export type GoalHorizon = "week" | "month" | "year";
 
+/**
+ * 某个周期（某一周 / 某个月 / 某一年）的目标，一个周期一篇。
+ * 键是 horizon + periodStart；还没写过的周期是一篇空文档（id 为空、updatedAt 为 0），
+ * 第一次保存时才落库。
+ */
 export interface Goal {
+  /** 还没落库时为空串 */
   id: string;
   horizon: GoalHorizon;
-  /** 「本周目标」「八月目标」「2026 年目标」 */
+  /** 库里的原始标题；界面展示用 goalTitle() 按周期算，不用它 */
   title: string;
-  /** 该周期的起点 */
+  /** 该周期的起点：周一 / 1 号 / 1 月 1 日 */
   periodStart: ISODate;
   contentMd: string;
   actionGroup: ActionGroup | null;
@@ -116,16 +122,28 @@ export interface Goal {
   updatedAt: number;
 }
 
+/** goals 缓存的键 */
+export const goalKey = (horizon: GoalHorizon, periodStart: ISODate) => `${horizon}:${periodStart}`;
+
 /* ---------------- 日历 ---------------- */
 
-/** 日历某一天的文档。原型里点日期后右侧显示的就是它。 */
+/**
+ * 某一天的文档：「今日TODO」就是今天这一篇，日历里点到哪天就是哪一篇。
+ * 和笔记一样有可编辑的标题。
+ */
 export interface DayDoc {
   date: ISODate;
+  /** 空串表示还没起标题，界面上显示占位「无标题笔记」 */
+  title: string;
   /** 当天的待办 / 事件 */
   tasks: Task[];
-  /** 「备注」段落 */
   noteMd: string;
   updatedAt: number;
+  /**
+   * 这一天还没写过、内容是从之前最近一天延续来的：那一天的日期。
+   * 只有「今天」会延续；用户一编辑就以这一天自己的身份落库。
+   */
+  carriedFrom: ISODate | null;
 }
 
 /* ---------------- 搜索 ---------------- */
@@ -197,6 +215,8 @@ export interface DocumentModel {
     /** 隐藏分组标题。日历的当日安排直接列在标题下，没有小标题。 */
     hideHeader?: boolean;
   };
+  /** 标题上方的一行小字，如日历某天的「9月15日 · 周二」 */
+  eyebrow?: string;
   /** 底部状态栏的分段文字 */
   statusParts: string[];
   /** 是否显示删除按钮（原型里笔记视图右下角有个红色垃圾桶） */
@@ -204,11 +224,12 @@ export interface DocumentModel {
   /** 所有持久化文档都由同一个 Markdown 编辑器编辑。 */
   editor?: {
     target: DocumentSaveTarget;
-    wordCount: number;
+    /** 标题也能直接改（笔记、某一天）。GOAL 的标题由周期决定，不能改。 */
+    titleEditable?: boolean;
   };
 }
 
 export type DocumentSaveTarget =
   | { kind: "note"; id: string }
-  | { kind: "goal"; id: string }
+  | { kind: "goal"; horizon: GoalHorizon; periodStart: ISODate }
   | { kind: "day"; id: ISODate };

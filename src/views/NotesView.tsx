@@ -1,21 +1,37 @@
 import { useApp } from "@/app/store";
 import { ColumnButton, GroupLabel, ListColumn } from "@/components/ListColumn";
-import { NoteIcon } from "@/components/NoteIcon";
-import { RowMenu } from "@/components/RowMenu";
+import { ActionMenu, RowMenu } from "@/components/RowMenu";
 import { SearchInput } from "@/components/SearchInput";
 import { useData } from "@/data/store";
 import type { Note } from "@/data/types";
 import { cn } from "@/lib/cn";
 import { spring, tween } from "@/lib/motion";
-import { Archive, ArrowUpDown, Pin, PinOff, Trash2 } from "lucide-react";
+import {
+  ALargeSmall,
+  Archive,
+  ArrowUpDown,
+  CalendarPlus,
+  History,
+  type LucideIcon,
+  Pin,
+  PinOff,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 
 type SortMode = "updated" | "created" | "title";
+const SORT_MODES: SortMode[] = ["updated", "created", "title"];
 const SORT_LABEL: Record<SortMode, string> = {
   updated: "按更新时间",
   created: "按创建时间",
   title: "按标题",
+};
+const SORT_ICON: Record<SortMode, LucideIcon> = {
+  updated: History,
+  created: CalendarPlus,
+  title: ALargeSmall,
 };
 
 export function NotesList({ notes }: { notes: Note[] }) {
@@ -23,43 +39,25 @@ export function NotesList({ notes }: { notes: Note[] }) {
   const selectNote = useApp((s) => s.selectNote);
   const query = useApp((s) => s.noteQuery);
   const setQuery = useApp((s) => s.setNoteQuery);
-  const searchNotes = useData((s) => s.searchNotes);
+  const createNote = useData((s) => s.createNote);
   const [sort, setSort] = useState<SortMode>("updated");
-  const [matchedIds, setMatchedIds] = useState<Set<string> | null>(null);
+  const [creating, setCreating] = useState(false);
 
+  // 选中的那篇没了（被删、被归档，或者初始 id 本来就不存在）：正文那边
+  // 会退到第一篇（见 adapter），列表的高亮得跟着挪过去 —— 否则右边显示着
+  // 一篇笔记、左边却没有任何一行是亮的。
   useEffect(() => {
-    const value = query.trim();
-    if (!value) {
-      setMatchedIds(null);
-      return;
-    }
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void searchNotes(value)
-        .then((result) => {
-          if (!cancelled) setMatchedIds(new Set(result.hits.map((hit) => hit.id)));
-        })
-        .catch(() => {
-          if (!cancelled) setMatchedIds(null);
-        });
-    }, 160);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [query, searchNotes]);
+    if (notes.length === 0 || notes.some((n) => n.id === selectedId)) return;
+    selectNote(notes[0]!.id);
+  }, [notes, selectedId, selectNote]);
 
+  // 只按标题筛。原来还走一遍后端全文检索去匹配正文和标签，结果是
+  // 输入「周」也能翻出一堆正文里提到过它的笔记，跟标题栏里看到的对不上；
+  // 而且异步回填有 160ms 防抖，列表会先按本地规则闪一次再换成后端结果。
+  // 标题就在内存里，同步过滤，敲一个字就是一个字的结果。
   const { pinned, rest } = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const filtered = q
-      ? notes.filter((n) =>
-          matchedIds
-            ? matchedIds.has(n.id)
-            : n.title.toLowerCase().includes(q) ||
-              n.excerpt.toLowerCase().includes(q) ||
-              n.contentMd.toLowerCase().includes(q),
-        )
-      : notes;
+    const filtered = q ? notes.filter((n) => n.title.toLowerCase().includes(q)) : notes;
 
     const sorted = [...filtered].sort((a, b) => {
       if (sort === "title") return a.title.localeCompare(b.title, "zh-Hans-CN");
@@ -71,26 +69,53 @@ export function NotesList({ notes }: { notes: Note[] }) {
       pinned: sorted.filter((n) => n.isPinned),
       rest: sorted.filter((n) => !n.isPinned),
     };
-  }, [matchedIds, notes, query, sort]);
+  }, [notes, query, sort]);
 
   const empty = pinned.length === 0 && rest.length === 0;
+
+  const handleCreate = async () => {
+    // 后端慢的时候连点两下会白建好几篇空笔记
+    if (creating) return;
+    setCreating(true);
+    try {
+      const id = await createNote();
+      if (!id) return;
+      // 新笔记是空的，搜索词留着的话它进不了当前筛选结果 ——
+      // 用户点了「新建」，界面上却什么都没发生。
+      setQuery("");
+      selectNote(id);
+    } finally {
+      setCreating(false);
+    }
+  };
 
   return (
     <ListColumn
       title="全部笔记"
       action={
-        <ColumnButton
-          label={`排序：${SORT_LABEL[sort]}`}
-          onClick={() =>
-            setSort((s) => (s === "updated" ? "created" : s === "created" ? "title" : "updated"))
-          }
-        >
-          <ArrowUpDown size={13} strokeWidth={1.9} />
-        </ColumnButton>
+        <div className="flex items-center gap-1.5">
+          {/* 排序：点开一个单选菜单，而不是盲点循环 —— 循环切换看不到还有哪些
+              选项、也不知道现在是哪一种，得点三下才能确认转了一圈。 */}
+          <ActionMenu
+            trigger={
+              <ColumnButton label={`排序：${SORT_LABEL[sort]}`}>
+                <ArrowUpDown size={13} strokeWidth={1.9} />
+              </ColumnButton>
+            }
+            actions={SORT_MODES.map((mode) => ({
+              id: mode,
+              label: SORT_LABEL[mode],
+              icon: SORT_ICON[mode],
+              checked: sort === mode,
+              onSelect: () => setSort(mode),
+            }))}
+          />
+          <ColumnButton label="新建笔记" onClick={() => void handleCreate()}>
+            <Plus size={15} strokeWidth={2.1} />
+          </ColumnButton>
+        </div>
       }
-      belowTitle={
-        <SearchInput value={query} onChange={setQuery} placeholder="搜索标题、正文或标签" />
-      }
+      belowTitle={<SearchInput value={query} onChange={setQuery} placeholder="搜索标题" />}
     >
       {empty ? (
         <EmptyResult query={query} />
@@ -109,7 +134,15 @@ export function NotesList({ notes }: { notes: Note[] }) {
                   boxed
                 />
               ))}
-              <div className="h-1.5" />
+            </>
+          )}
+
+          {/* 两组之间原本只有 6px 空隙、下面一组还没有标题，翻起来根本看不出
+              哪里是分界。补一条分隔线和一个对称的组标题。 */}
+          {pinned.length > 0 && rest.length > 0 && (
+            <>
+              <div className="mx-3 mt-3 mb-1 border-t border-line-strong/70" />
+              <GroupLabel text="其他" />
             </>
           )}
 
@@ -151,6 +184,9 @@ function NoteCard({
   const togglePin = useData((s) => s.togglePin);
   const archiveNote = useData((s) => s.archiveNote);
   const deleteNote = useData((s) => s.deleteNote);
+  // 「…」菜单开着的时候指针在菜单上、不在行上，行会掉出 hover 态；
+  // 底色一暗一亮，看着像菜单和行没关系。开着就按住不放。
+  const [menuOpen, setMenuOpen] = useState(false);
 
   return (
     <motion.div
@@ -169,7 +205,7 @@ function NoteCard({
       animate={{ opacity: 1, y: 0 }}
       transition={{ ...tween.base, delay: Math.min(index, 9) * 0.028 }}
       className={cn(
-        "group relative w-full cursor-default rounded-lg px-3 py-2.5 text-left",
+        "group relative w-full cursor-default rounded-lg px-3 py-3 text-left",
         divided && "before:absolute before:inset-x-3 before:top-0 before:h-px before:bg-line",
       )}
     >
@@ -178,34 +214,33 @@ function NoteCard({
         <motion.span
           layoutId="note-selection"
           className={cn(
-            "absolute inset-0 rounded-lg bg-accent-wash",
+            "absolute inset-x-0 inset-y-[2px] rounded-lg bg-accent-wash",
             boxed && "ring-1 ring-accent-line/70",
           )}
           transition={spring.smooth}
         />
       )}
       {!selected && (
+        /* 上下各缩 2px：底色铺满 inset-0 的话，选中那块和相邻那块悬停时会边贴边
+           连成一片，看不出是两行。缩进之后中间留 4px，两块各自独立。
+           「…」菜单开着时指针在菜单上、不在行上，这里按住不放。 */
         <span
-          className="absolute inset-0 rounded-lg bg-raised/0 transition-colors duration-[150ms]
-                     group-hover:bg-raised/40"
+          className={cn(
+            "absolute inset-x-0 inset-y-[2px] rounded-lg transition-colors duration-[150ms]",
+            menuOpen ? "bg-raised/40" : "bg-raised/0 group-hover:bg-raised/40",
+          )}
         />
       )}
 
+      {/* note.icon 是 seed 里写死的，没有任何入口能改它（新建笔记一律是 file），
+          于是它看着像在分类、实际什么也没分。标题的斜体原本也挂在同一个字段上
+          （icon === "sparkle"），一并去掉 —— 留着就是随机有几篇笔记是斜体。 */}
       <span className="relative z-10 flex items-start gap-2">
-        <motion.span
-          className={cn("mt-[3px] shrink-0", selected ? "text-accent" : "text-muted")}
-          animate={{ scale: selected ? 1.05 : 1 }}
-          transition={spring.snappy}
-        >
-          <NoteIcon id={note.icon} />
-        </motion.span>
-
         <span className="min-w-0 flex-1">
           <span
             className={cn(
               "flex items-center gap-1.5 text-[13.5px] font-semibold leading-[1.45]",
               selected ? "text-ink" : "text-ink/90",
-              note.icon === "sparkle" && "italic",
             )}
           >
             <span className="truncate">{note.title}</span>
@@ -219,8 +254,10 @@ function NoteCard({
         <span className="mt-[2px] block h-[13px] w-[13px] shrink-0" aria-hidden="true">
           {note.isPinned && (
             <motion.span
-              className="block text-accent transition-opacity duration-[150ms]
-                         group-hover:opacity-0"
+              className={cn(
+                "block text-accent transition-opacity duration-[150ms] group-hover:opacity-0",
+                menuOpen && "opacity-0",
+              )}
               initial={{ scale: 0, rotate: -90 }}
               animate={{ scale: 1, rotate: 45 }}
               transition={spring.bouncy}
@@ -234,6 +271,7 @@ function NoteCard({
       {/* 操作菜单叠在图钉的位置：静止时看到图钉，悬停时换成「…」 */}
       <div className="absolute right-[11px] top-[11px] z-20" onClick={(e) => e.stopPropagation()}>
         <RowMenu
+          onOpenChange={setMenuOpen}
           actions={[
             {
               id: "pin",

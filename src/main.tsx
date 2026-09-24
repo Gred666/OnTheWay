@@ -1,5 +1,6 @@
 import { Shell } from "@/app/Shell";
 import { initPreferences } from "@/app/store";
+import { preloadEditor } from "@/components/DocumentView";
 import { useData } from "@/data/store";
 import { installCloseGuard } from "@/editor/saveBus";
 import { signalReady } from "@/lib/tauri";
@@ -9,7 +10,14 @@ import "@/styles/globals.css";
 
 async function bootstrap() {
   initPreferences();
+  // 编辑器分包与数据初始化并行加载，挂载 React 之前一起等。
+  // 首屏默认工作区就要用编辑器渲染正文，不预载的话 Suspense 会先渲染一次
+  // 排版不同的只读预览、再换成编辑器，整篇重排一次（见 DocumentView）。
+  // 这里多等的时间不会被用户看到：窗口本来就是 visible:false，
+  // 要等下面首帧 paint 完 signalReady 才 show()。
+  const editorLoaded = preloadEditor();
   await useData.getState().initialize();
+  await editorLoaded;
   try {
     await installCloseGuard();
   } catch (error) {

@@ -1,14 +1,13 @@
 import { useApp } from "@/app/store";
 import { ListColumn } from "@/components/ListColumn";
-import { NoteIcon } from "@/components/NoteIcon";
 import { SearchInput } from "@/components/SearchInput";
 import type { Note } from "@/data/types";
 import { cn } from "@/lib/cn";
 import { formatSmartCN, toISODate } from "@/lib/date";
 import { spring, tween } from "@/lib/motion";
-import { Info, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import { motion } from "motion/react";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { EmptyResult } from "./NotesView";
 
 export function ArchiveList({
@@ -22,6 +21,13 @@ export function ArchiveList({
   const selectArchive = useApp((s) => s.selectArchive);
   const query = useApp((s) => s.archiveQuery);
   const setQuery = useApp((s) => s.setArchiveQuery);
+
+  // 同 NotesList：选中的那条被恢复走了（或初始 id 不存在），正文退到第一条，
+  // 列表高亮也跟过去。
+  useEffect(() => {
+    if (items.length === 0 || items.some((n) => n.id === selectedId)) return;
+    selectArchive(items[0]!.id);
+  }, [items, selectedId, selectArchive]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -37,17 +43,7 @@ export function ArchiveList({
   return (
     <ListColumn
       title="归档"
-      belowTitle={
-        <div className="flex flex-col gap-2">
-          <SearchInput value={query} onChange={setQuery} placeholder="搜索归档内容" />
-          <div className="flex items-center gap-2 rounded-lg bg-raised/45 px-3 py-2">
-            <Info size={11.5} strokeWidth={2} className="shrink-0 text-faint" />
-            <span className="text-[11px] leading-[1.4] text-muted">
-              归档内容不会出现在日常列表中
-            </span>
-          </div>
-        </div>
-      }
+      belowTitle={<SearchInput value={query} onChange={setQuery} placeholder="搜索归档内容" />}
     >
       {filtered.length === 0 ? (
         <EmptyResult query={query} />
@@ -102,26 +98,26 @@ function ArchiveCard({
       <button
         type="button"
         onClick={onSelect}
-        className="relative w-full rounded-lg px-3 py-2.5 pr-9 text-left"
+        className="relative w-full rounded-lg px-3 py-3 pr-9 text-left"
       >
         {selected && (
           <motion.span
             layoutId="archive-selection"
-            className="absolute inset-0 rounded-lg bg-accent-wash ring-1 ring-accent-line/60"
+            className="absolute inset-x-0 inset-y-[2px] rounded-lg bg-accent-wash ring-1
+                       ring-accent-line/60"
             transition={spring.smooth}
           />
         )}
         {!selected && (
           <span
-            className="absolute inset-0 rounded-lg transition-colors duration-[150ms]
-                       group-hover:bg-raised/40"
+            className="absolute inset-x-0 inset-y-[2px] rounded-lg transition-colors
+                       duration-[150ms] group-hover:bg-raised/40"
           />
         )}
 
         <span className="relative z-10 flex items-start gap-2">
-          <span className={cn("mt-[3px] shrink-0", selected ? "text-accent" : "text-muted")}>
-            <NoteIcon id={note.icon} />
-          </span>
+          {/* 同 NotesView：note.icon 是写死的，删掉。归档项真正的分类信息是
+              下面那行 archiveCategory，那个才是有内容的。 */}
           <span className="min-w-0 flex-1">
             <span className="block truncate text-[13.5px] font-semibold leading-[1.45] text-ink/90">
               {note.title}

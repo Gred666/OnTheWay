@@ -279,23 +279,6 @@ fn insert_all(tx: &Connection) -> Result<()> {
         at(-4, 22, 45),
     )?;
 
-    // 今日 TODO 也是一篇笔记 —— 「一切皆文档」在数据层同样成立
-    note(
-        tx,
-        "n-today",
-        "完成专注模式原型",
-        "target",
-        "为编辑器补充一个真正安静的专注模式：隐藏非必要入口，只保留正文、字数和退出方式。\n\n\
-         ## 检查项\n\n\
-         - [x] 梳理进入与退出路径\n\
-         - [ ] 实现快捷键与状态保持\n\
-         - [ ] 完成真实内容下的可用性走查",
-        false,
-        None,
-        at(-3, 14, 0),
-        at(0, 20, 14),
-    )?;
-
     /* ---------------- 归档 ---------------- */
     archived(
         tx,
@@ -453,47 +436,6 @@ fn insert_all(tx: &Connection) -> Result<()> {
         link_action(tx, "note", "n-autumn", t, i)?;
     }
 
-    // 今日 TODO → 检查项
-    task(
-        tx,
-        "t-focus-1",
-        "梳理进入与退出路径",
-        "done",
-        None,
-        None,
-        None,
-        None,
-        Some(at(0, 11, 40)),
-        at(-3, 14, 0),
-    )?;
-    task(
-        tx,
-        "t-focus-2",
-        "完成空状态和动效说明",
-        "todo",
-        None,
-        None,
-        None,
-        None,
-        None,
-        at(-3, 14, 0),
-    )?;
-    task(
-        tx,
-        "t-focus-3",
-        "邀请 3 位用户试用",
-        "todo",
-        None,
-        None,
-        None,
-        None,
-        None,
-        at(-3, 14, 0),
-    )?;
-    for (i, t) in ["t-focus-1", "t-focus-2", "t-focus-3"].iter().enumerate() {
-        link_action(tx, "note", "n-today", t, i)?;
-    }
-
     // 本周目标 → 本周重点
     task(
         tx,
@@ -598,13 +540,23 @@ fn insert_all(tx: &Connection) -> Result<()> {
         at(-2, 9, 0),
     )?;
 
-    /* ---------------- 日历备注 ---------------- */
+    /* ---------------- 日历 / 今日TODO ---------------- */
+    // 「今日TODO」就是这一天的文档 —— 「一切皆文档」在数据层同样成立。
+    // 内容和迁移 0004 把旧版 n-today 并进 day_doc 的结果保持一致。
     tx.execute(
-        "INSERT INTO day_doc (date, note_md, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+        "INSERT INTO day_doc (date, title, note_md, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             "2026-08-29",
-            "今天只安排最重要的三件事。给深度工作留下完整时间，不把未完成的事项带入下一天。",
-            at(0, 9, 12)
+            "完成专注模式原型",
+            "为编辑器补充一个真正安静的专注模式：隐藏非必要入口，只保留正文、字数和退出方式。\n\n\
+             ## 检查项\n\n\
+             - [x] 梳理进入与退出路径\n\
+             - [ ] 实现快捷键与状态保持\n\
+             - [ ] 完成真实内容下的可用性走查\n\n\
+             今天只安排最重要的三件事。给深度工作留下完整时间，不把未完成的事项带入下一天。",
+            at(-3, 14, 0),
+            at(0, 20, 14)
         ],
     )?;
 
@@ -634,7 +586,7 @@ mod tests {
     #[test]
     fn seeds_expected_content() {
         let conn = seeded();
-        assert_eq!(note::list(&conn, false).unwrap().len(), 6, "笔记数量不对");
+        assert_eq!(note::list(&conn, false).unwrap().len(), 5, "笔记数量不对");
         assert_eq!(note::list(&conn, true).unwrap().len(), 4, "归档数量不对");
     }
 
@@ -644,7 +596,7 @@ mod tests {
         let mut conn = seeded();
         ensure(&mut conn).unwrap();
         ensure(&mut conn).unwrap();
-        assert_eq!(note::list(&conn, false).unwrap().len(), 6);
+        assert_eq!(note::list(&conn, false).unwrap().len(), 5);
     }
 
     #[test]
@@ -656,7 +608,7 @@ mod tests {
         assert!(autumn.content_md.contains("## 下阶段行动"));
         assert!(autumn.content_md.contains("- [x] 整理访谈中的高频语言"));
 
-        let week = goal::latest(&conn, "week").unwrap();
+        let week = goal::get_for_period(&conn, "week", "2026-08-24").unwrap();
         assert!(week.action_group.is_none());
         assert!(week.content_md.contains("## 本周重点"));
 
@@ -673,15 +625,17 @@ mod tests {
     #[test]
     fn goal_has_single_markdown_body() {
         let conn = seeded();
-        let g = goal::latest(&conn, "week").unwrap();
+        let g = goal::get_for_period(&conn, "week", "2026-08-24").unwrap();
         assert!(g.content_md.contains("## 记录"), "GOAL 的「记录」段丢了");
     }
 
     #[test]
     fn calendar_day_is_populated() {
         let conn = seeded();
-        let d = goal::day_doc(&conn, "2026-08-29").unwrap();
+        let d = goal::day_doc(&conn, "2026-08-29", false).unwrap();
         assert_eq!(d.tasks.len(), 3);
+        assert_eq!(d.title, "完成专注模式原型");
+        assert!(d.note_md.contains("## 检查项"));
         assert!(d.note_md.contains("三件事"));
 
         let marked = goal::marked_dates(&conn, "2026-08-01", "2026-08-31").unwrap();
@@ -705,5 +659,28 @@ mod tests {
                 r.hits.iter().map(|h| &h.title).collect::<Vec<_>>()
             );
         }
+    }
+
+    /// 旧库（n-today 还是一篇笔记）升级后：笔记并进当天的 day_doc，自己被软删
+    #[test]
+    fn legacy_today_note_is_folded_into_its_day() {
+        let conn = seeded();
+        // 模拟迁移 0004 之前的状态：把一篇 n-today 塞回去、再跑一遍那段迁移
+        conn.execute(
+            "INSERT INTO note (id, title, content_md, excerpt, word_count, created_at, updated_at)
+             VALUES ('n-today', '旧的今日', '旧正文', '', 1, 0, ?1)",
+            params![at(0, 20, 14)],
+        )
+        .unwrap();
+        // 库已经在 v4，title 列存在；只跑迁移里搬数据的那部分
+        let sql = include_str!("../../migrations/0004_day_doc_title.sql");
+        let fold = &sql[sql.find("INSERT INTO day_doc").unwrap()..];
+        conn.execute_batch(fold).unwrap();
+
+        let d = goal::day_doc(&conn, "2026-08-29", false).unwrap();
+        assert_eq!(d.title, "旧的今日");
+        assert!(d.note_md.starts_with("旧正文\n\n"), "{}", d.note_md);
+        assert!(d.note_md.contains("## 检查项"));
+        assert!(note::get(&conn, "n-today").is_err(), "n-today 应已软删");
     }
 }

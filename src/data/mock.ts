@@ -1,7 +1,18 @@
+import { periodStartOf } from "@/lib/date";
 import { countWords } from "@/lib/markdown";
 import type { Backend } from "./backend";
 import { seedArchivedRaw, seedDayNotes, seedGoalsRaw, seedNotesRaw, seedTasksRaw } from "./seed";
-import type { DayDoc, Goal, Note, NoteInput, NoteSummary, SearchResult, Task } from "./types";
+import {
+  type DayDoc,
+  type Goal,
+  type GoalHorizon,
+  type Note,
+  type NoteInput,
+  type NoteSummary,
+  type SearchResult,
+  type Task,
+  goalKey,
+} from "./types";
 
 /* ============================================================
    浏览器 mock 后端。
@@ -13,11 +24,16 @@ import type { DayDoc, Goal, Note, NoteInput, NoteSummary, SearchResult, Task } f
    状态存在 localStorage，改了 seed 想清空就升版本号。
    ============================================================ */
 
-const LS_KEY = "otw.mock.v1";
+// v3：「今日TODO」从笔记 n-today 变成带标题的 day_doc，GOAL 改成一个周期一篇
+const LS_KEY = "otw.mock.v3";
 
 interface MockState {
   notes: Note[];
   tasks: Record<string, Task>;
+  /** 按日期索引的某天文档（不含任务） */
+  days: Record<string, { title: string; noteMd: string; updatedAt: number }>;
+  /** 按 `horizon:periodStart` 索引的目标 */
+  goals: Record<string, Goal>;
 }
 
 function load(): MockState {
@@ -25,7 +41,7 @@ function load(): MockState {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) {
       const p = JSON.parse(raw) as MockState;
-      if (Array.isArray(p.notes) && p.tasks) return p;
+      if (Array.isArray(p.notes) && p.tasks && p.days && p.goals) return p;
     }
   } catch {
     /* 隐私模式 / 数据损坏：回到种子 */
@@ -33,6 +49,10 @@ function load(): MockState {
   return {
     notes: [...seedNotesRaw, ...seedArchivedRaw].map((n) => ({ ...n })),
     tasks: Object.fromEntries(seedTasksRaw.map((t) => [t.id, { ...t }])),
+    days: Object.fromEntries(Object.entries(seedDayNotes).map(([d, v]) => [d, { ...v }])),
+    goals: Object.fromEntries(
+      seedGoalsRaw.map((g) => [goalKey(g.horizon, g.periodStart), { ...g }]),
+    ),
   };
 }
 
@@ -82,6 +102,17 @@ const goalActions: Record<string, { title: string; taskIds: string[] }> = {};
 function notFound(what: string): never {
   throw { kind: "NotFound", message: what };
 }
+
+const emptyGoal = (horizon: GoalHorizon, periodStart: string): Goal => ({
+  id: "",
+  horizon,
+  title: "",
+  periodStart,
+  contentMd: "",
+  actionGroup: null,
+  createdAt: 0,
+  updatedAt: 0,
+});
 
 export const mockBackend: Backend = {
   async noteList(archived) {
@@ -218,10 +249,14 @@ export const mockBackend: Backend = {
     return { ...t };
   },
 
-  async goalLatest(horizon): Promise<Goal> {
+  /** 某个周期的目标；没写过就是一篇空文档，和 Rust 侧一样不落库 */
+  async goalGet(horizon, periodStart): Promise<Goal> {
     await tick();
-    const g = seedGoalsRaw.find((x) => x.horizon === horizon);
-    if (!g) notFound(`goal ${horizon}`);
+    if (periodStartOf(horizon, periodStart) !== periodStart) {
+      throw { kind: "Invalid", message: `${periodStart} 不是 ${horizon} 周期的起点` };
+    }
+    const g = state.goals[goalKey(horizon, periodStart)];
+    if (!g) return emptyGoal(horizon, periodStart);
     const a = goalActions[g.id];
     return {
       ...g,
@@ -234,36 +269,54 @@ export const mockBackend: Backend = {
     };
   },
 
-  async goalSave(id, contentMd): Promise<Goal> {
+  async goalSave(horizon, periodStart, contentMd): Promise<Goal> {
     await tick();
-    const goal = seedGoalsRaw.find((item) => item.id === id);
-    if (!goal) notFound(`goal ${id}`);
-    goal.contentMd = contentMd;
-    goal.updatedAt = Date.now();
-    return this.goalLatest(goal.horizon);
+    const key = goalKey(horizon, periodStart);
+    const now = Date.now();
+    const current = state.goals[key];
+    state.goals[key] = current
+      ? { ...current, contentMd, updatedAt: now }
+      : {
+          ...emptyGoal(horizon, periodStart),
+          id: crypto.randomUUID(),
+          contentMd,
+          createdAt: now,
+          updatedAt: now,
+        };
+    save(state);
+    return this.goalGet(horizon, periodStart);
   },
 
-  async calendarDay(date): Promise<DayDoc> {
+  /** carryOver：这一天没写过时延续之前最近写过的一天，不落库（和 Rust 侧一致） */
+  async calendarDay(date, carryOver): Promise<DayDoc> {
     await tick();
-    return {
-      date,
-      tasks: Object.values(state.tasks).filter((t) => t.dueDate === date),
-      noteMd: seedDayNotes[date] ?? "",
-      updatedAt: Date.now(),
-    };
+    const tasks = Object.values(state.tasks).filter((t) => t.dueDate === date);
+    const own = state.days[date];
+    if (own) return { date, tasks, ...own, carriedFrom: null };
+
+    const previous = carryOver
+      ? Object.keys(state.days)
+          .filter((d) => d < date && (state.days[d]!.noteMd || state.days[d]!.title))
+          .sort()
+          .pop()
+      : undefined;
+    if (previous) return { date, tasks, ...state.days[previous]!, carriedFrom: previous };
+
+    return { date, title: "", tasks, noteMd: "", updatedAt: Date.now(), carriedFrom: null };
   },
 
-  async calendarDaySave(date, noteMd): Promise<DayDoc> {
+  async calendarDaySave(date, title, noteMd): Promise<DayDoc> {
     await tick();
-    seedDayNotes[date] = noteMd;
-    return this.calendarDay(date);
+    state.days[date] = { title, noteMd, updatedAt: Date.now() };
+    save(state);
+    return this.calendarDay(date, false);
   },
 
   async calendarMarked(from, to) {
     await tick();
     const set = new Set<string>();
     for (const t of Object.values(state.tasks)) if (t.dueDate) set.add(t.dueDate);
-    for (const d of Object.keys(seedDayNotes)) set.add(d);
+    for (const [d, v] of Object.entries(state.days)) if (v.noteMd || v.title) set.add(d);
     return [...set].filter((d) => d >= from && d <= to).sort();
   },
 };

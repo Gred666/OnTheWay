@@ -1,6 +1,15 @@
 import { type Result as IpcResult, commands } from "@/lib/bindings";
 import { isTauri } from "@/lib/tauri";
-import type { DayDoc, Goal, Note, NoteInput, NoteSummary, SearchResult, Task } from "./types";
+import type {
+  DayDoc,
+  Goal,
+  GoalHorizon,
+  Note,
+  NoteInput,
+  NoteSummary,
+  SearchResult,
+  Task,
+} from "./types";
 
 /* ============================================================
    后端访问层。
@@ -23,10 +32,12 @@ export interface Backend {
   noteDelete(id: string): Promise<void>;
   searchNotes(query: string, limit: number): Promise<SearchResult>;
   taskToggle(id: string): Promise<Task>;
-  goalLatest(horizon: "week" | "month" | "year"): Promise<Goal>;
-  goalSave(id: string, contentMd: string): Promise<Goal>;
-  calendarDay(date: string): Promise<DayDoc>;
-  calendarDaySave(date: string, noteMd: string): Promise<DayDoc>;
+  /** 某个周期的目标；没写过的周期返回空文档（id 为空） */
+  goalGet(horizon: GoalHorizon, periodStart: string): Promise<Goal>;
+  goalSave(horizon: GoalHorizon, periodStart: string, contentMd: string): Promise<Goal>;
+  /** carryOver 只在请求「今天」时传 true：今天还没写过就延续之前最近的一天 */
+  calendarDay(date: string, carryOver: boolean): Promise<DayDoc>;
+  calendarDaySave(date: string, title: string, noteMd: string): Promise<DayDoc>;
   calendarMarked(from: string, to: string): Promise<string[]>;
 }
 
@@ -57,11 +68,14 @@ const tauriBackend: Backend = {
   searchNotes: (query, limit) =>
     unwrap(commands.searchNotes(query, limit)) as Promise<SearchResult>,
   taskToggle: (id) => unwrap(commands.taskToggle(id)) as Promise<Task>,
-  goalLatest: (horizon) => unwrap(commands.goalLatest(horizon)) as Promise<Goal>,
-  goalSave: (id, contentMd) => unwrap(commands.goalSave(id, contentMd)) as Promise<Goal>,
-  calendarDay: (date) => unwrap(commands.calendarDay(date)) as Promise<DayDoc>,
-  calendarDaySave: (date, noteMd) =>
-    unwrap(commands.calendarDaySave(date, noteMd)) as Promise<DayDoc>,
+  goalGet: (horizon, periodStart) =>
+    unwrap(commands.goalGet(horizon, periodStart)) as Promise<Goal>,
+  goalSave: (horizon, periodStart, contentMd) =>
+    unwrap(commands.goalSave(horizon, periodStart, contentMd)) as Promise<Goal>,
+  calendarDay: (date, carryOver) =>
+    unwrap(commands.calendarDay(date, carryOver)) as Promise<DayDoc>,
+  calendarDaySave: (date, title, noteMd) =>
+    unwrap(commands.calendarDaySave(date, title, noteMd)) as Promise<DayDoc>,
   calendarMarked: (from, to) => unwrap(commands.calendarMarked(from, to)),
 };
 

@@ -17,8 +17,11 @@ export function Outline({
   scrollRef,
   resetKey,
   editorHandle,
+  zen,
 }: {
   items: OutlineItem[];
+  /** 专注模式：不占布局，改成贴右边缘的浮层刻度 */
+  zen?: boolean;
   /** 正文滚动容器 */
   scrollRef: React.RefObject<HTMLElement | null>;
   /** 切换文档时用它重置激活项 */
@@ -91,10 +94,56 @@ export function Outline({
     setActiveId(id);
   };
 
-  if (items.length === 0) return <aside className="w-[180px] shrink-0" />;
+  // 占位必须和下面真目录用同一套显隐规则。以前这里少了 hidden/xl:block ——
+  // 真目录在 xl 以下宽度为 0，占位却一直占着 180px，结果反过来了：
+  // 没标题的文档比有标题的多占一栏，两类笔记之间切换正文宽度会跳 180px。
+  if (items.length === 0) {
+    return zen ? null : <aside className="hidden w-[180px] shrink-0 xl:block" />;
+  }
 
+  /* 布局和外观彻底拆开：
+     - 占位 div 只管布局，宽度在 180 / 0 之间**瞬时**切换；
+     - 两种形态都常驻，都是绝对定位，谁也不占布局，靠 opacity 交叉淡入。
+
+     绕了两版才到这里，记一下别再踩：
+     ① 最早是 `zen ? <刻度> : <文字目录>`，React 直接卸载重挂，目录是「啪」地
+        换掉的，而同一时刻正文列还在滑 460ms，中间那一下硬切特别显眼。
+     ② 于是套了 AnimatePresence + mode="popLayout" 想让退场元素被摘出文档流。
+        实测没摘掉：退场的文字目录仍然是 static，那 180px 要等淡出结束才还给
+        编辑区，编辑区变成在 0ms 和 212ms 各变宽一次 —— 等于在动画中间又插了
+        一次重排。而且退场动画本身也没跑完，两个 aside 会一直卡在 DOM 里。
+     现在两边都不卸载、都不占位，纯 CSS 过渡，没有任何 presence 状态机可失效。 */
   return (
-    <aside className="hidden w-[180px] shrink-0 pt-[52px] pr-6 xl:block" aria-label="目录树">
+    <>
+      {!zen && <div className="hidden w-[180px] shrink-0 xl:block" aria-hidden="true" />}
+      <RailOutline items={items} activeId={activeId} onJump={scrollTo} hidden={!!zen} />
+      <ZenOutline items={items} activeId={activeId} onJump={scrollTo} hidden={!zen} />
+    </>
+  );
+}
+
+/** 常规形态：右侧固定一栏文字目录。 */
+function RailOutline({
+  items,
+  activeId,
+  onJump,
+  hidden,
+}: {
+  items: OutlineItem[];
+  activeId: string | null;
+  onJump: (id: string) => void;
+  hidden: boolean;
+}) {
+  return (
+    <aside
+      aria-label="目录树"
+      aria-hidden={hidden}
+      className={cn(
+        "absolute right-0 top-0 hidden h-full w-[180px] pt-[52px] pr-6 xl:block",
+        "transition-opacity duration-[200ms] ease-linear [will-change:opacity]",
+        hidden ? "pointer-events-none opacity-0" : "opacity-100",
+      )}
+    >
       <motion.p
         className="mb-3 pl-3 text-[10.5px] tracking-[0.08em] text-faint"
         initial={{ opacity: 0 }}
@@ -111,7 +160,7 @@ export function Outline({
             <motion.button
               key={it.id}
               type="button"
-              onClick={() => scrollTo(it.id)}
+              onClick={() => onJump(it.id)}
               initial={{ opacity: 0, x: 5 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ ...tween.base, delay: 0.06 + i * 0.035 }}
@@ -129,18 +178,129 @@ export function Outline({
                   transition={spring.smooth}
                 />
               )}
-              <span
-                className={cn(
-                  "block truncate transition-[font-weight] duration-[160ms]",
-                  active ? "font-semibold" : "font-normal",
-                )}
-              >
+              {/* 字重不过渡：中文每个小数字重都要重新匹配字体，一帧十几毫秒（见 Sidebar）。
+                  这里尤其要紧 —— 滚动正文时活动标题一直在换。 */}
+              <span className={cn("block truncate", active ? "font-semibold" : "font-normal")}>
                 {it.text}
               </span>
             </motion.button>
           );
         })}
       </nav>
+    </aside>
+  );
+}
+
+/**
+ * 刻度长度按标题级别递减：一眼能看出文档的层级骨架，而不只是「有几个标题」。
+ * buildOutline 只产出两级（h1/h2 归 1，h3 以下归 2），所以这里也只有两档。
+ */
+const TICK_WIDTH: Record<number, string> = { 1: "w-5", 2: "w-3" };
+
+/**
+ * 专注模式的目录：贴右边缘的一列刻度，鼠标靠近才展开成文字。
+ *
+ * 专注模式的前提是「除了正文什么都不要」，所以常驻一栏 180px 的文字目录是自相
+ * 矛盾的。这里退化成一组横线 —— 长度编码标题级别，当前小节那条变深变长，
+ * 于是它静止时既是目录也是进度条，占的墨水极少；真要跳转时移过去就展开。
+ *
+ * 收起 / 展开两态都常驻 DOM，只切 opacity（走合成器），
+ * 不做尺寸动画，所以展开的时候正文一个像素都不会动。
+ *
+ * 展开要**快**、要**干净**。上一版是刻度先退 140ms、面板再等 90ms 才用 200ms
+ * 淡入并从右边滑 4px 过来 —— 加起来 290ms，鼠标一放上去，文字是慢慢「显影」
+ * 出来的，看着像还没渲染完。现在两层在同一个 120ms 里交叉淡入淡出，没有延迟、
+ * 没有位移：手一到，目录就在那儿。
+ *
+ * 定位全部不用 transform。原来 aside 和面板都靠 top-1/2 + -translate-y-1/2 居中，
+ * 面板高度是奇数时就落在半个像素上，合成层里的文字整段发虚 —— 也是「像没渲染
+ * 完」的一部分。现在用 grid 把两层叠在同一格里居中，位置是整像素的布局结果。
+ */
+function ZenOutline({
+  items,
+  activeId,
+  onJump,
+  hidden,
+}: {
+  items: OutlineItem[];
+  activeId: string | null;
+  onJump: (id: string) => void;
+  hidden: boolean;
+}) {
+  return (
+    <aside
+      aria-label="目录树"
+      aria-hidden={hidden}
+      className={cn(
+        // pointer-events-none：hover 判定只认下面刻度那一小块和展开后的面板，
+        // 不能整条右边缘都算。:hover 会沿祖先链向上匹配，所以 group 放这里没问题。
+        "pointer-events-none absolute inset-y-0 right-0 z-30 grid items-center justify-items-end",
+        "group transition-opacity duration-[200ms] ease-linear [will-change:opacity]",
+        hidden ? "opacity-0" : "opacity-100",
+      )}
+    >
+      {/* 收起态：只有刻度。
+          will-change 把它单独提成合成层 —— 不提的话 opacity 动画每一帧都要
+          连着底下的正文一起重绘，全屏时那块面积是整页宽。 */}
+      <div
+        className={cn(
+          "flex flex-col items-end gap-2 py-6 pl-16 pr-6 [grid-area:1/1]",
+          "transition-opacity duration-[120ms] [will-change:opacity]",
+          "group-hover:pointer-events-none group-hover:opacity-0 group-hover:duration-[80ms]",
+          hidden ? "pointer-events-none" : "pointer-events-auto",
+        )}
+      >
+        {items.map((it) => (
+          <button
+            key={it.id}
+            type="button"
+            aria-label={it.text}
+            onClick={() => onJump(it.id)}
+            className={cn(
+              "h-[2px] rounded-full transition-[background-color,width] duration-[220ms]",
+              TICK_WIDTH[it.level] ?? "w-2",
+              it.id === activeId ? "!w-6 bg-ink" : "bg-line-strong",
+            )}
+          />
+        ))}
+      </div>
+
+      {/* 展开态：叠在同一格里，只靠 opacity 出现，不改变任何尺寸。
+          底色必须是**不透明**的。原来是 bg-canvas/95，半透明面板压在正文上，
+          淡入的每一帧都要把它和底下的文字重新混合一次，而且中途能透出字来，
+          看着就是脏。同样提成合成层。 */}
+      <div
+        className="pointer-events-none mr-4 min-w-[168px] max-w-[240px] rounded-xl bg-canvas p-2
+                   opacity-0 shadow-float ring-1 ring-line-strong [grid-area:1/1]
+                   [will-change:opacity] transition-opacity duration-[120ms] ease-out
+                   group-hover:pointer-events-auto group-hover:opacity-100
+                   group-hover:duration-[80ms]"
+      >
+        {items.map((it) => {
+          const active = it.id === activeId;
+          return (
+            <button
+              key={it.id}
+              type="button"
+              onClick={() => onJump(it.id)}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg py-[5px] pl-2 pr-2.5 text-left",
+                "text-[12px] leading-[1.5] transition-colors duration-[140ms]",
+                it.level === 2 ? "pl-5" : "pl-2",
+                active ? "text-ink" : "text-muted hover:bg-raised/50 hover:text-ink",
+              )}
+            >
+              <span
+                className={cn(
+                  "h-[2px] w-3 shrink-0 rounded-full transition-colors duration-[140ms]",
+                  active ? "bg-ink" : "bg-line-strong",
+                )}
+              />
+              <span className={cn("block truncate", active && "font-semibold")}>{it.text}</span>
+            </button>
+          );
+        })}
+      </div>
     </aside>
   );
 }

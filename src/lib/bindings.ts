@@ -110,33 +110,40 @@ async taskToggle(id: string) : Promise<Result<Task, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
-async goalLatest(horizon: string) : Promise<Result<Goal, AppError>> {
+/**
+ * 某个周期的目标。period_start 由前端按 horizon 算好（周一 / 1 号 / 1 月 1 日），
+ * domain 层会校验它确实是周期起点。没写过的周期返回空文档。
+ */
+async goalGet(horizon: string, periodStart: string) : Promise<Result<Goal, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("goal_latest", { horizon }) };
+    return { status: "ok", data: await TAURI_INVOKE("goal_get", { horizon, periodStart }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async goalSave(id: string, contentMd: string) : Promise<Result<Goal, AppError>> {
+async goalSave(horizon: string, periodStart: string, contentMd: string) : Promise<Result<Goal, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("goal_save", { id, contentMd }) };
+    return { status: "ok", data: await TAURI_INVOKE("goal_save", { horizon, periodStart, contentMd }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async calendarDay(date: string) : Promise<Result<DayDoc, AppError>> {
+/**
+ * `carry_over` 只在请求「今天」时传 true：今天还没写过就延续之前最近的一天。
+ */
+async calendarDay(date: string, carryOver: boolean) : Promise<Result<DayDoc, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("calendar_day", { date }) };
+    return { status: "ok", data: await TAURI_INVOKE("calendar_day", { date, carryOver }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async calendarDaySave(date: string, noteMd: string) : Promise<Result<DayDoc, AppError>> {
+async calendarDaySave(date: string, title: string, noteMd: string) : Promise<Result<DayDoc, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("calendar_day_save", { date, noteMd }) };
+    return { status: "ok", data: await TAURI_INVOKE("calendar_day_save", { date, title, noteMd }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -178,13 +185,31 @@ export type ActionGroup = { title: string; tasks: Task[] }
  * 而不是去解析错误字符串。
  */
 export type AppError = { kind: "Db"; message: string } | { kind: "NotFound"; message: string } | { kind: "Invalid"; message: string } | { kind: "BadRrule"; message: string } | { kind: "DbTooNew"; message: { found: number; supported: number } } | { kind: "Io"; message: string } | { kind: "Internal"; message: string }
-export type DayDoc = { date: string; tasks: Task[]; noteMd: string; updatedAt: number }
+export type DayDoc = { date: string; title: string; tasks: Task[]; noteMd: string; updatedAt: number; 
+/**
+ * 这一天还没写过、内容是从之前最近一天延续来的：那一天的日期。
+ * 只有请求「今天」时才会延续；用户一编辑，就以这一天自己的身份落库。
+ */
+carriedFrom: string | null }
 export type DbStats = { notes: number; archived: number; tasks: number; goals: number; activities: number; dbBytes: number; dbPath: string }
-export type Goal = { id: string; 
+/**
+ * 某个周期（某一周 / 某个月 / 某一年）的目标。
+ * 一个周期一篇；还没写过的周期返回空文档（id 为空、updated_at 为 0），
+ * 第一次保存时才落库。
+ */
+export type Goal = { 
+/**
+ * 还没落库时为空串
+ */
+id: string; 
 /**
  * week | month | year
  */
-horizon: string; title: string; periodStart: string; contentMd: string; actionGroup: ActionGroup | null; createdAt: number; updatedAt: number }
+horizon: string; title: string; 
+/**
+ * 周期起点：周一 / 1 号 / 1 月 1 日
+ */
+periodStart: string; contentMd: string; actionGroup: ActionGroup | null; createdAt: number; updatedAt: number }
 export type Note = { id: string; title: string; contentMd: string; excerpt: string; icon: string; wordCount: number; isPinned: boolean; isArchived: boolean; archiveCategory: string | null; archivedAt: number | null; createdAt: number; updatedAt: number; 
 /**
  * 挂在这篇笔记下的行动项分组（通过 link 表关联）

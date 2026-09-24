@@ -1,20 +1,39 @@
 import { useApp } from "@/app/store";
 import {
+  type ISODate,
+  formatDayEyebrowCN,
   formatFullCN,
   formatMonthDayCN,
+  formatPeriodCN,
   formatRelativeTime,
   formatTimestampFull,
+  goalTitle,
+  periodStartOf,
   toISODate,
 } from "@/lib/date";
 import { seedReminders } from "./seed";
-import { useData } from "./store";
-import type { DocumentModel, Reminder } from "./types";
+import { NEW_NOTE_TITLE, useData } from "./store";
+import {
+  type DayDoc,
+  type DocumentModel,
+  type Goal,
+  type GoalHorizon,
+  type Reminder,
+  goalKey,
+} from "./types";
 
 /* ============================================================
    把「当前工作区 + 选中项」映射成统一的 DocumentModel。
    ★ 这是「一切皆文档」抽象的落点 ——
    五个视图的差异全部收敛在这一个函数里，
    DocumentView 完全不知道自己在渲染笔记还是日历。
+
+   日历和今日TODO、GOAL 的关系：
+   - 今日TODO = 今天这一天的文档；日历里点到今天看到的就是同一篇。
+   - 今天还没写过时延续之前最近的一天（carriedFrom），一编辑就以今天落库；
+     翻到昨天、前天，看到的是那一天自己的内容。
+   - GOAL 一个周期一篇：/GOAL 页看今天所在的周 / 月 / 年，日历的
+     周·月·年 看选中日期所在的周期；没写过就是空白。
    ============================================================ */
 
 export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder } {
@@ -22,6 +41,7 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
   const selectedNoteId = useApp((s) => s.selectedNoteId);
   const selectedArchiveId = useApp((s) => s.selectedArchiveId);
   const selectedDate = useApp((s) => s.selectedDate);
+  const todayDate = useApp((s) => s.todayDate);
   const calendarScope = useApp((s) => s.calendarScope);
   const goalHorizon = useApp((s) => s.goalHorizon);
 
@@ -29,7 +49,6 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
   const archived = useData((s) => s.archived);
   const goals = useData((s) => s.goals);
   const dayDocs = useData((s) => s.dayDocs);
-  const todayDoc = useData((s) => s.todayDoc);
 
   switch (workspace) {
     /* ---------------- 笔记 ---------------- */
@@ -52,122 +71,56 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
             `上次更新 ${formatRelativeTime(note.updatedAt)}`,
           ],
           deletable: true,
-          editor: { target: { kind: "note", id: note.id }, wordCount: note.wordCount },
+          editor: { target: { kind: "note", id: note.id }, titleEditable: true },
         },
         reminder: seedReminders.default!,
       };
     }
 
-    /* ---------------- 今日 TODO ---------------- */
+    /* ---------------- 今日 TODO：就是今天这一天 ---------------- */
     case "today": {
-      if (!todayDoc) {
-        return {
-          doc: emptyDoc("今日 TODO 尚未准备好", "数据加载完成后会自动显示。"),
-          reminder: seedReminders.default!,
-        };
-      }
+      const day = dayDocs.find((d) => d.date === todayDate);
       return {
-        doc: {
-          key: "today",
-          title: todayDoc.title,
-          bodyMd: todayDoc.contentMd,
-          statusParts: [
-            `${todayDoc.wordCount} 字`,
-            `上次更新 ${new Date(todayDoc.updatedAt).toTimeString().slice(0, 5)}`,
-          ],
-          editor: { target: { kind: "note", id: todayDoc.id }, wordCount: todayDoc.wordCount },
-        },
+        doc: dayDocument(todayDate, day, todayDate, undefined),
         reminder: seedReminders.default!,
       };
     }
 
-    /* ---------------- /GOAL ---------------- */
+    /* ---------------- /GOAL：今天所在的周期 ---------------- */
     case "goal": {
-      const goal = goals.find((g) => g.horizon === goalHorizon) ?? goals[0];
-      if (!goal) {
-        return {
-          doc: emptyDoc("目标尚未准备好", "数据加载完成后会自动显示。"),
-          reminder: seedReminders.goal!,
-        };
-      }
+      const periodStart = periodStartOf(goalHorizon, todayDate);
+      const goal = goals[goalKey(goalHorizon, periodStart)];
       return {
-        doc: {
-          key: `goal-${goal.id}`,
-          title: goal.title,
-          segments: {
-            group: "goal",
-            options: ["周", "月", "年"],
-            active: horizonLabel(goalHorizon),
-          },
-          bodyMd: goal.contentMd,
-          statusParts: [
-            `${countGoalWords(goal.contentMd)} 字`,
-            `上次更新 ${formatRelativeTime(goal.updatedAt)}`,
-          ],
-          editor: {
-            target: { kind: "goal", id: goal.id },
-            wordCount: countGoalWords(goal.contentMd),
-          },
-        },
+        doc: goalDocument(goalHorizon, periodStart, goal, {
+          group: "goal",
+          options: ["周", "月", "年"],
+          active: horizonLabel(goalHorizon),
+        }),
         reminder: seedReminders.goal!,
       };
     }
 
     /* ---------------- 日历 ---------------- */
     case "calendar": {
-      // 分段切到周/月/年时，右侧直接显示对应的 GOAL 文档
+      const segments = {
+        group: "calendar",
+        options: ["日TODO", "周/GOAL", "月/GOAL", "年/GOAL"],
+        active: scopeLabel(calendarScope),
+      };
+
+      // 分段切到周/月/年：选中日期所在周期的 GOAL
       if (calendarScope !== "day") {
-        const goal = goals.find((g) => g.horizon === calendarScope) ?? goals[0];
-        if (!goal) {
-          return {
-            doc: emptyDoc("目标尚未准备好", "数据加载完成后会自动显示。"),
-            reminder: seedReminders.goal!,
-          };
-        }
+        const periodStart = periodStartOf(calendarScope, selectedDate);
+        const goal = goals[goalKey(calendarScope, periodStart)];
         return {
-          doc: {
-            key: `cal-goal-${goal.id}`,
-            title: goal.title,
-            segments: {
-              group: "calendar",
-              options: ["日TODO", "周/GOAL", "月/GOAL", "年/GOAL"],
-              active: scopeLabel(calendarScope),
-            },
-            bodyMd: goal.contentMd,
-            statusParts: [`上次更新 ${formatRelativeTime(goal.updatedAt)}`],
-            editor: {
-              target: { kind: "goal", id: goal.id },
-              wordCount: countGoalWords(goal.contentMd),
-            },
-          },
+          doc: goalDocument(calendarScope, periodStart, goal, segments),
           reminder: seedReminders.goal!,
         };
       }
 
       const day = dayDocs.find((d) => d.date === selectedDate);
-      const dayTasks = day?.tasks ?? [];
-      const noteMd = day?.noteMd ?? "";
-
       return {
-        doc: {
-          key: `cal-${selectedDate}`,
-          title: formatMonthDayCN(selectedDate),
-          segments: {
-            group: "calendar",
-            options: ["日TODO", "周/GOAL", "月/GOAL", "年/GOAL"],
-            active: "日TODO",
-          },
-          bodyMd: noteMd,
-          actionGroup: dayTasks.length
-            ? { title: "当日安排", tasks: dayTasks, hideHeader: true }
-            : undefined,
-          statusParts: [
-            `${dayTasks.length} 项 TODO`,
-            `上次更新 ${formatRelativeTime(day?.updatedAt ?? Date.now())}`,
-            `内容将在 ${formatMonthDayCN(selectedDate)} 00:00 自动切换到“今日TODO”`,
-          ],
-          editor: { target: { kind: "day", id: selectedDate }, wordCount: countGoalWords(noteMd) },
-        },
+        doc: dayDocument(selectedDate, day, todayDate, segments),
         reminder: seedReminders.goal!,
       };
     }
@@ -195,7 +148,7 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
             `创建时间 ${formatTimestampFull(note.createdAt)}`,
             `最后编辑于 ${formatRelativeTime(note.updatedAt)}`,
           ],
-          editor: { target: { kind: "note", id: note.id }, wordCount: note.wordCount },
+          editor: { target: { kind: "note", id: note.id }, titleEditable: true },
         },
         reminder: seedReminders.default!,
       };
@@ -209,17 +162,85 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
   }
 }
 
+/* ---------------- 两种按周期 / 按天的文档 ---------------- */
+
+/**
+ * 某一天的文档。`day` 还没取回来之前不给编辑器 —— 否则它会以空文档挂载，
+ * 用户在空白页上一输入就把当天原有的内容覆盖掉。
+ */
+function dayDocument(
+  date: ISODate,
+  day: DayDoc | undefined,
+  todayDate: ISODate,
+  segments: DocumentModel["segments"],
+): DocumentModel {
+  const tasks = day?.tasks ?? [];
+  const isToday = date === todayDate;
+
+  const statusParts: string[] = [];
+  if (!day) statusParts.push("载入中…");
+  else {
+    if (tasks.length) statusParts.push(`${tasks.length} 项安排`);
+    if (day.carriedFrom) {
+      statusParts.push(`延续自 ${formatMonthDayCN(day.carriedFrom)}，还没有今天自己的记录`);
+    } else if (!day.title && !day.noteMd) {
+      statusParts.push("这一天还没有记录");
+    } else {
+      statusParts.push(`上次更新 ${formatRelativeTime(day.updatedAt)}`);
+    }
+    if (isToday && !day.carriedFrom) statusParts.push("今天的内容会延续到明天，直到你改动它");
+  }
+
+  return {
+    key: `day-${date}`,
+    // 空标题显示占位；标题栏是可编辑的，和笔记一样
+    title: day?.title || NEW_NOTE_TITLE,
+    eyebrow: isToday ? `今天 · ${formatDayEyebrowCN(date)}` : formatDayEyebrowCN(date),
+    segments,
+    bodyMd: day?.noteMd ?? "",
+    actionGroup: tasks.length ? { title: "当日安排", tasks, hideHeader: true } : undefined,
+    statusParts,
+    editor: day ? { target: { kind: "day", id: date }, titleEditable: true } : undefined,
+  };
+}
+
+/** 某个周期的目标。标题由周期算出来，不可编辑；没写过就是空白编辑器。 */
+function goalDocument(
+  horizon: GoalHorizon,
+  periodStart: ISODate,
+  goal: Goal | undefined,
+  segments: DocumentModel["segments"],
+): DocumentModel {
+  const statusParts: string[] = [formatPeriodCN(horizon, periodStart)];
+  if (!goal) statusParts.push("载入中…");
+  else if (goal.updatedAt === 0) statusParts.push("这个周期还没写过目标");
+  else
+    statusParts.push(
+      `${countGoalWords(goal.contentMd)} 字`,
+      `上次更新 ${formatRelativeTime(goal.updatedAt)}`,
+    );
+
+  return {
+    key: `goal-${goalKey(horizon, periodStart)}`,
+    title: goalTitle(horizon, periodStart),
+    segments,
+    bodyMd: goal?.contentMd ?? "",
+    statusParts,
+    editor: goal ? { target: { kind: "goal", horizon, periodStart } } : undefined,
+  };
+}
+
 /* ---------------- 辅助 ---------------- */
 
 function emptyDoc(title: string, body: string): DocumentModel {
   return { key: `empty-${title}`, title, bodyMd: body, statusParts: [] };
 }
 
-function horizonLabel(h: "week" | "month" | "year"): string {
+function horizonLabel(h: GoalHorizon): string {
   return h === "week" ? "周" : h === "month" ? "月" : "年";
 }
 
-export function labelToHorizon(l: string): "week" | "month" | "year" {
+export function labelToHorizon(l: string): GoalHorizon {
   return l === "月" ? "month" : l === "年" ? "year" : "week";
 }
 

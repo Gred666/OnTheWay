@@ -1,22 +1,39 @@
 import type { OutlineItem } from "@/data/types";
-import type { ReactNode } from "react";
+import { type MarkdownTableModel, parseMarkdownTable } from "@/editor/markdownTable";
+import { type ReactNode, createElement } from "react";
 
 /* ============================================================
    轻量 Markdown 渲染。
    自己解析而不是 dangerouslySetInnerHTML —— 返回真实 React 节点，
    没有 XSS 面，也方便给行内元素挂交互（如双链跳转）。
 
-   支持：## / ### 标题、段落、有序/无序列表、--- 分隔线、
-        > [!标签] 形式的 callout、行内 粗体/斜体/代码/链接/[[双链]]
-   P6 上 Milkdown 后，这个模块退化为「大文档只读预览」的渲染器。
+   支持：# ~ ###### 标题、段落、有序/无序列表（含任务勾选框）、
+        ``` 围栏代码、GFM 表格、--- 分隔线、
+        > [!标签] 形式的 callout、行内 粗体/斜体/删除线/代码/链接/[[双链]]
+
+   这份渲染器同时是「切换工作区时编辑器还没挂上」和「大文档只读」两种
+   场景下用户实际看到的东西，语法覆盖必须跟编辑器对得上，
+   否则每次切换都会闪一版长得不一样的正文。
    ============================================================ */
 
+interface ListEntry {
+  text: string;
+  /** null = 普通条目；true/false = 任务列表的勾选状态 */
+  checked: boolean | null;
+}
+
 type Block =
-  | { kind: "h"; level: 2 | 3; text: string; id: string }
+  | { kind: "h"; level: 1 | 2 | 3 | 4 | 5 | 6; text: string; id: string }
   | { kind: "p"; text: string }
-  | { kind: "ul" | "ol"; items: string[] }
+  | { kind: "ul" | "ol"; items: ListEntry[] }
+  | { kind: "code"; lang: string; code: string }
+  | { kind: "table"; table: MarkdownTableModel }
   | { kind: "callout"; label: string; body: string; id: string }
   | { kind: "hr" };
+
+const FENCE_RE = /^(?:`{3,}|~{3,})(.*)$/;
+const TASK_RE = /^\[([ xX])\]\s+/;
+const DELIMITER_ROW_RE = /^\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$/;
 
 /**
  * 把标题文本转成稳定的锚点 id（中文直接用原文，浏览器支持）。
@@ -55,14 +72,44 @@ export function parseBlocks(md: string, ns = "h"): Block[] {
       continue;
     }
 
+    // --- 围栏代码
+    const fence = FENCE_RE.exec(trimmed);
+    if (fence) {
+      flushPara();
+      const body: string[] = [];
+      let j = i + 1;
+      while (j < lines.length && !FENCE_RE.test(lines[j]!.trim())) body.push(lines[j++]!);
+      blocks.push({ kind: "code", lang: fence[1]!.trim(), code: body.join("\n") });
+      i = j;
+      continue;
+    }
+
+    // --- GFM 表格：当前行有竖线且下一行是分隔行
+    if (
+      trimmed.includes("|") &&
+      i + 1 < lines.length &&
+      DELIMITER_ROW_RE.test(lines[i + 1]!.trim())
+    ) {
+      let j = i;
+      const rows: string[] = [];
+      while (j < lines.length && lines[j]!.trim().includes("|")) rows.push(lines[j++]!.trim());
+      const table = parseMarkdownTable(rows.join("\n"));
+      if (table) {
+        flushPara();
+        blocks.push({ kind: "table", table });
+        i = j - 1;
+        continue;
+      }
+    }
+
     // --- 标题
-    const h = /^(#{2,3})\s+(.*)$/.exec(trimmed);
+    const h = /^(#{1,6})\s+(.*)$/.exec(trimmed);
     if (h) {
       flushPara();
-      const text = h[2]!.trim();
+      const text = h[2]!.replace(/\s+#+\s*$/, "").trim();
       blocks.push({
         kind: "h",
-        level: h[1]!.length === 2 ? 2 : 3,
+        level: h[1]!.length as 1 | 2 | 3 | 4 | 5 | 6,
         text,
         id: slug(text, anchorIndex++, ns),
       });
@@ -70,14 +117,15 @@ export function parseBlocks(md: string, ns = "h"): Block[] {
     }
 
     // --- callout：`> [!标签]` 起头，后续 `>` 行是正文
-    const callout = /^>\s*\[!(.+?)\]\s*$/.exec(trimmed);
+    // 也认 `[!标签]-` / `[!标签]+` 的折叠符和后面的自定义标题（标题优先显示）
+    const callout = /^>\s*\[!(.+?)\][+-]?(?:[ \t]+(\S.*?))?\s*$/.exec(trimmed);
     if (callout) {
       flushPara();
       const body: string[] = [];
       while (i + 1 < lines.length && lines[i + 1]!.trim().startsWith(">")) {
         body.push(lines[++i]!.trim().replace(/^>\s?/, ""));
       }
-      const label = callout[1]!.trim();
+      const label = (callout[2] ?? callout[1]!).trim();
       blocks.push({
         kind: "callout",
         label,
@@ -92,13 +140,19 @@ export function parseBlocks(md: string, ns = "h"): Block[] {
     const isOl = /^\d+\.\s+/.test(trimmed);
     if (isUl || isOl) {
       flushPara();
-      const items: string[] = [];
+      const items: ListEntry[] = [];
       const re = isUl ? /^[-*]\s+/ : /^\d+\.\s+/;
       let j = i;
       while (j < lines.length) {
         const cur = lines[j]!.trim();
         if (!re.test(cur)) break;
-        items.push(cur.replace(re, ""));
+        const content = cur.replace(re, "");
+        const task = TASK_RE.exec(content);
+        items.push(
+          task
+            ? { text: content.slice(task[0].length), checked: task[1]!.toLowerCase() === "x" }
+            : { text: content, checked: null },
+        );
         j++;
       }
       blocks.push({ kind: isUl ? "ul" : "ol", items });
@@ -115,7 +169,8 @@ export function parseBlocks(md: string, ns = "h"): Block[] {
 
 /* ---------------- 行内渲染 ---------------- */
 
-const INLINE_RE = /(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\[\[[^\]]+\]\])|(\[[^\]]+\]\([^)]+\))/g;
+const INLINE_RE =
+  /(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*]+\*)|(`[^`]+`)|(\[\[[^\]]+\]\])|(\[[^\]]+\]\([^)]+\))/g;
 
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const out: ReactNode[] = [];
@@ -130,6 +185,8 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
 
     if (tok.startsWith("**")) {
       out.push(<strong key={k}>{tok.slice(2, -2)}</strong>);
+    } else if (tok.startsWith("~~")) {
+      out.push(<del key={k}>{tok.slice(2, -2)}</del>);
     } else if (tok.startsWith("`")) {
       out.push(<code key={k}>{tok.slice(1, -1)}</code>);
     } else if (tok.startsWith("[[")) {
@@ -162,32 +219,65 @@ export function renderMarkdown(md: string, ns = "h"): ReactNode[] {
     const key = `${ns}-b${i}`;
     switch (b.kind) {
       case "h":
-        return b.level === 2 ? (
-          <h2 key={key} id={b.id} data-outline-id={b.id}>
-            {renderInline(b.text, key)}
-          </h2>
-        ) : (
-          <h3 key={key} id={b.id} data-outline-id={b.id}>
-            {renderInline(b.text, key)}
-          </h3>
+        return createElement(
+          `h${b.level}`,
+          { key, id: b.id, "data-outline-id": b.id },
+          renderInline(b.text, key),
         );
       case "p":
         return <p key={key}>{renderInline(b.text, key)}</p>;
-      case "ul":
+      case "code":
         return (
-          <ul key={key}>
-            {b.items.map((it, j) => (
-              <li key={`${key}-${it.slice(0, 24)}`}>{renderInline(it, `${key}-${j}`)}</li>
-            ))}
-          </ul>
+          <pre key={key} data-lang={b.lang || undefined}>
+            <code>{b.code}</code>
+          </pre>
         );
-      case "ol":
+      case "table":
         return (
-          <ol key={key}>
-            {b.items.map((it, j) => (
-              <li key={`${key}-${it.slice(0, 24)}`}>{renderInline(it, `${key}-${j}`)}</li>
-            ))}
-          </ol>
+          <div key={key} className="prose-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  {b.table.header.map((cell, j) => (
+                    <th
+                      key={`${key}-h${j}-${cell}`}
+                      style={{ textAlign: b.table.alignments[j] ?? "left" }}
+                    >
+                      {renderInline(cell, `${key}-h${j}`)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {b.table.rows.map((row, r) => (
+                  <tr key={`${key}-r${r}-${row.join("|")}`}>
+                    {row.map((cell, c) => (
+                      <td
+                        key={`${key}-r${r}c${c}-${cell}`}
+                        style={{ textAlign: b.table.alignments[c] ?? "left" }}
+                      >
+                        {renderInline(cell, `${key}-r${r}c${c}`)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      case "ul":
+      case "ol":
+        return createElement(
+          b.kind,
+          { key, className: b.items.some((it) => it.checked !== null) ? "prose-tasks" : undefined },
+          b.items.map((it, j) => (
+            <li key={`${key}-${it.text.slice(0, 24)}`}>
+              {it.checked !== null && (
+                <input type="checkbox" checked={it.checked} disabled />
+              )}
+              {renderInline(it.text, `${key}-${j}`)}
+            </li>
+          )),
         );
       case "callout":
         return (
@@ -215,7 +305,7 @@ export function buildOutline(md: string, actionGroupTitle?: string): OutlineItem
     const source = lines[lineIndex]!;
     const heading = /^\s*(#{1,6})\s+(.+?)\s*$/.exec(source);
     const setext = lineIndex + 1 < lines.length && /^\s*(=+|-+)\s*$/.exec(lines[lineIndex + 1]!);
-    const callout = /^\s*>\s*\[!(.+?)\]\s*$/.exec(source);
+    const callout = /^\s*>\s*\[!(.+?)\][+-]?(?:[ \t]+(\S.*?))?\s*$/.exec(source);
     if (heading) {
       const depth = heading[1]!.length;
       const text = heading[2]!.replace(/\s+#+\s*$/, "").trim();
@@ -235,7 +325,7 @@ export function buildOutline(md: string, actionGroupTitle?: string): OutlineItem
       });
       lineIndex += 1;
     } else if (callout) {
-      const text = callout[1]!.trim();
+      const text = (callout[2] ?? callout[1]!).trim();
       items.push({ id: slug(text, index++, "h"), text, level: 1, line: lineIndex + 1 });
     }
   }

@@ -12,7 +12,13 @@ import {
   wrapMarkdown,
 } from "./markdownCommands";
 
-/** 与 Typora 对齐的编辑快捷键；文件/窗口命令由应用壳层负责。 */
+/**
+ * 与 Typora 对齐的编辑快捷键；文件/窗口命令由应用壳层负责。
+ *
+ * 注意 Mod-K 不在这里：它是全局命令面板的入口，编辑器抢走之后
+ * 用户在正文里就再也打不开面板了。插入链接改用 Shift-Mod-K，
+ * 插入代码块让位到 Mod-Alt-C（原本就是 mac 上的绑定）。
+ */
 export const markdownKeymap: readonly KeyBinding[] = [
   ...Array.from({ length: 7 }, (_, level) => ({ key: `Mod-${level}`, run: setHeading(level) })),
   { key: "Mod-=", run: changeHeadingLevel(1) },
@@ -22,10 +28,10 @@ export const markdownKeymap: readonly KeyBinding[] = [
   { key: "Mod-u", run: wrapMarkdown("<u>", "</u>") },
   { key: "Shift-Mod-`", run: wrapMarkdown("`") },
   { key: "Alt-Shift-5", mac: "Ctrl-Shift-`", run: wrapMarkdown("~~") },
-  { key: "Mod-k", run: insertLink() },
+  { key: "Shift-Mod-k", run: insertLink() },
   { key: "Mod-l", run: selectLine },
   { key: "Shift-Mod-i", mac: "Ctrl-Mod-i", run: insertLink(true) },
-  { key: "Shift-Mod-k", mac: "Alt-Mod-c", run: insertFencedBlock() },
+  { key: "Mod-Alt-c", run: insertFencedBlock() },
   {
     key: "Shift-Mod-q",
     mac: "Alt-Mod-q",
@@ -41,8 +47,9 @@ export const markdownKeymap: readonly KeyBinding[] = [
     mac: "Alt-Mod-u",
     run: toggleLinePrefix("- ", /^\s*[-+*]\s+/),
   },
-  { key: "Mod-[", run: indentMore },
-  { key: "Mod-]", run: indentLess },
+  // 和 VS Code / JetBrains 一致：右方括号加缩进，左方括号减缩进。
+  { key: "Mod-]", run: indentMore },
+  { key: "Mod-[", run: indentLess },
   indentWithTab,
   { key: "Mod-t", mac: "Alt-Mod-t", run: insertTable() },
   { key: "Mod-\\", run: clearMarkdownFormat() },

@@ -9,14 +9,19 @@ export const markdownStyleRules: readonly MarkdownStyleRule[] = [
   { nodes: ["StrongEmphasis"], className: "cm-otw-strong", kind: "mark" },
   { nodes: ["Emphasis"], className: "cm-otw-emphasis", kind: "mark" },
   { nodes: ["Strikethrough"], className: "cm-otw-strike", kind: "mark" },
+  { nodes: ["Superscript"], className: "cm-otw-sup", kind: "mark" },
   { nodes: ["InlineCode"], className: "cm-otw-code", kind: "mark" },
   { nodes: ["Link", "Autolink", "URL"], className: "cm-otw-link", kind: "mark" },
   { nodes: ["CodeText", "CodeInfo"], className: "cm-otw-code-text", kind: "mark" },
   { nodes: ["HTMLTag"], className: "cm-otw-html", kind: "mark" },
-  { nodes: ["Escape"], className: "cm-otw-escape", kind: "mark" },
   { nodes: ["LinkReference"], className: "cm-otw-reference", kind: "mark" },
   { nodes: ["Blockquote"], className: "cm-otw-quote", kind: "line" },
   { nodes: ["FencedCode", "CodeBlock"], className: "cm-otw-code-block", kind: "line" },
+  {
+    nodes: ["HTMLBlock", "CommentBlock", "ProcessingInstructionBlock"],
+    className: "cm-otw-html-block",
+    kind: "line",
+  },
   { nodes: ["Table", "TableHeader", "TableRow"], className: "cm-otw-table", kind: "line" },
   { nodes: ["ListItem"], className: "cm-otw-list-item", kind: "line" },
 ] as const;
@@ -25,13 +30,25 @@ export const hiddenMarkerNodes = new Set([
   "HeaderMark",
   "EmphasisMark",
   "StrikethroughMark",
+  "SubscriptMark",
+  "SuperscriptMark",
   "CodeMark",
   "QuoteMark",
   "LinkMark",
   "ImageMarker",
 ]);
 
-export type MarkdownWidgetKind = "task" | "horizontal-rule" | "image" | "table";
+export type MarkdownWidgetKind =
+  | "task"
+  | "horizontal-rule"
+  | "image"
+  | "table"
+  | "emoji"
+  | "entity"
+  | "hard-break"
+  | "math"
+  | "html-tag"
+  | "comment";
 
 /** 需要 DOM 表现的语法同样集中注册，核心只分派通用 widget 类型。 */
 export const widgetByNode = new Map<string, MarkdownWidgetKind>([
@@ -39,6 +56,12 @@ export const widgetByNode = new Map<string, MarkdownWidgetKind>([
   ["HorizontalRule", "horizontal-rule"],
   ["Image", "image"],
   ["Table", "table"],
+  ["Emoji", "emoji"],
+  ["Entity", "entity"],
+  ["HardBreak", "hard-break"],
+  ["InlineMath", "math"],
+  ["HTMLTag", "html-tag"],
+  ["Comment", "comment"],
 ]);
 
 export const rulesByNode = new Map(
@@ -51,9 +74,13 @@ export interface MarkdownSourceStyleRule {
   className: string;
 }
 
-/** 供 CommonMark AST 不会合并成单节点的自定义行内语法使用。 */
+/**
+ * 供 CommonMark AST 不会合并成单节点的自定义行内语法使用。
+ * 配对必须落在同一个块里，且不能在代码字面量内。
+ * （`<u>` 以前也在这里；现在所有行内 HTML 标签统一走语法树里的 HTMLTag 配对。）
+ */
 export const markdownSourceStyleRules: readonly MarkdownSourceStyleRule[] = [
-  { open: "<u>", close: "</u>", className: "cm-otw-underline" },
+  { open: "==", close: "==", className: "cm-otw-highlight" },
 ] as const;
 
 export interface SelectionRangeLike {
