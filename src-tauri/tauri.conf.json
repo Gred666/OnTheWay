@@ -31,7 +31,17 @@
       "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https: http: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": [
+          "**/*.[pP][nN][gG]",
+          "**/*.[jJ][pP][gG]",
+          "**/*.[jJ][pP][eE][gG]",
+          "**/*.[gG][iI][fF]",
+          "**/*.[wW][eE][bB][pP]",
+          "**/*.[aA][vV][iI][fF]",
+          "**/*.[sS][vV][gG]",
+          "**/*.[bB][mM][pP]",
+          "**/*.[iI][cC][oO]"
+        ]
       }
     }
   },
