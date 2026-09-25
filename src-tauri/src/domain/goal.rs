@@ -75,16 +75,18 @@ fn read_goal(conn: &Connection, horizon: &str, period_start: &str) -> Result<Opt
 /// 某个周期的目标。没写过就是一篇空文档，不落库。
 pub fn get_for_period(conn: &Connection, horizon: &str, period_start: &str) -> Result<Goal> {
     validate_period_start(horizon, period_start)?;
-    Ok(read_goal(conn, horizon, period_start)?.unwrap_or_else(|| Goal {
-        id: String::new(),
-        horizon: horizon.to_string(),
-        title: String::new(),
-        period_start: period_start.to_string(),
-        content_md: String::new(),
-        action_group: None,
-        created_at: 0,
-        updated_at: 0,
-    }))
+    Ok(
+        read_goal(conn, horizon, period_start)?.unwrap_or_else(|| Goal {
+            id: String::new(),
+            horizon: horizon.to_string(),
+            title: String::new(),
+            period_start: period_start.to_string(),
+            content_md: String::new(),
+            action_group: None,
+            created_at: 0,
+            updated_at: 0,
+        }),
+    )
 }
 
 /// 写某个周期的目标正文；第一次写的周期在这里建行。
@@ -230,9 +232,18 @@ mod tests {
         seed_goal(&conn, "g-new", "week", "2026-08-24", "本周目标");
         seed_goal(&conn, "g-month", "month", "2026-08-01", "八月目标");
 
-        assert_eq!(get_for_period(&conn, "week", "2026-08-17").unwrap().id, "g-old");
-        assert_eq!(get_for_period(&conn, "week", "2026-08-24").unwrap().id, "g-new");
-        assert_eq!(get_for_period(&conn, "month", "2026-08-01").unwrap().id, "g-month");
+        assert_eq!(
+            get_for_period(&conn, "week", "2026-08-17").unwrap().id,
+            "g-old"
+        );
+        assert_eq!(
+            get_for_period(&conn, "week", "2026-08-24").unwrap().id,
+            "g-new"
+        );
+        assert_eq!(
+            get_for_period(&conn, "month", "2026-08-01").unwrap().id,
+            "g-month"
+        );
     }
 
     /// 没写过的周期不是 NotFound，是一篇空文档 —— 界面上直接就是空白编辑器
@@ -333,7 +344,10 @@ mod tests {
         assert_eq!(today.carried_from.as_deref(), Some("2026-08-27"));
 
         // 延续不等于写入：翻回去看 8/28 还是空的，8/29 也没有自己的行
-        assert!(day_doc(&conn, "2026-08-28", false).unwrap().carried_from.is_none());
+        assert!(day_doc(&conn, "2026-08-28", false)
+            .unwrap()
+            .carried_from
+            .is_none());
         let rows: i64 = conn
             .query_row("SELECT count(*) FROM day_doc", [], |r| r.get(0))
             .unwrap();
@@ -424,6 +438,9 @@ mod tests {
         let conn = test_conn();
         let saved = save_day_doc(&conn, "2026-08-30", "周日的安排", "正文").unwrap();
         assert_eq!(saved.title, "周日的安排");
-        assert_eq!(day_doc(&conn, "2026-08-30", false).unwrap().title, "周日的安排");
+        assert_eq!(
+            day_doc(&conn, "2026-08-30", false).unwrap().title,
+            "周日的安排"
+        );
     }
 }
