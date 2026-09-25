@@ -136,9 +136,11 @@ describe("块级 HTML", () => {
 
   it("sanitizes independently of the editor", () => {
     const host = document.createElement("div");
+    // iframe 指向 about:blank：happy-dom 的 DOMParser 文档不像浏览器那样是惰性的，
+    // 相对地址会真的去请求 localhost:3000，在测试输出里留一条 ECONNREFUSED
     host.append(
       sanitizeHtml(
-        '<iframe src="x"></iframe><p title="t" id="i" class="c" onmouseover="y">段<a href="javascript:z">a</a><a href="mailto:me@x.dev">m</a></p>',
+        '<iframe src="about:blank"></iframe><p title="t" id="i" class="c" onmouseover="y">段<a href="javascript:z">a</a><a href="mailto:me@x.dev">m</a></p>',
       ),
     );
     expect(host.innerHTML).toBe('<p title="t">段<a>a</a><a href="mailto:me@x.dev">m</a></p>');
