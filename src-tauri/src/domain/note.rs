@@ -63,22 +63,28 @@ fn sync_wiki_links(conn: &Connection, src_id: &str, markdown: &str, now: i64) ->
     for (index, title) in wiki_titles(markdown).into_iter().enumerate() {
         let target = conn
             .query_row(
+                // 忽略大小写，和编辑器里 Mod+点击跳转的匹配一致（NOCASE 只管 ASCII，
+                // 中文标题本来也没有大小写）。完全同名的优先。
                 "SELECT entity_type, id FROM (
-                   SELECT 'note' AS entity_type, id, 1 AS rank FROM note
-                    WHERE title=?1 AND deleted_at IS NULL
+                   SELECT 'note' AS entity_type, id, 1 AS rank, title FROM note
+                    WHERE title=?1 COLLATE NOCASE AND deleted_at IS NULL
                    UNION ALL
-                   SELECT 'task', id, 2 FROM task WHERE title=?1 AND deleted_at IS NULL
+                   SELECT 'task', id, 2, title FROM task
+                    WHERE title=?1 COLLATE NOCASE AND deleted_at IS NULL
                    UNION ALL
-                   SELECT 'goal', id, 3 FROM goal WHERE title=?1 AND deleted_at IS NULL
-                 ) ORDER BY rank LIMIT 1",
+                   SELECT 'goal', id, 3, title FROM goal
+                    WHERE title=?1 COLLATE NOCASE AND deleted_at IS NULL
+                 ) ORDER BY title = ?1 DESC, rank LIMIT 1",
                 params![title],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()?;
 
         if let Some((dst_type, dst_id)) = target {
+            // OR IGNORE：大小写不同的两个双链（`[[Kyoto]]`、`[[kyoto]]`）会落到同一篇上，
+            // 撞 link 的唯一约束；那样整次保存都会失败
             conn.execute(
-                "INSERT INTO link
+                "INSERT OR IGNORE INTO link
                    (id, src_type, src_id, dst_type, dst_id, kind, sort_key, created_at)
                  VALUES (?1,'note',?2,?3,?4,'ref',?5,?6)",
                 params![
@@ -711,6 +717,41 @@ mod tests {
             wiki_titles("[[目标笔记|别名]] [[目标笔记#小节]] [[另一篇^块]] [[#只有小节]]"),
             vec!["目标笔记", "另一篇", "#只有小节"]
         );
+    }
+
+    fn ref_targets(conn: &Connection, source: &str) -> Vec<String> {
+        conn.prepare("SELECT dst_id FROM link WHERE src_id=?1 AND kind='ref' ORDER BY sort_key")
+            .unwrap()
+            .query_map(params![source], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn wiki_links_resolve_case_insensitively() {
+        let conn = test_conn();
+        let kyoto = mk(&conn, "Kyoto 书店", "正文");
+        let source = mk(&conn, "来源", "[[KYOTO 书店]]");
+        assert_eq!(ref_targets(&conn, &source), vec![kyoto]);
+    }
+
+    #[test]
+    fn exact_title_wins_over_case_insensitive_match() {
+        let conn = test_conn();
+        mk(&conn, "Kyoto 书店", "正文");
+        let exact = mk(&conn, "kyoto 书店", "同名只差大小写");
+        let source = mk(&conn, "来源", "[[kyoto 书店]]");
+        assert_eq!(ref_targets(&conn, &source), vec![exact]);
+    }
+
+    /// 两个只差大小写的双链落到同一篇上：只记一条，保存不能因此失败
+    #[test]
+    fn links_differing_only_in_case_do_not_break_saving() {
+        let conn = test_conn();
+        let kyoto = mk(&conn, "Kyoto 书店", "正文");
+        let source = mk(&conn, "来源", "[[KYOTO 书店]] 和 [[kyoto 书店]]");
+        assert_eq!(ref_targets(&conn, &source), vec![kyoto]);
     }
 
     #[test]

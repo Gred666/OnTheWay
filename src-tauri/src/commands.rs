@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::domain::model::*;
-use crate::domain::{goal, note};
+use crate::domain::{goal, note, validate_date};
 use crate::error::{AppError, Result};
 use crate::state::AppState;
 
@@ -125,7 +125,10 @@ pub async fn goal_get(
     period_start: String,
 ) -> Result<Goal> {
     validate_date(&period_start)?;
-    with_db(&state, move |c| goal::get_for_period(c, &horizon, &period_start)).await
+    with_db(&state, move |c| {
+        goal::get_for_period(c, &horizon, &period_start)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -166,7 +169,10 @@ pub async fn calendar_day_save(
     note_md: String,
 ) -> Result<DayDoc> {
     validate_date(&date)?;
-    with_db(&state, move |c| goal::save_day_doc(c, &date, &title, &note_md)).await
+    with_db(&state, move |c| {
+        goal::save_day_doc(c, &date, &title, &note_md)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -205,47 +211,4 @@ pub async fn db_stats(state: State<'_, AppState>) -> Result<DbStats> {
         })
     })
     .await
-}
-
-/// 'YYYY-MM-DD'。日期直接拼进 SQL 比较的地方虽然都用了参数绑定，
-/// 但格式错的日期会静默返回空结果，不如早点报错。
-fn validate_date(s: &str) -> Result<()> {
-    let ok = s.len() == 10
-        && s.as_bytes()[4] == b'-'
-        && s.as_bytes()[7] == b'-'
-        && s.bytes()
-            .enumerate()
-            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
-    if ok {
-        Ok(())
-    } else {
-        Err(AppError::Invalid(format!(
-            "日期格式应为 YYYY-MM-DD，收到: {s}"
-        )))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_date;
-
-    #[test]
-    fn accepts_valid_dates() {
-        assert!(validate_date("2026-08-29").is_ok());
-        assert!(validate_date("2026-01-01").is_ok());
-    }
-
-    #[test]
-    fn rejects_malformed_dates() {
-        for bad in [
-            "2026-8-29",
-            "26-08-29",
-            "2026/08/29",
-            "",
-            "2026-08-29T00:00",
-            "abcd-ef-gh",
-        ] {
-            assert!(validate_date(bad).is_err(), "「{bad}」不该通过校验");
-        }
-    }
 }
