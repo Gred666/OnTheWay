@@ -138,8 +138,18 @@ export function resolveImageSource(source: string): string {
   const fileUrl = /^file:\/\//i.test(trimmed);
   if (!fileUrl && !LOCAL_PATH_RE.test(trimmed)) return trimmed;
   if (!isTauri) return trimmed;
-  const path = fileUrl ? decodeFilePath(trimmed.replace(/^file:\/\/\/?/i, "")) : trimmed;
-  return convertFileSrc(path);
+  return convertFileSrc(fileUrl ? filePathOf(trimmed) : trimmed);
+}
+
+/**
+ * `file:///C:/a.png` → `C:/a.png`，`file:///Users/a.png` → `/Users/a.png`。
+ * 以前是把 `file:///` 连同第三个斜杠一起去掉 —— Windows 盘符路径没事，
+ * macOS / Linux 的绝对路径却丢了开头的 `/`，变成相对路径，图片永远加载不出来。
+ */
+function filePathOf(url: string): string {
+  const path = decodeFilePath(url.replace(/^file:\/\/(?:localhost(?=\/))?/i, ""));
+  // Windows 盘符前面那个斜杠不属于路径
+  return /^\/[a-zA-Z]:[\\/]/.test(path) ? path.slice(1) : path;
 }
 
 /**

@@ -25,6 +25,14 @@ describe("本机图片（桌面端）", () => {
     );
   });
 
+  it("keeps the leading slash of macOS / Linux file:// paths", () => {
+    const asset = (path: string) => `asset://localhost/${encodeURIComponent(path)}`;
+    expect(resolveImageSource("file:///Users/me/a.png")).toBe(asset("/Users/me/a.png"));
+    expect(resolveImageSource("file://localhost/home/me/a.png")).toBe(asset("/home/me/a.png"));
+    expect(resolveImageSource("file://C:/pics/a.png")).toBe(asset("C:/pics/a.png"));
+    expect(resolveImageSource("/Users/me/a.png")).toBe(asset("/Users/me/a.png"));
+  });
+
   it("keeps a bare % in a file:// path instead of throwing", () => {
     expect(resolveImageSource("file:///C:/pics/100%.png")).toBe(
       `asset://localhost/${encodeURIComponent("C:/pics/100%.png")}`,
