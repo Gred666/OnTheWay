@@ -59,11 +59,17 @@ export function NotesList({ notes }: { notes: Note[] }) {
     const q = query.trim().toLowerCase();
     const filtered = q ? notes.filter((n) => n.title.toLowerCase().includes(q)) : notes;
 
-    const sorted = [...filtered].sort((a, b) => {
-      if (sort === "title") return a.title.localeCompare(b.title, "zh-Hans-CN");
-      if (sort === "created") return b.createdAt - a.createdAt;
-      return b.updatedAt - a.updatedAt;
-    });
+    // 「按更新时间」直接用 store 里的顺序（加载 / 置顶 / 归档时已按 updatedAt 排好），
+    // 不在这里按 updatedAt 重排：自动保存每 400ms 刷新一次它，正在编辑的那篇
+    // 会在侧栏里当着用户的面往上跳 —— store 刻意不重排就是为了避免这个。
+    const sorted =
+      sort === "updated"
+        ? filtered
+        : [...filtered].sort((a, b) =>
+            sort === "title"
+              ? a.title.localeCompare(b.title, "zh-Hans-CN")
+              : b.createdAt - a.createdAt,
+          );
 
     return {
       pinned: sorted.filter((n) => n.isPinned),

@@ -23,19 +23,31 @@ fn summary_from_row(r: &Row) -> rusqlite::Result<NoteSummary> {
     })
 }
 
+/// 正文里 `[[…]]` 指向的标题，和前端 editor/links.ts 的解析一致：
+/// `[[目标|别名]]` 取目标，`[[标题#小节]]` / `[[标题^块]]` 取标题。
+/// 双链不跨行，所以逐行找 —— 否则一个没闭合的 `[[` 会把下一行的双链吞掉。
 fn wiki_titles(markdown: &str) -> Vec<String> {
-    let mut rest = markdown;
     let mut seen = HashSet::new();
     let mut titles = Vec::new();
 
-    while let Some(open) = rest.find("[[") {
-        rest = &rest[open + 2..];
-        let Some(close) = rest.find("]]") else { break };
-        let title = rest[..close].trim();
-        if !title.is_empty() && !title.contains('\n') && seen.insert(title.to_string()) {
-            titles.push(title.to_string());
+    for line in markdown.lines() {
+        let mut rest = line;
+        while let Some(open) = rest.find("[[") {
+            rest = &rest[open + 2..];
+            let Some(close) = rest.find("]]") else { break };
+            let target = rest[..close].split('|').next().unwrap_or("").trim();
+            rest = &rest[close + 2..];
+
+            let cut = target
+                .char_indices()
+                .skip(1)
+                .find(|&(_, c)| c == '#' || c == '^')
+                .map_or(target.len(), |(index, _)| index);
+            let title = target[..cut].trim();
+            if !title.is_empty() && seen.insert(title.to_string()) {
+                titles.push(title.to_string());
+            }
         }
-        rest = &rest[close + 2..];
     }
     titles
 }
@@ -530,5 +542,34 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn wiki_titles_strip_alias_and_anchor_like_the_editor() {
+        assert_eq!(
+            wiki_titles("[[目标笔记|别名]] [[目标笔记#小节]] [[另一篇^块]] [[#只有小节]]"),
+            vec!["目标笔记", "另一篇", "#只有小节"]
+        );
+    }
+
+    #[test]
+    fn unclosed_wiki_link_does_not_swallow_the_next_line() {
+        assert_eq!(wiki_titles("[[没闭合\n[[完整]]"), vec!["完整"]);
+    }
+
+    #[test]
+    fn aliased_wiki_link_is_recorded() {
+        let conn = test_conn();
+        let target = mk(&conn, "目标笔记", "正文");
+        let source = mk(&conn, "来源", "见 [[目标笔记|这篇]] 的 [[目标笔记#小节]]");
+
+        let rows: Vec<String> = conn
+            .prepare("SELECT dst_id FROM link WHERE src_type='note' AND src_id=?1 AND kind='ref'")
+            .unwrap()
+            .query_map(params![source], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![target]);
     }
 }

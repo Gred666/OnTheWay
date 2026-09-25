@@ -138,8 +138,21 @@ export function resolveImageSource(source: string): string {
   const fileUrl = /^file:\/\//i.test(trimmed);
   if (!fileUrl && !LOCAL_PATH_RE.test(trimmed)) return trimmed;
   if (!isTauri) return trimmed;
-  const path = fileUrl ? decodeURI(trimmed.replace(/^file:\/\/\/?/i, "")) : trimmed;
+  const path = fileUrl ? decodeFilePath(trimmed.replace(/^file:\/\/\/?/i, "")) : trimmed;
   return convertFileSrc(path);
+}
+
+/**
+ * `file://` 地址里的百分号转义。`100%.png` 这种没编码的 `%` 会让 decodeURI 抛
+ * URIError —— 这里是在装饰层里调用的，一抛整个行内装饰插件就崩了，整篇笔记
+ * 退回裸 Markdown。解不开就按字面路径用。
+ */
+function decodeFilePath(path: string): string {
+  try {
+    return decodeURI(path);
+  } catch {
+    return path;
+  }
 }
 
 /** `<img src>` 只放行图片能来的地方；不合规的返回 null，替身会显示 alt。 */

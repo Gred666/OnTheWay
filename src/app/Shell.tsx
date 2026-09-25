@@ -58,7 +58,7 @@ export function Shell() {
   // 日历和 /GOAL，不给今日TODO 单独取。
   // 跨过零点后，昨天那份「延续来的」缓存不再作数（它从来不是昨天自己的内容）。
   useEffect(() => {
-    forgetCarriedDays();
+    forgetCarriedDays(todayDate);
     void loadDay(todayDate, true);
   }, [forgetCarriedDays, loadDay, todayDate]);
 

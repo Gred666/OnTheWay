@@ -45,8 +45,12 @@ interface DataState {
   /**
    * 丢掉缓存里所有「延续来的」某天文档。跨过零点时调：昨天那份延续来的内容
    * 从来不是昨天自己的记录，留着的话翻回昨天会把它当成昨天写的。
+   *
+   * 新的今天如果缓存着一篇空白文档也一并丢掉：它是还没成为「今天」时取的
+   * （比如前一晚在日历里点开过明天），当时没有尝试延续；留着的话 loadDay
+   * 命中缓存，今日TODO 就一直是空白，不会延续前一天。
    */
-  forgetCarriedDays: () => void;
+  forgetCarriedDays: (today: ISODate) => void;
   searchNotes: (query: string) => Promise<SearchResult>;
   saveDocument: (target: DocumentSaveTarget, contentMd: string) => Promise<void>;
   /** 新建一篇空笔记，返回后端分配的 id；失败返回 null。 */
@@ -212,12 +216,14 @@ export const useData = create<DataState>((set, get) => ({
     }
   },
 
-  forgetCarriedDays: () =>
-    set((state) =>
-      state.dayDocs.some((day) => day.carriedFrom)
-        ? { dayDocs: state.dayDocs.filter((day) => !day.carriedFrom) }
-        : {},
-    ),
+  forgetCarriedDays: (today) =>
+    set((state) => {
+      const stale = (day: DayDoc) =>
+        !!day.carriedFrom || (day.date === today && !day.title && !day.noteMd);
+      return state.dayDocs.some(stale)
+        ? { dayDocs: state.dayDocs.filter((day) => !stale(day)) }
+        : {};
+    }),
 
   searchNotes: async (query) => (await backend()).searchNotes(query, 200),
 

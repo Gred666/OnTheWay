@@ -48,6 +48,12 @@ export async function installCloseGuard(): Promise<() => void> {
     if (closing) return;
     if (discardOnNextRequest) {
       closing = true;
+      // 「放弃」只针对当时那次失败。之后保存可能早已恢复、又攒了几百毫秒还没
+      // 落盘的输入，所以仍然尽力 flush 一次；失败或卡住（最多等 2 秒）才真的放弃。
+      await Promise.race([
+        flushAllEditors().catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
       await win.forceClose();
       return;
     }

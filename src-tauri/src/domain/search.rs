@@ -80,7 +80,13 @@ pub fn query_tokens(q: &str) -> Vec<String> {
         .filter(|t| is_meaningful(t))
         .map(str::to_string)
         .collect();
-    toks.sort_by_key(|t| std::cmp::Reverse(t.chars().count())); // 长词优先高亮
+    // 长词优先高亮；同长度再按字面排，重复的词才会相邻，dedup 才去得掉
+    toks.sort_by(|a, b| {
+        b.chars()
+            .count()
+            .cmp(&a.chars().count())
+            .then_with(|| a.cmp(b))
+    });
     toks.dedup();
     toks
 }
@@ -217,6 +223,17 @@ mod tests {
         assert!(
             lens.windows(2).all(|w| w[0] >= w[1]),
             "没有按长度降序: {toks:?}"
+        );
+    }
+
+    /// 同长度的重复词不相邻时，光靠 dedup 去不掉
+    #[test]
+    fn query_tokens_are_deduplicated() {
+        let toks = query_tokens("季度 目标 季度");
+        assert_eq!(
+            toks.iter().filter(|t| t.as_str() == "季度").count(),
+            1,
+            "重复的查询词没去重: {toks:?}"
         );
     }
 }

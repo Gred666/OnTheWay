@@ -186,7 +186,27 @@ describe("forgetCarriedDays", () => {
         day("延续的", { date: "2026-08-29", carriedFrom: "2026-08-27" }),
       ],
     });
-    useData.getState().forgetCarriedDays();
+    useData.getState().forgetCarriedDays("2026-08-29");
     expect(useData.getState().dayDocs.map((d) => d.date)).toEqual(["2026-08-27"]);
+  });
+
+  it("refetches the new today with carry-over when it was peeked at the day before", async () => {
+    // 前一晚在日历里点开过明天：那时它不是今天，取回来的是一篇不延续的空白文档。
+    // 过了零点它成了今天，得重新取一次才能延续前一天的内容。
+    useData.setState({ dayDocs: [day("", { date: "2026-08-29" })] });
+    api.calendarDay.mockResolvedValue(
+      day("- [ ] 跑步", { date: "2026-08-29", carriedFrom: "2026-08-28" }),
+    );
+
+    useData.getState().forgetCarriedDays("2026-08-29");
+    await useData.getState().loadDay("2026-08-29", true);
+    expect(api.calendarDay).toHaveBeenCalledWith("2026-08-29", true);
+    expect(useData.getState().dayDocs[0]?.carriedFrom).toBe("2026-08-28");
+  });
+
+  it("keeps the new today when it already has its own content", () => {
+    useData.setState({ dayDocs: [day("自己写的", { date: "2026-08-29" })] });
+    useData.getState().forgetCarriedDays("2026-08-29");
+    expect(useData.getState().dayDocs).toHaveLength(1);
   });
 });
