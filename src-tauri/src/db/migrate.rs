@@ -36,15 +36,45 @@ pub fn run(conn: &mut Connection, db_path: &Path) -> Result<()> {
         backup_before_migration(conn, db_path, current)?;
     }
 
+    // 迁移期间关掉外键。重建表（建新表 → 拷数据 → DROP 旧表 → RENAME）时如果开着，
+    // DROP TABLE 会先隐式 DELETE 整张表，触发 ON DELETE CASCADE / SET NULL，把引用
+    // 它的行删掉或置空 —— 0002 重建 goal 时 key_result、task.goal_id 就是这么丢的。
+    // 这是 SQLite 官方的改表流程（lang_altertable.html#otheralter）：事务外关外键，
+    // 事务里改表并用 foreign_key_check 确认没有新增悬空引用，提交后再打开。
+    // PRAGMA foreign_keys 在事务里设置是无效的，所以只能包在整个循环外面。
+    let foreign_keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+    conn.pragma_update(None, "foreign_keys", false)?;
+    let result = apply(conn, current);
+    conn.pragma_update(None, "foreign_keys", foreign_keys)?;
+    result
+}
+
+fn apply(conn: &mut Connection, current: i64) -> Result<()> {
+    let dangling = |conn: &Connection| -> Result<i64> {
+        Ok(
+            conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })?,
+        )
+    };
+
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
         let version = (i + 1) as i64;
         let tx = conn.transaction()?;
+        // 只拦迁移自己造成的悬空引用；老库里原本就有的不该让新版起不来
+        let before = dangling(&tx)?;
         tx.execute_batch(sql)
             .map_err(|e| AppError::Db(format!("迁移 {version} 失败: {e}")))?;
+        let after = dangling(&tx)?;
+        if after > before {
+            return Err(AppError::Db(format!(
+                "迁移 {version} 失败: 新增了 {} 条悬空外键",
+                after - before
+            )));
+        }
         tx.pragma_update(None, "user_version", version)?;
         tx.commit()?;
     }
-
     Ok(())
 }
 
@@ -133,6 +163,43 @@ mod tests {
             [],
         );
         assert!(r.is_err(), "指向不存在的 goal 竟然插入成功了");
+    }
+
+    /// 0002 重建 goal 表时，引用它的行不能被连带删掉 / 置空
+    #[test]
+    fn rebuilding_a_table_keeps_rows_that_reference_it() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::pragma::configure(&mut conn).unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute_batch(
+            "INSERT INTO goal (id,title,horizon,period_start,created_at,updated_at)
+               VALUES ('g1','本周','week','2026-08-24',0,0);
+             INSERT INTO key_result (id,goal_id,title,target_value,created_at,updated_at)
+               VALUES ('k1','g1','读完三本书',3,0,0);
+             INSERT INTO task (id,title,sort_key,goal_id,created_at,updated_at)
+               VALUES ('t1','跑步','a0','g1',0,0);",
+        )
+        .unwrap();
+
+        run(&mut conn, Path::new(":memory:")).unwrap();
+
+        let krs: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM key_result WHERE goal_id='g1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(krs, 1, "key_result 被 DROP TABLE goal 级联删掉了");
+        let goal_id: Option<String> = conn
+            .query_row("SELECT goal_id FROM task WHERE id='t1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(goal_id.as_deref(), Some("g1"), "task.goal_id 被置空了");
+        let fk: bool = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert!(fk, "迁移完外键没有重新打开");
     }
 
     #[test]
