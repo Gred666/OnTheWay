@@ -10,6 +10,7 @@ import {
   loadRecent,
   moveInGrid,
   pickerSections,
+  placePicker,
   rememberRecent,
   searchEmojis,
 } from "./EmojiPicker";
@@ -46,7 +47,7 @@ describe("搜索", () => {
 });
 
 describe("分区与网格", () => {
-  it("puts recents first, then the four groups", () => {
+  it("puts recents first, then every group in order", () => {
     const sections = pickerSections("", [emoji("fire"), emoji("done")]);
     expect(sections.map((section) => section.id)).toEqual([
       "recent",
@@ -54,6 +55,8 @@ describe("分区与网格", () => {
       "drive",
       "way",
       "daily",
+      "work",
+      "meme",
     ]);
     expect(ids(sections[0]!.items)).toEqual(["fire", "done"]);
   });
@@ -77,6 +80,49 @@ describe("分区与网格", () => {
     const last = rows.flat().length - 1;
     expect(moveInGrid(rows, last, "ArrowDown")).toBe(last);
     expect(moveInGrid([], 0, "ArrowDown")).toBe(0);
+  });
+});
+
+describe("定位", () => {
+  const size = (height: number, viewportHeight: number) => ({
+    width: 292,
+    height,
+    grid: 322,
+    viewport: { width: 1440, height: viewportHeight },
+  });
+  const caret = (top: number) => ({ left: 600, top, bottom: top + 20 });
+
+  it("opens below the caret when it fits", () => {
+    expect(placePicker(caret(100), size(398, 900))).toEqual({
+      left: 582,
+      top: 126,
+      above: false,
+      gridMax: undefined,
+    });
+  });
+
+  it("flips above when only the top has room", () => {
+    const place = placePicker(caret(700), size(398, 900));
+    expect(place.above).toBe(true);
+    expect(place.top + 398).toBe(700 - 6);
+    expect(place.gridMax).toBeUndefined();
+  });
+
+  it("shrinks the grid on the roomier side when neither side fits", () => {
+    // 620 高的窗口，光标在中间：下面 286px、上面 266px
+    const place = placePicker(caret(280), size(398, 620));
+    expect(place.above).toBe(false);
+    expect(place.top).toBe(306);
+    const height = 398 - (322 - place.gridMax!);
+    expect(place.top + height).toBeLessThanOrEqual(620 - 8);
+    expect(place.gridMax).toBeGreaterThanOrEqual(120);
+  });
+
+  it("keeps the panel inside the window horizontally", () => {
+    expect(placePicker({ left: 1430, top: 100, bottom: 120 }, size(398, 900)).left).toBe(
+      1440 - 292 - 8,
+    );
+    expect(placePicker({ left: 2, top: 100, bottom: 120 }, size(398, 900)).left).toBe(8);
   });
 });
 

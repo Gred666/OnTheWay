@@ -11,9 +11,10 @@ import { EMOJI_GROUPS } from "./animatedEmojiSet";
    动态表情选择器（编辑器里 Ctrl/⌘ + E）。
 
    贴着光标弹出来：下面放得下就在下面，放不下翻到上面。一行 6 个，分组正好
-   各一行；最上面一行是最近用过的。方向键在格子里走，回车插入，Esc 关掉并把
-   焦点还给编辑器；输入框里打字就是搜索（中文、拼音、英文都行）。
-   当前格子里的表情循环播放，其余静止 —— 一屏 30 个同时动太吵。
+   各一行；最上面一行是最近用过的，网格限高、放不下就滚动。方向键在格子里走
+   （走到看不见的格子会滚过去），回车插入，Esc 关掉并把焦点还给编辑器；输入框
+   里打字就是搜索（中文、拼音、英文都行）。
+   当前格子里的表情循环播放，其余静止 —— 一屏几十个同时动太吵。
    ============================================================ */
 
 export interface EmojiPickerAnchor {
@@ -136,6 +137,54 @@ export function moveInGrid(
   return target[Math.min(col, target.length - 1)]!;
 }
 
+/* ---------------- 定位 ---------------- */
+
+export interface Placement {
+  left: number;
+  top: number;
+  above: boolean;
+  /** 上下都放不下完整面板时，把网格压到这么高（滚动看其余的） */
+  gridMax?: number;
+}
+
+/** 网格最少留两行多一点，再矮就没法用了 */
+const MIN_GRID = 120;
+
+/**
+ * 下面放得下就放下面，否则放得下就翻到上面；两边都放不下（矮窗口、光标在中间）
+ * 时挑空间大的一边，把网格压矮到正好放得下。左右夹在窗口里。
+ */
+export function placePicker(
+  anchor: EmojiPickerAnchor,
+  size: {
+    width: number;
+    height: number;
+    grid: number;
+    viewport: { width: number; height: number };
+  },
+): Placement {
+  const { width, height, grid, viewport } = size;
+  const roomBelow = viewport.height - EDGE - (anchor.bottom + GAP);
+  const roomAbove = anchor.top - GAP - EDGE;
+  let above = false;
+  let fitted = height;
+  if (height > roomBelow) {
+    if (height <= roomAbove) {
+      above = true;
+    } else {
+      above = roomAbove > roomBelow;
+      fitted = Math.max(height - grid + MIN_GRID, above ? roomAbove : roomBelow);
+    }
+  }
+  const gridMax = fitted < height ? grid - (height - fitted) : undefined;
+  return {
+    left: Math.max(EDGE, Math.min(anchor.left - 18, viewport.width - width - EDGE)),
+    top: above ? anchor.top - GAP - fitted : Math.max(EDGE, anchor.bottom + GAP),
+    above,
+    gridMax,
+  };
+}
+
 /* ---------------- 组件 ---------------- */
 
 /** 一个格子里的表情：当前项循环播放，离开就停回静止帧。 */
@@ -179,9 +228,12 @@ export function EmojiPicker({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [recent] = useState(loadRecent);
-  const [place, setPlace] = useState<{ left: number; top: number; above: boolean } | null>(null);
+  const [place, setPlace] = useState<Placement | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  /** 这次换当前项是不是键盘干的：键盘走到看不见的格子要滚过去，鼠标悬停不滚（不然边上的格子一碰就跳） */
+  const keyboardMoveRef = useRef(false);
 
   const sections = useMemo(() => pickerSections(query, recent), [query, recent]);
   const items = useMemo(() => sections.flatMap((section) => section.items), [sections]);
@@ -192,21 +244,31 @@ export function EmojiPicker({
   // biome-ignore lint/correctness/useExhaustiveDependencies: 只跟着输入复位
   useEffect(() => setActive(0), [query]);
 
-  // 定位：量出面板尺寸后贴着光标摆，下面放不下就翻到上面，左右夹在窗口里
+  // 分组多了网格会滚动：键盘走到的格子保持在视野里
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 当前项变了才需要滚，读的是 DOM 上的选中格
+  useEffect(() => {
+    if (!keyboardMoveRef.current) return;
+    keyboardMoveRef.current = false;
+    const option = gridRef.current?.querySelector<HTMLElement>(
+      '[role="option"][aria-selected="true"]',
+    );
+    option?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+
+  // 定位：量出面板尺寸后贴着光标摆，左右夹在窗口里
   useLayoutEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
     // offsetWidth / offsetHeight 是布局尺寸：入场动画的 scale(0.96) 这时已经挂上了，
     // 用 getBoundingClientRect 量会小 4%，贴右边、翻到上面时就差出十几像素
-    const width = panel.offsetWidth;
-    const height = panel.offsetHeight;
-    const below = anchor.bottom + GAP;
-    const above = below + height > window.innerHeight - EDGE && anchor.top - GAP - height >= EDGE;
-    setPlace({
-      left: Math.max(EDGE, Math.min(anchor.left - 18, window.innerWidth - width - EDGE)),
-      top: above ? anchor.top - GAP - height : Math.max(EDGE, below),
-      above,
-    });
+    setPlace(
+      placePicker(anchor, {
+        width: panel.offsetWidth,
+        height: panel.offsetHeight,
+        grid: gridRef.current?.offsetHeight ?? 0,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+      }),
+    );
   }, [anchor]);
 
   // 摆好位置之后再聚焦：定位前面板是 visibility: hidden，那时候 focus() 会静默失败
@@ -270,9 +332,11 @@ export function EmojiPicker({
       key === "ArrowDown"
     ) {
       event.preventDefault();
+      keyboardMoveRef.current = true;
       setActive((index) => moveInGrid(rows, index, key));
     } else if (key === "Tab") {
       event.preventDefault();
+      keyboardMoveRef.current = true;
       setActive((index) => moveInGrid(rows, index, event.shiftKey ? "ArrowLeft" : "ArrowRight"));
     }
   };
@@ -319,12 +383,15 @@ export function EmojiPicker({
       </div>
 
       <div
+        ref={gridRef}
         id="otw-emoji-grid"
+        style={place?.gridMax ? { maxHeight: place.gridMax } : undefined}
         role="listbox"
         aria-label="动态表情"
         // 焦点始终留在输入框里（aria-activedescendant 指向当前格），这里只是满足 listbox 可聚焦
         tabIndex={-1}
-        className="px-2 pb-1.5 pt-1"
+        // 六组 + 最近使用一屏放不下：网格限高滚动，露出半行提示下面还有
+        className="scroll-thin max-h-[322px] overflow-y-auto overscroll-contain px-2 pb-1.5 pt-1"
       >
         {sections.length === 0 ? (
           <p className="px-2 py-8 text-center text-[12.5px] text-muted">

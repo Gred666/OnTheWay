@@ -59,7 +59,7 @@ export interface EmojiMotion {
   seamless?: boolean;
 }
 
-export type EmojiGroup = "mood" | "drive" | "way" | "daily";
+export type EmojiGroup = "mood" | "drive" | "way" | "daily" | "work" | "meme";
 
 /** 色相。每个都对应 globals.css 里亮暗两套的 `--ae-<色相>` 变量。 */
 export const EMOJI_HUES = [
@@ -96,6 +96,8 @@ export const EMOJI_GROUPS: ReadonlyArray<{ id: EmojiGroup; label: string }> = [
   { id: "drive", label: "干劲" },
   { id: "way", label: "在路上" },
   { id: "daily", label: "日常" },
+  { id: "work", label: "打工人" },
+  { id: "meme", label: "吃瓜" },
 ];
 
 /* ---------------- 缓动 ---------------- */
@@ -115,6 +117,17 @@ function burst(x: number, y: number): readonly Step[] {
     [0.46, { x: 0, y: 0, s: 1.15 }, SOFT],
     [0.74, { y: 0.7, s: 1, r: 25 }, SOFT],
     [1, { y: 0, r: 0 }],
+  ];
+}
+
+/** 从 (fromX, fromY) 溅出去、落到自己的位置附近再淡掉：柠檬汁、瓜子这类一闪而过的粒子。 */
+function spray(fromX: number, fromY: number, x: number, y: number, at = 0.16): readonly Step[] {
+  return [
+    [0, { x: fromX - x, y: fromY - y, s: 0.3, o: 0 }],
+    [at, { x: fromX - x, y: fromY - y, s: 0.3, o: 0 }, OUT],
+    [at + 0.04, { o: 1 }, OUT],
+    [at + 0.3, { x: 0, y: 0, s: 1 }, IN],
+    [at + 0.44, { y: 1.6, o: 0 }],
   ];
 }
 
@@ -1229,6 +1242,817 @@ export const ANIMATED_EMOJI_DESIGNS: readonly AnimatedEmojiDesign[] = [
           [0.46, { d: 0 }],
         ],
         duration: 1400,
+      },
+    },
+  },
+
+  /* ============================ 打工人 ============================ */
+  {
+    id: "fish",
+    name: "摸鱼",
+    group: "work",
+    keywords: "摸鱼 划水 偷懒 鱼 带薪 moyu huashui yu fish slack",
+    hue: "sky",
+    svg: `<circle data-a="bubble1" class="o thin fx" cx="3.2" cy="7.4" r="1"/>
+    <circle data-a="bubble2" class="o thin fx" cx="4.9" cy="4.2" r=".7"/>
+    <g data-a="fish">
+      <path data-a="tail" class="t" d="M16.9 12l3.9-3.7v7.4z"/>
+      <path class="t" d="M3.4 12c1.8-3.5 4.7-5.3 8-5.3 3.2 0 5.6 2 6.5 5.3-.9 3.3-3.3 5.3-6.5 5.3-3.3 0-6.2-1.8-8-5.3z"/>
+      <path class="o" d="M11.3 6.8c.8-1.5 2.3-2.2 4-2-.2 1.1-.8 1.9-1.7 2.5"/>
+      <path class="o thin" d="M10.3 9.1c1 1.8 1 4.1 0 5.8"/>
+      <circle class="ik" cx="7" cy="10.9" r="1"/>
+    </g>`,
+    motion: {
+      fish: {
+        steps: [
+          [0, {}, SOFT],
+          [0.25, { x: -1.2, r: -4 }, SOFT],
+          [0.5, { x: 0.2, r: 3 }, SOFT],
+          [0.75, { x: -0.8, r: -2 }, SOFT],
+          [1, { x: 0, r: 0 }],
+        ],
+        duration: 1700,
+      },
+      tail: {
+        steps: [
+          [0, {}, SOFT],
+          [0.12, { r: 24 }, SOFT],
+          [0.25, { r: -20 }, SOFT],
+          [0.37, { r: 20 }, SOFT],
+          [0.5, { r: -16 }, SOFT],
+          [0.62, { r: 12 }, SOFT],
+          [0.75, { r: -7 }, SOFT],
+          [0.88, { r: 3 }, SOFT],
+          [1, { r: 0 }],
+        ],
+        duration: 1700,
+        origin: "0% 50%",
+      },
+      bubble1: {
+        steps: [
+          [0, { o: 0, y: 2, s: 0.4 }, OUT],
+          [0.2, { o: 1, y: 0, s: 1 }, SOFT],
+          [0.55, { o: 0, y: -3.4, x: -0.6 }],
+        ],
+        duration: 1700,
+        delay: 200,
+      },
+      bubble2: {
+        steps: [
+          [0, { o: 0, y: 2, s: 0.4 }, OUT],
+          [0.2, { o: 1, y: 0, s: 1 }, SOFT],
+          [0.55, { o: 0, y: -3, x: 0.5 }],
+        ],
+        duration: 1700,
+        delay: 480,
+      },
+    },
+  },
+  {
+    id: "flat",
+    name: "躺平",
+    group: "work",
+    keywords: "躺平 摆烂 休息 睡 不想动 tangping bailan shui rest lazy",
+    hue: "amber",
+    svg: `<path data-a="z1" class="o thin hue-purple" d="M12.4 8.4h2.4l-2.4 2.6h2.4"/>
+    <path data-a="z2" class="o thin hue-purple" d="M15.8 5.2h1.9l-1.9 2.1h1.9"/>
+    <path data-a="z3" class="o thin hue-purple" d="M18.8 2.4h1.5l-1.5 1.7h1.5"/>
+    <path class="o hue-brown" d="M1.6 21h20.8"/>
+    <path class="t hue-slate" d="M1.4 19.8c0-1.4 1.1-2.2 2.9-2.2h5v3.6H3c-1 0-1.6-.6-1.6-1.4z"/>
+    <g data-a="body">
+      <path class="t hue-sky" d="M10.2 14.8h8.4a3.1 3.1 0 0 1 0 6.2h-8.4z"/>
+      <path class="o thin hue-sky" d="M13.4 14.8V21"/>
+    </g>
+    <g data-a="head">
+      <circle class="t face" cx="6.8" cy="14.2" r="5.1"/>
+      <ellipse class="blush" cx="3.9" cy="16.2" rx=".9" ry=".55"/>
+      <ellipse class="blush" cx="9.7" cy="16.2" rx=".9" ry=".55"/>
+      <path class="i thin" d="M3.7 13.4c.5.7 1.4.7 1.9 0M8 13.4c.5.7 1.4.7 1.9 0"/>
+      <path class="i thin" d="M6.2 16.9c.4.3.8.3 1.2 0"/>
+    </g>`,
+    motion: {
+      body: {
+        steps: [
+          [0, {}, SOFT],
+          [0.5, { sy: 1.1, sx: 0.99 }, SOFT],
+          [1, { sx: 1, sy: 1 }],
+        ],
+        duration: 900,
+        iterations: 2,
+        origin: "50% 100%",
+      },
+      head: {
+        steps: [
+          [0, {}, SOFT],
+          [0.5, { y: -0.4, r: -3 }, SOFT],
+          [1, { y: 0, r: 0 }],
+        ],
+        duration: 900,
+        iterations: 2,
+        origin: "30% 90%",
+      },
+      z1: {
+        steps: [
+          [0, {}, IN],
+          [0.3, { o: 0, x: 1, y: -1.6 }],
+          [0.31, { o: 0, x: -0.8, y: 1.2 }, OUT],
+          [0.6, { o: 1, x: 0, y: 0 }],
+        ],
+        duration: 1800,
+      },
+      z2: {
+        steps: [
+          [0, {}, IN],
+          [0.3, { o: 0, x: 1, y: -1.6 }],
+          [0.31, { o: 0, x: -0.8, y: 1.2 }, OUT],
+          [0.6, { o: 1, x: 0, y: 0 }],
+        ],
+        duration: 1800,
+        delay: 170,
+      },
+      z3: {
+        steps: [
+          [0, {}, IN],
+          [0.3, { o: 0, x: 1, y: -1.6 }],
+          [0.31, { o: 0, x: -0.8, y: 1.2 }, OUT],
+          [0.6, { o: 1, x: 0, y: 0 }],
+        ],
+        duration: 1800,
+        delay: 340,
+      },
+    },
+  },
+  {
+    id: "bald",
+    name: "头秃",
+    group: "work",
+    keywords: "头秃 掉头发 秃了 加班 崩溃 头疼 toutu diaotoufa bald stress",
+    hue: "amber",
+    svg: `<g data-a="head">
+      <path class="o thin" d="M9.8 6.1c-.7-1.1-.6-2.4.3-3.4"/>
+      <path data-a="hair" class="o thin" d="M12.6 5.7c0-1.3.5-2.5 1.5-3.3"/>
+      <circle class="t face" cx="12" cy="13.6" r="8"/>
+      <path class="shine" d="M7.4 9.5c.5-1.3 1.5-2.4 2.9-3.1"/>
+      <path class="i" d="M7.8 11.5l2.4-.9M16.2 11.5l-2.4-.9"/>
+      <circle class="ik" cx="9.4" cy="13.6" r="1.05"/>
+      <circle class="ik" cx="14.6" cy="13.6" r="1.05"/>
+      <path class="i" d="M9.8 18.4c.6-.8 1.3-1.2 2.2-1.2s1.6.4 2.2 1.2"/>
+    </g>
+    <path data-a="falling" class="o thin fx" d="M12.6 5.7c0-1.3.5-2.5 1.5-3.3"/>
+    <path data-a="sweat" class="t hue-sky fx" d="M19.6 8.6c-.8 1-1.2 1.8-1.2 2.4a1.2 1.2 0 0 0 2.4 0c0-.6-.4-1.4-1.2-2.4z"/>`,
+    motion: {
+      head: {
+        steps: [
+          [0, {}, SOFT],
+          [0.08, { r: -4 }, SOFT],
+          [0.16, { r: 4 }, SOFT],
+          [0.24, { r: -3 }, SOFT],
+          [0.32, { r: 0 }],
+        ],
+        duration: 1900,
+        origin: "50% 95%",
+      },
+      hair: {
+        steps: [
+          [0, {}],
+          [0.2, {}],
+          [0.21, { o: 0 }],
+          [0.78, { o: 0, sy: 0 }, OUT],
+          [0.92, { o: 1, sy: 1.2 }, SOFT],
+          [1, { sy: 1 }],
+        ],
+        duration: 1900,
+        origin: "0% 100%",
+      },
+      falling: {
+        steps: [
+          [0, { o: 0 }],
+          [0.2, { o: 0 }],
+          [0.21, { o: 1 }, SOFT],
+          [0.34, { x: 0.8, y: 0.8, r: 25 }, SOFT],
+          [0.6, { x: 3.6, y: 6.4, r: 85 }, SOFT],
+          [0.72, { o: 0, x: 4.4, y: 8.8, r: 110 }],
+        ],
+        duration: 1900,
+        origin: "0% 100%",
+      },
+      sweat: {
+        steps: [
+          [0, { o: 0, s: 0.3 }],
+          [0.3, { o: 0, s: 0.3 }, OUT],
+          [0.42, { o: 1, s: 1 }, IN],
+          [0.76, { y: 2.6 }],
+          [0.86, { o: 0, y: 3.2 }],
+        ],
+        duration: 1900,
+        origin: "50% 0%",
+      },
+    },
+  },
+  {
+    id: "offwork",
+    name: "下班",
+    group: "work",
+    keywords: "下班 到点 下班了 冲 回家 跑路 xiaban daodian huijia paolu offwork home",
+    hue: "green",
+    svg: `<path data-a="speed" class="o thin hue-slate fx" d="M1.6 8.4h2.6M1 11.6h3.2M1.6 14.8h2.4"/>
+    <path data-a="legL" class="o" d="M9.8 17.4l-1.5 3.4H6.8"/>
+    <path data-a="legR" class="o" d="M14.2 17.4l1.5 3.4h1.5"/>
+    <g data-a="clock">
+      <circle class="t" cx="12" cy="10.8" r="7.4"/>
+      <path class="o thin" d="M12 4.6v.9M12 16.1v.9M5.8 10.8h.9M17.3 10.8h.9"/>
+      <path data-a="hour" class="o bold" d="M12 10.8l-.3 3.4"/>
+      <path data-a="minute" class="o" d="M12 10.8L9.9 7.2"/>
+      <circle class="k" cx="12" cy="10.8" r=".9"/>
+    </g>`,
+    motion: {
+      clock: {
+        steps: [
+          [0, {}, SOFT],
+          [0.5, { y: -0.9, r: -3 }, SOFT],
+          [1, { y: 0, r: 0 }],
+        ],
+        duration: 420,
+        iterations: 4,
+      },
+      legL: {
+        steps: [
+          [0, {}, SOFT],
+          [0.25, { r: 28 }, SOFT],
+          [0.75, { r: -22 }, SOFT],
+          [1, { r: 0 }],
+        ],
+        duration: 420,
+        iterations: 4,
+        origin: "100% 0%",
+      },
+      legR: {
+        steps: [
+          [0, {}, SOFT],
+          [0.25, { r: -22 }, SOFT],
+          [0.75, { r: 28 }, SOFT],
+          [1, { r: 0 }],
+        ],
+        duration: 420,
+        iterations: 4,
+        origin: "0% 0%",
+      },
+      minute: {
+        steps: [
+          [0, { r: 0 }, IN_OUT],
+          [1, { r: 1080 }],
+        ],
+        duration: 1680,
+        box: "view",
+        origin: "12px 10.8px",
+        seamless: true,
+      },
+      hour: {
+        steps: [
+          [0, { r: 0 }, IN_OUT],
+          [1, { r: 360 }],
+        ],
+        duration: 1680,
+        box: "view",
+        origin: "12px 10.8px",
+        seamless: true,
+      },
+      speed: {
+        steps: [
+          [0, { o: 0, x: 1 }, OUT],
+          [0.15, { o: 1, x: 0 }],
+          [0.7, { o: 1, x: -0.6 }, SOFT],
+          [0.85, { o: 0, x: -1.6 }],
+        ],
+        duration: 1680,
+      },
+    },
+  },
+  {
+    id: "charge",
+    name: "充电",
+    group: "work",
+    keywords: "充电 回血 没电 续航 电量 chongdian huixue meidian battery charge recharge",
+    hue: "green",
+    svg: `<g data-a="battery">
+      <rect class="t" x="2.6" y="7.4" width="16.8" height="9.2" rx="2.2"/>
+      <path class="o bold" d="M21.2 10.4v3.2"/>
+      <rect data-a="bar1" class="k" x="4.8" y="9.6" width="3.4" height="4.8" rx=".7"/>
+      <rect data-a="bar2" class="k" x="9.3" y="9.6" width="3.4" height="4.8" rx=".7"/>
+      <rect data-a="bar3" class="k" x="13.8" y="9.6" width="3.4" height="4.8" rx=".7"/>
+    </g>
+    <path data-a="bolt" class="t hue-amber" d="M12.9 3.2l-4.5 9.2h3.4l-1.2 8.4 5-9.6h-3.5z"/>`,
+    motion: {
+      battery: {
+        steps: [
+          [0, {}],
+          [0.78, {}, SOFT],
+          [0.84, { x: -0.5 }, SOFT],
+          [0.9, { x: 0.5 }, SOFT],
+          [0.96, { x: 0 }],
+        ],
+        duration: 1700,
+      },
+      bar1: {
+        steps: [
+          [0, {}, OUT],
+          [0.08, { o: 0 }],
+          [0.3, { o: 0, sx: 0.4 }, OUT],
+          [0.42, { o: 1, sx: 1 }],
+        ],
+        duration: 1700,
+        origin: "0% 50%",
+      },
+      bar2: {
+        steps: [
+          [0, {}, OUT],
+          [0.08, { o: 0 }],
+          [0.48, { o: 0, sx: 0.4 }, OUT],
+          [0.6, { o: 1, sx: 1 }],
+        ],
+        duration: 1700,
+        origin: "0% 50%",
+      },
+      bar3: {
+        steps: [
+          [0, {}, OUT],
+          [0.08, { o: 0 }],
+          [0.66, { o: 0, sx: 0.4 }, OUT],
+          [0.78, { o: 1, sx: 1 }],
+        ],
+        duration: 1700,
+        origin: "0% 50%",
+      },
+      bolt: {
+        steps: [
+          [0, {}, OUT],
+          [0.08, { s: 0.8 }, OUT],
+          [0.2, { s: 1.12 }, SOFT],
+          [0.32, { s: 1 }],
+          [0.8, { s: 1 }, OUT],
+          [0.88, { s: 1.18, r: -6 }, SOFT],
+          [1, { s: 1, r: 0 }],
+        ],
+        duration: 1700,
+      },
+    },
+  },
+  {
+    id: "boba",
+    name: "奶茶",
+    group: "work",
+    keywords: "奶茶 珍珠 续命 下午茶 喝 naicha zhenzhu xiawucha boba milktea tea",
+    hue: "brown",
+    svg: `<path data-a="straw" class="o bold hue-pink" d="M13 8.6l2.6-6.2"/>
+    <circle data-a="sip" class="ik fx" cx="13.2" cy="8.2" r=".85"/>
+    <g data-a="cup">
+      <path class="t" d="M6.4 9.4h11.2l-1.3 10.8a1.9 1.9 0 0 1-1.9 1.7H9.6a1.9 1.9 0 0 1-1.9-1.7z"/>
+      <path class="p" d="M6.2 9.4c.4-2 2.8-3.4 5.8-3.4s5.4 1.4 5.8 3.4z"/>
+      <path class="o" d="M5.4 9.4h13.2"/>
+      <circle data-a="p1" class="ik" cx="9.8" cy="18.9" r="1"/>
+      <circle data-a="p2" class="ik" cx="12.2" cy="19.3" r="1"/>
+      <circle data-a="p3" class="ik" cx="14.4" cy="18.7" r="1"/>
+      <circle data-a="p4" class="ik" cx="11" cy="16.8" r="1"/>
+      <circle data-a="p5" class="ik" cx="13.4" cy="16.6" r="1"/>
+    </g>`,
+    motion: {
+      cup: {
+        steps: [
+          [0, {}],
+          [0.76, {}, OUT],
+          [0.82, { sy: 0.95, sx: 1.04 }, SOFT],
+          [0.9, { sx: 1, sy: 1 }],
+        ],
+        duration: 1600,
+        origin: "50% 100%",
+      },
+      straw: {
+        steps: [
+          [0, {}, SOFT],
+          [0.3, { r: -6 }, SOFT],
+          [0.5, { r: 4 }, SOFT],
+          [0.7, { r: 0 }],
+        ],
+        duration: 1600,
+        origin: "0% 100%",
+      },
+      sip: {
+        steps: [
+          [0, { o: 0 }],
+          [0.45, { o: 0 }],
+          [0.5, { o: 1 }, IN],
+          [0.78, { x: 2.1, y: -5 }],
+          [0.84, { o: 0, x: 2.3, y: -5.6 }],
+        ],
+        duration: 1600,
+      },
+      p1: {
+        steps: [
+          [0, {}, OUT],
+          [0.14, { y: -1.1 }, IN],
+          [0.28, { y: 0 }],
+          [1, {}],
+        ],
+        duration: 700,
+        iterations: 2,
+      },
+      p2: {
+        steps: [
+          [0, {}, OUT],
+          [0.14, { y: -1.1 }, IN],
+          [0.28, { y: 0 }],
+          [1, {}],
+        ],
+        duration: 700,
+        delay: 90,
+        iterations: 2,
+      },
+      p3: {
+        steps: [
+          [0, {}, OUT],
+          [0.14, { y: -1.1 }, IN],
+          [0.28, { y: 0 }],
+          [1, {}],
+        ],
+        duration: 700,
+        delay: 180,
+        iterations: 2,
+      },
+      p4: {
+        steps: [
+          [0, {}, OUT],
+          [0.14, { y: -1.1 }, IN],
+          [0.28, { y: 0 }],
+          [1, {}],
+        ],
+        duration: 700,
+        delay: 270,
+        iterations: 2,
+      },
+      p5: {
+        steps: [
+          [0, {}, OUT],
+          [0.14, { y: -1.1 }, IN],
+          [0.28, { y: 0 }],
+          [1, {}],
+        ],
+        duration: 700,
+        delay: 360,
+        iterations: 2,
+      },
+    },
+  },
+
+  /* ============================ 吃瓜 ============================ */
+  {
+    id: "melon",
+    name: "吃瓜",
+    group: "meme",
+    keywords: "吃瓜 围观 看戏 八卦 西瓜 chigua weiguan kanxi bagua xigua melon popcorn gossip",
+    hue: "amber",
+    svg: `<g data-a="face">
+      <circle class="t face" cx="12" cy="9.8" r="7.2"/>
+      <path class="i" d="M8.2 6.6c.6-.6 1.5-.8 2.3-.5M13.5 6.1c.8-.3 1.7-.1 2.3.5"/>
+      <g data-a="eyes">
+        <circle class="ik" cx="9.4" cy="9.4" r="1.05"/>
+        <circle class="ik" cx="14.6" cy="9.4" r="1.05"/>
+      </g>
+    </g>
+    <g data-a="melon">
+      <path class="t hue-green" d="M2.6 13.4h18.8a9.4 9.4 0 0 1-18.8 0z"/>
+      <path class="t rich hue-red" d="M4.6 13.4h14.8a7.4 7.4 0 0 1-14.8 0z"/>
+      <ellipse class="ik hue-red" cx="8.6" cy="15.6" rx=".5" ry=".8"/>
+      <ellipse class="ik hue-red" cx="12" cy="17.6" rx=".5" ry=".8"/>
+      <ellipse class="ik hue-red" cx="15.4" cy="15.6" rx=".5" ry=".8"/>
+    </g>
+    <ellipse data-a="seedA" class="ik hue-red fx" cx="6.6" cy="11.6" rx=".45" ry=".75"/>
+    <ellipse data-a="seedB" class="ik hue-red fx" cx="17.4" cy="11.4" rx=".45" ry=".75"/>`,
+    motion: {
+      eyes: {
+        steps: [
+          [0, {}, SOFT],
+          [0.14, { x: -1.2 }],
+          [0.38, { x: -1.2 }, SOFT],
+          [0.5, { x: 1.2 }],
+          [0.74, { x: 1.2 }, SOFT],
+          [0.86, { x: 0 }],
+        ],
+        duration: 1900,
+      },
+      face: {
+        steps: [
+          [0, {}, SOFT],
+          [0.14, { y: 0.5 }],
+          [0.86, { y: 0.5 }, SOFT],
+          [0.96, { y: 0 }],
+        ],
+        duration: 1900,
+      },
+      melon: {
+        steps: [
+          [0, {}, SOFT],
+          [0.1, { y: -1.4, r: -5 }, SOFT],
+          [0.2, { y: 0, r: 0 }, SOFT],
+          [0.3, { y: -1.4, r: 4 }, SOFT],
+          [0.4, { y: 0, r: 0 }],
+        ],
+        duration: 1900,
+        origin: "50% 0%",
+      },
+      seedA: {
+        steps: [
+          [0, { o: 0, s: 0.4 }],
+          [0.12, { o: 0, s: 0.4 }, OUT],
+          [0.16, { o: 1, s: 1 }, OUT],
+          [0.42, { o: 0, x: -2.2, y: -2.6, r: -140 }],
+        ],
+        duration: 1900,
+      },
+      seedB: {
+        steps: [
+          [0, { o: 0, s: 0.4 }],
+          [0.32, { o: 0, s: 0.4 }, OUT],
+          [0.36, { o: 1, s: 1 }, OUT],
+          [0.62, { o: 0, x: 2.2, y: -2.6, r: 140 }],
+        ],
+        duration: 1900,
+      },
+    },
+  },
+  {
+    id: "pigeon",
+    name: "鸽了",
+    group: "meme",
+    keywords: "鸽了 放鸽子 咕咕 鸽子 拖延 爽约 gele fanggezi gugu gezi pigeon delay",
+    hue: "slate",
+    svg: `<path data-a="coo" class="o thin hue-purple fx" d="M1.2 4.4c.5-.6 1.1-.6 1.6 0s1.1.6 1.6 0"/>
+    <path class="o hue-pink" d="M11.4 18.6v2.4M14.8 18.6v2.4M10.4 21h2M13.8 21h2"/>
+    <g data-a="body">
+      <path class="t" d="M5.6 11.2c.4 4.9 3.3 7.8 7.6 7.8 3.4 0 5.6-1.8 6.5-4.4l2.5-1.2-2.4-1c-1-2.6-3.5-4.3-6.7-4.3-2.8 0-5.2.9-7.5 3.1z"/>
+      <path class="o" d="M11 12.8c1.6 1.7 4.2 2.2 6.4 1.3"/>
+    </g>
+    <g data-a="head">
+      <path class="o hue-purple" d="M5.4 11.2c1.1.9 2.7 1 4 .2"/>
+      <circle class="t" cx="7.8" cy="7.8" r="3.3"/>
+      <circle class="ik" cx="6.9" cy="7.2" r=".8"/>
+      <path class="t hue-amber" d="M4.6 7.4l-2.2.9 2.2.7z"/>
+    </g>`,
+    motion: {
+      head: {
+        steps: [
+          [0, {}, OUT],
+          [0.08, { x: -1.8, y: 0.4 }, SOFT],
+          [0.2, { x: 0, y: 0 }, OUT],
+          [0.3, { x: -1.8, y: 0.4 }, SOFT],
+          [0.42, { x: 0, y: 0 }, OUT],
+          [0.52, { x: -1.8, y: 0.4 }, SOFT],
+          [0.64, { x: 0, y: 0 }],
+        ],
+        duration: 1800,
+      },
+      body: {
+        steps: [
+          [0, {}, OUT],
+          [0.08, { r: -3 }, SOFT],
+          [0.2, { r: 0 }, OUT],
+          [0.3, { r: -3 }, SOFT],
+          [0.42, { r: 0 }, OUT],
+          [0.52, { r: -3 }, SOFT],
+          [0.64, { r: 0 }],
+        ],
+        duration: 1800,
+        origin: "50% 100%",
+      },
+      coo: {
+        steps: [
+          [0, { o: 0, x: 1 }],
+          [0.64, { o: 0, x: 1 }, OUT],
+          [0.72, { o: 1, x: 0 }, SOFT],
+          [0.92, { o: 0, x: -1.2 }],
+        ],
+        duration: 1800,
+      },
+    },
+  },
+  {
+    id: "lemon",
+    name: "柠檬精",
+    group: "meme",
+    keywords: "柠檬精 酸了 羡慕 嫉妒 柠檬 ningmengjing suanle xianmu ningmeng lemon jealous sour",
+    hue: "amber",
+    svg: `<path data-a="leaf" class="t hue-green" d="M17.9 5.3c.8-2.1 2.6-3.2 4.6-2.9-.4 2-2.2 3.3-4.6 2.9z"/>
+    <g data-a="lemon">
+      <path class="t rich" d="M3.6 13.6c-.3-4.6 3.4-8.6 8.4-8.9 1.7-.1 3.3.3 4.6 1l2.6-.9-.4 2.7c1.1 1.3 1.8 3 1.8 4.9.3 4.6-3.4 8.6-8.4 8.9-1.7.1-3.3-.3-4.6-1l-2.6.9.4-2.7c-1-1.3-1.7-3-1.8-4.9z"/>
+      <path class="i" d="M7.8 11.3h2.6M13 11.3h2.6"/>
+      <g data-a="eyes">
+        <circle class="ik" cx="9.7" cy="12.4" r=".8"/>
+        <circle class="ik" cx="14.9" cy="12.4" r=".8"/>
+      </g>
+      <path class="i" d="M10.4 16c.8-.5 1.7-.5 2.5 0"/>
+    </g>
+    <circle data-a="drop1" class="k hue-sky fx" cx="1.8" cy="17.8" r=".8"/>
+    <circle data-a="drop2" class="k hue-sky fx" cx="3.4" cy="22" r=".7"/>
+    <circle data-a="drop3" class="k hue-sky fx" cx="6.6" cy="22.6" r=".6"/>`,
+    motion: {
+      lemon: {
+        steps: [
+          [0, {}, IN_OUT],
+          [0.16, { sx: 1.14, sy: 0.86 }, OUT],
+          [0.3, { sx: 0.95, sy: 1.06 }, SOFT],
+          [0.42, { s: 1 }],
+        ],
+        duration: 1700,
+      },
+      eyes: {
+        steps: [
+          [0, {}],
+          [0.5, {}, SOFT],
+          [0.58, { x: -1 }],
+          [0.84, { x: -1 }, SOFT],
+          [0.92, { x: 0 }],
+        ],
+        duration: 1700,
+      },
+      leaf: {
+        steps: [
+          [0, {}, SOFT],
+          [0.16, { r: -16 }, SOFT],
+          [0.32, { r: 9 }, SOFT],
+          [0.48, { r: 0 }],
+        ],
+        duration: 1700,
+        origin: "0% 100%",
+      },
+      drop1: { steps: spray(4.6, 18.6, 1.8, 17.8), duration: 1700 },
+      drop2: { steps: spray(4.6, 18.6, 3.4, 22), duration: 1700, delay: 60 },
+      drop3: { steps: spray(4.6, 18.6, 6.6, 22.6), duration: 1700, delay: 120 },
+    },
+  },
+  {
+    id: "crack",
+    name: "裂开",
+    group: "meme",
+    keywords: "裂开 心态崩了 我裂开了 碎了 无语 liekai xintaibengle suile wuyu crack broken",
+    hue: "amber",
+    svg: `<path data-a="spark" class="o thin fx" d="M12.3 1.4V.3M10.3 2l-.8-.8M14.3 2l.8-.8"/>
+    <g data-a="left">
+      <path class="t face" d="M12.4 3L11 6.6l2 3.2-1.8 3.4 1.8 3.4-1 4.4A9 9 0 0 1 12.4 3z"/>
+      <circle class="ik" cx="8.2" cy="10.6" r="1.1"/>
+      <path class="i" d="M7.2 16.4c.8-.7 1.8-.7 2.6 0"/>
+    </g>
+    <g data-a="right">
+      <path class="t face" d="M12.4 3L11 6.6l2 3.2-1.8 3.4 1.8 3.4-1 4.4A9 9 0 0 0 12.4 3z"/>
+      <circle class="ik" cx="15.8" cy="10.6" r="1.1"/>
+      <path class="i" d="M14.2 16.4c.8.7 1.8.7 2.6 0"/>
+    </g>`,
+    motion: {
+      left: {
+        steps: [
+          [0, {}, SOFT],
+          [0.06, { x: -0.3 }, SOFT],
+          [0.12, { x: 0.2 }, SOFT],
+          [0.18, { x: -0.2 }, OUT],
+          [0.28, { x: -2, r: -10 }],
+          [0.6, { x: -2, r: -10 }, IN],
+          [0.7, { x: 0.3, r: 1 }, SOFT],
+          [0.78, { x: 0, r: 0 }],
+        ],
+        duration: 1800,
+        origin: "100% 100%",
+      },
+      right: {
+        steps: [
+          [0, {}, SOFT],
+          [0.06, { x: 0.3 }, SOFT],
+          [0.12, { x: -0.2 }, SOFT],
+          [0.18, { x: 0.2 }, OUT],
+          [0.28, { x: 2, r: 10 }],
+          [0.6, { x: 2, r: 10 }, IN],
+          [0.7, { x: -0.3, r: -1 }, SOFT],
+          [0.78, { x: 0, r: 0 }],
+        ],
+        duration: 1800,
+        origin: "0% 100%",
+      },
+      spark: {
+        steps: [
+          [0, { o: 0, s: 0.4 }],
+          [0.2, { o: 0, s: 0.4 }, OUT],
+          [0.3, { o: 1, s: 1.1 }, SOFT],
+          [0.5, { o: 0, s: 1.3 }],
+        ],
+        duration: 1800,
+      },
+    },
+  },
+  {
+    id: "666",
+    name: "666",
+    group: "meme",
+    keywords: "666 牛 厉害 太强了 溜 niu lihai taiqiangle liu awesome nice",
+    hue: "red",
+    svg: `<g data-a="word">
+      <g transform="translate(2.4 4.4) rotate(-6 2.8 5)"><path data-a="d1" class="o draw bold" pathLength="1" d="M4.8.9C3.2.5 1.6 1.5 1 3.6.4 5.8.6 8.4 1.6 9.5c.9 1 2.5 1 3.4.1.9-.9 1-2.5.2-3.4-.8-.9-2.3-1-3.3-.3-.5.4-.9.9-1.1 1.5"/></g>
+      <g transform="translate(9.2 4) rotate(-6 2.8 5)"><path data-a="d2" class="o draw bold" pathLength="1" d="M4.8.9C3.2.5 1.6 1.5 1 3.6.4 5.8.6 8.4 1.6 9.5c.9 1 2.5 1 3.4.1.9-.9 1-2.5.2-3.4-.8-.9-2.3-1-3.3-.3-.5.4-.9.9-1.1 1.5"/></g>
+      <g transform="translate(16 4.4) rotate(-6 2.8 5)"><path data-a="d3" class="o draw bold" pathLength="1" d="M4.8.9C3.2.5 1.6 1.5 1 3.6.4 5.8.6 8.4 1.6 9.5c.9 1 2.5 1 3.4.1.9-.9 1-2.5.2-3.4-.8-.9-2.3-1-3.3-.3-.5.4-.9.9-1.1 1.5"/></g>
+      <path data-a="line" class="o draw" pathLength="1" d="M2.6 18.8c5.6-1.3 11.6-1.5 18.6-.3"/>
+    </g>
+    <path data-a="glint" class="k hue-amber fx" d="M21.6 1.8l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z"/>`,
+    motion: {
+      d1: {
+        steps: [
+          [0, { d: 1, o: 0 }],
+          [0.04, { o: 1 }, SOFT],
+          [0.24, { d: 0 }],
+        ],
+        duration: 1700,
+      },
+      d2: {
+        steps: [
+          [0, { d: 1, o: 0 }],
+          [0.2, { o: 0 }],
+          [0.21, { o: 1 }, SOFT],
+          [0.41, { d: 0 }],
+        ],
+        duration: 1700,
+      },
+      d3: {
+        steps: [
+          [0, { d: 1, o: 0 }],
+          [0.38, { o: 0 }],
+          [0.39, { o: 1 }, SOFT],
+          [0.59, { d: 0 }],
+        ],
+        duration: 1700,
+      },
+      line: {
+        steps: [
+          [0, { d: 1, o: 0 }],
+          [0.56, { o: 0 }],
+          [0.57, { o: 1 }, OUT],
+          [0.74, { d: 0 }],
+        ],
+        duration: 1700,
+      },
+      word: {
+        steps: [
+          [0, {}],
+          [0.74, {}, OUT],
+          [0.82, { y: -1.2, s: 1.08 }, SOFT],
+          [0.92, { y: 0, s: 1 }],
+        ],
+        duration: 1700,
+        origin: "50% 100%",
+      },
+      glint: {
+        steps: [
+          [0, { o: 0, s: 0 }],
+          [0.76, { o: 0, s: 0 }, OUT],
+          [0.84, { o: 1, s: 1.2, r: 45 }, SOFT],
+          [0.98, { o: 0, s: 0.5, r: 90 }],
+        ],
+        duration: 1700,
+      },
+    },
+  },
+  {
+    id: "soul",
+    name: "灵魂出窍",
+    group: "meme",
+    keywords: "灵魂出窍 累死 放空 发呆 魂 幽灵 linghunchuqiao leisi fakong fadai ghost soul tired",
+    hue: "purple",
+    svg: `<g data-a="face" class="hue-amber">
+      <circle class="t face" cx="12" cy="17.2" r="5.4"/>
+      <path class="i" d="M9.2 15.6l1.4 1.4M10.6 15.6l-1.4 1.4M13.4 15.6l1.4 1.4M14.8 15.6l-1.4 1.4"/>
+      <ellipse class="ik" cx="12" cy="19.8" rx="1" ry=".85"/>
+    </g>
+    <g data-a="ghost">
+      <path class="t" d="M9.2 7.6c0-2.9 1.4-5 3.6-5s3.6 2.1 3.6 5v3.4l-1.2-.8-1.2.8-1.2-.8-1.2.8-1.2-.8-1.2.8z"/>
+      <circle class="ik" cx="11.7" cy="6.4" r=".6"/>
+      <circle class="ik" cx="13.9" cy="6.4" r=".6"/>
+      <path class="o thin" d="M9.2 8.8c-1 .2-1.8-.2-2.2-1M16.4 8.8c1 .2 1.8-.2 2.2-1"/>
+    </g>`,
+    motion: {
+      ghost: {
+        steps: [
+          [0, {}, SOFT],
+          [0.25, { y: -2, r: -6 }, SOFT],
+          [0.5, { y: -3.2, r: 6 }, SOFT],
+          [0.72, { y: -1.6, r: -3 }, SOFT],
+          [0.9, { y: 0, r: 0 }],
+        ],
+        duration: 2000,
+        origin: "50% 100%",
+      },
+      face: {
+        steps: [
+          [0, {}, SOFT],
+          [0.3, { r: -4 }, SOFT],
+          [0.6, { r: 3 }, SOFT],
+          [0.85, { r: 0 }],
+        ],
+        duration: 2000,
+        origin: "50% 100%",
       },
     },
   },

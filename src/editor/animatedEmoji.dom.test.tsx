@@ -111,6 +111,11 @@ describe("编辑器里的动态表情", () => {
     expect(widgets(parent)).toEqual(["star"]);
   });
 
+  it("renders the meme set too, including the all-digit :otw_666:", () => {
+    const { parent } = mount("下班了 :otw_offwork: 太强了 :otw_666: 摸鱼 :otw_fish:", 0);
+    expect(widgets(parent)).toEqual(["offwork", "666", "fish"]);
+  });
+
   it("never renders inside code", () => {
     const { parent } = mount("`:otw_fire:`\n\n```\n:otw_fire:\n```\n\n末尾", 0);
     expect(widgets(parent)).toEqual([]);

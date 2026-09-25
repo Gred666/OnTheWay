@@ -138,6 +138,8 @@ export const EMOJI_PART_CSS = [
   ".otw-ae-svg .t{fill:color-mix(in srgb,var(--h) 22%,var(--ae-paper));stroke:var(--h)}",
   // 笑脸的底色要更「黄」一点，不然看着是米色
   ".otw-ae-svg .t.face{fill:color-mix(in srgb,var(--h) 34%,var(--ae-paper))}",
+  // 更浓的一档：西瓜瓤、柠檬这种本身颜色就饱满的东西
+  ".otw-ae-svg .t.rich{fill:color-mix(in srgb,var(--h) 48%,var(--ae-paper))}",
   ".otw-ae-svg .k{fill:var(--h);stroke:none}",
   ".otw-ae-svg .p{fill:var(--ae-paper);stroke:var(--h)}",
   // 五官：色相混进墨色，亮色下偏深、暗色下偏亮

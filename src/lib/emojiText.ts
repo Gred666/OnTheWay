@@ -30,6 +30,18 @@ export const ANIMATED_EMOJI_FALLBACK: Readonly<Record<string, string>> = {
   sprout: "🌱",
   star: "⭐",
   party: "🎉",
+  fish: "🐟",
+  flat: "🛌",
+  bald: "🧑‍🦲",
+  offwork: "🏃",
+  charge: "🔋",
+  boba: "🧋",
+  melon: "🍉",
+  pigeon: "🕊️",
+  lemon: "🍋",
+  crack: "😵",
+  "666": "666",
+  soul: "👻",
 };
 
 const SHORTCODE_RE = /:otw_([a-z0-9_]+):/gi;

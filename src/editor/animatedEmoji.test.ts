@@ -27,6 +27,7 @@ const KNOWN_CLASSES = new Set([
   "i",
   "ik",
   "face",
+  "rich",
   "blush",
   "shine",
   "shade",
@@ -209,12 +210,15 @@ describe("短码", () => {
     expect(animatedEmojiFor("OTW_Fire")?.id).toBe("fire");
     expect(animatedEmojiFor(":fire:")).toBeNull();
     expect(animatedEmojiFor(":otw_nope:")).toBeNull();
+    // 纯数字的短码也是合法的 lezer Emoji 语法
+    expect(animatedEmojiFor(":otw_666:")?.id).toBe("666");
   });
 
   it("turns short codes into Unicode for plain-text surfaces", () => {
     expect(animatedEmojiText("冲 :otw_fire: 好 :OTW_DONE:")).toBe("冲 🔥 好 ✅");
     expect(animatedEmojiText("留着 :otw_nope: 和 :smile:")).toBe("留着 :otw_nope: 和 :smile:");
     expect(animatedEmojiText("没有短码")).toBe("没有短码");
+    expect(animatedEmojiText("太强了 :otw_666: 摸鱼:otw_fish:")).toBe("太强了 666 摸鱼🐟");
   });
 });
 
