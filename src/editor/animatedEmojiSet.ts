@@ -17,7 +17,7 @@
    - 最后一帧必须等于静止态（单测守着）；只有转一圈回到对称位置的（太阳、星星）
      用 `seamless` 声明例外。
 
-   配色类（见 globals.css 的 .otw-ae-svg 一节）：
+   配色类（样式在 animatedEmoji.ts 的 EMOJI_PART_CSS）：
    o 纯描边 · t 描边 + 淡彩 · k 实心 · p 描边 + 纸色（挖空） · i / ik 五官的深色
    描边 / 实心 · hue-* 局部换色 · draw 描边可画出（配合 pathLength="1"）
    ============================================================ */
@@ -61,17 +61,21 @@ export interface EmojiMotion {
 
 export type EmojiGroup = "mood" | "drive" | "way" | "daily";
 
-export type EmojiHue =
-  | "red"
-  | "orange"
-  | "amber"
-  | "green"
-  | "blue"
-  | "sky"
-  | "purple"
-  | "pink"
-  | "brown"
-  | "slate";
+/** 色相。每个都对应 globals.css 里亮暗两套的 `--ae-<色相>` 变量。 */
+export const EMOJI_HUES = [
+  "red",
+  "orange",
+  "amber",
+  "green",
+  "blue",
+  "sky",
+  "purple",
+  "pink",
+  "brown",
+  "slate",
+] as const;
+
+export type EmojiHue = (typeof EMOJI_HUES)[number];
 
 export interface AnimatedEmojiDesign {
   /** 短码里 `otw_` 后面那段 */

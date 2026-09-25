@@ -148,10 +148,10 @@ function EmojiGlyph({ emoji, active }: { emoji: AnimatedEmoji; active: boolean }
     if (!host) return;
     const player = new EmojiPlayer(emoji);
     playerRef.current = player;
-    host.append(player.element);
+    player.mount(host);
     return () => {
       player.stop();
-      player.element.remove();
+      host.replaceChildren();
       playerRef.current = null;
     };
   }, [emoji]);

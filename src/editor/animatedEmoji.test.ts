@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ANIMATED_EMOJIS,
   AUTO_PLAY_LIMIT,
+  EMOJI_PART_CSS,
+  EMOJI_VIEWBOX,
   EmojiPlayer,
   animatedEmojiFor,
   autoPlay,
@@ -14,21 +16,9 @@ import {
   motionReduced,
   resolvePoses,
 } from "./animatedEmoji";
-import { ANIMATED_EMOJI_DESIGNS, EMOJI_GROUPS, type EmojiHue } from "./animatedEmojiSet";
+import { ANIMATED_EMOJI_DESIGNS, EMOJI_GROUPS, EMOJI_HUES } from "./animatedEmojiSet";
 
-const HUES: EmojiHue[] = [
-  "red",
-  "orange",
-  "amber",
-  "green",
-  "blue",
-  "sky",
-  "purple",
-  "pink",
-  "brown",
-  "slate",
-];
-/** globals.css 的 .otw-ae-svg 一节里定义过的类；拼错一个字母就是一块没颜色的图 */
+/** EMOJI_PART_CSS 里有样式的类；拼错一个字母就是一块没颜色的图 */
 const KNOWN_CLASSES = new Set([
   "o",
   "t",
@@ -46,7 +36,7 @@ const KNOWN_CLASSES = new Set([
   "draw",
   "dash",
   "fx",
-  ...HUES.map((hue) => `hue-${hue}`),
+  ...EMOJI_HUES.map((hue) => `hue-${hue}`),
 ]);
 
 function parse(svg: string): Element {
@@ -64,6 +54,12 @@ afterEach(() => {
 });
 
 describe("动态表情设计稿的规矩", () => {
+  it("styles every class the designs are allowed to use", () => {
+    for (const name of KNOWN_CLASSES) {
+      expect(EMOJI_PART_CSS, `.${name}`).toMatch(new RegExp(`\\.${name}(?![\\w-])`));
+    }
+  });
+
   it("ids are unique, short-code safe and every one has a Unicode fallback", () => {
     const ids = ANIMATED_EMOJI_DESIGNS.map((design) => design.id);
     expect(new Set(ids).size).toBe(ids.length);
@@ -86,7 +82,7 @@ describe("动态表情设计稿的规矩", () => {
       it("has a name, keywords and a known hue", () => {
         expect(design.name.trim()).not.toBe("");
         expect(design.keywords.split(" ").length).toBeGreaterThan(3);
-        expect(HUES).toContain(design.hue);
+        expect(EMOJI_HUES).toContain(design.hue);
       });
 
       it("only uses classes the stylesheet knows", () => {
@@ -224,78 +220,209 @@ describe("短码", () => {
 
 describe("播放器", () => {
   const fire = animatedEmojiFor(":otw_fire:")!;
+  const parts = Object.keys(fire.motion).sort();
 
-  it("clones a fresh SVG per player from one parsed template", () => {
-    const a = new EmojiPlayer(fire);
-    const b = new EmojiPlayer(fire);
-    expect(a.element).not.toBe(b.element);
-    expect(a.element.getAttribute("viewBox")).toBe("0 0 24 24");
-    expect(a.element.classList.contains("hue-orange")).toBe(true);
-    expect(a.element.querySelectorAll("[data-a]")).toHaveLength(Object.keys(fire.motion).length);
+  /** 让 animate 返回可控的假动画：finish() 让这一轮播完 */
+  function fakeAnimations() {
+    const finishers: Array<() => void> = [];
+    const started: string[] = [];
+    const cancelled: string[] = [];
+    const spy = vi.spyOn(Element.prototype, "animate").mockImplementation(function (this: Element) {
+      const name = (this as SVGElement).dataset?.a ?? "body";
+      started.push(name);
+      let done!: () => void;
+      let state = "running";
+      const finished = new Promise<void>((resolve) => {
+        done = () => {
+          state = "finished";
+          resolve();
+        };
+      });
+      finishers.push(() => done());
+      return {
+        get playState() {
+          return state;
+        },
+        finished,
+        cancel: () => {
+          cancelled.push(name);
+          done();
+        },
+      } as unknown as Animation;
+    });
+    const finishAll = async () => {
+      for (const finish of finishers.splice(0)) finish();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    return { spy, started, cancelled, finishAll };
+  }
+
+  const mounted = (emoji = fire) => {
+    const host = document.createElement("span");
+    host.className = "otw-ae";
+    document.body.append(host);
+    const player = new EmojiPlayer(emoji);
+    player.mount(host);
+    return { host, player };
+  };
+
+  it("falls back to a live SVG when the theme colours are not available", () => {
+    const { host } = mounted();
+    const svg = host.querySelector("svg.otw-ae-svg")!;
+    expect(svg).not.toBeNull();
+    expect(host.querySelector("img")).toBeNull();
+    expect(svg.getAttribute("viewBox")).toBe(EMOJI_VIEWBOX);
+    expect(svg.classList.contains("hue-orange")).toBe(true);
+    expect(svg.querySelectorAll("[data-a]")).toHaveLength(parts.length);
+  });
+
+  it("injects the part styles once", () => {
+    mounted();
+    mounted();
+    const styles = document.head.querySelectorAll("style[data-otw-animated-emoji]");
+    expect(styles).toHaveLength(1);
+    expect(styles[0]!.textContent).toBe(EMOJI_PART_CSS);
   });
 
   it("stays still when motion is reduced", async () => {
     document.documentElement.dataset.reduceMotion = "true";
     expect(motionReduced()).toBe(true);
-    const player = new EmojiPlayer(fire);
-    const animate = vi.fn();
-    for (const part of player.element.querySelectorAll("[data-a]")) {
-      (part as unknown as { animate: typeof animate }).animate = animate;
-    }
+    const { spy } = fakeAnimations();
+    const { player } = mounted();
     await player.play();
-    expect(animate).not.toHaveBeenCalled();
+    expect(spy).not.toHaveBeenCalled();
     expect(player.playing).toBe(false);
   });
 
   it("starts one animation per part and cancels them on stop", () => {
-    const player = new EmojiPlayer(fire);
-    const cancelled: string[] = [];
-    for (const part of player.element.querySelectorAll<SVGElement>("[data-a]")) {
-      (part as unknown as { animate: unknown }).animate = (
-        _frames: Keyframe[],
-        options: object,
-      ) => ({
-        options,
-        playState: "running",
-        finished: new Promise(() => {}),
-        cancel: () => cancelled.push(part.dataset.a!),
-      });
-    }
+    const { started, cancelled } = fakeAnimations();
+    const { player } = mounted();
     void player.play();
     expect(player.playing).toBe(true);
+    expect([...started].sort()).toEqual(parts);
     player.stop();
-    expect(cancelled.sort()).toEqual(Object.keys(fire.motion).sort());
+    expect([...cancelled].sort()).toEqual(parts);
   });
 
   it("caps simultaneous autoplay and gives the slot back when a round ends", async () => {
-    const finishers: Array<() => void> = [];
-    const player = () => {
-      const p = new EmojiPlayer(fire);
-      for (const part of p.element.querySelectorAll<SVGElement>("[data-a]")) {
-        (part as unknown as { animate: unknown }).animate = () => {
-          let done!: () => void;
-          const finished = new Promise<void>((resolve) => {
-            done = resolve;
-          });
-          finishers.push(() => done());
-          return { playState: "running", finished, cancel: () => done() };
-        };
-      }
-      return p;
-    };
-    const started = Array.from({ length: AUTO_PLAY_LIMIT + 5 }, () => autoPlay(player()));
+    const { finishAll } = fakeAnimations();
+    const started = Array.from({ length: AUTO_PLAY_LIMIT + 5 }, () => autoPlay(mounted().player));
     expect(started.filter(Boolean)).toHaveLength(AUTO_PLAY_LIMIT);
-    for (const finish of finishers.splice(0)) finish();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(autoPlay(player())).toBe(true);
-    for (const finish of finishers.splice(0)) finish();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await finishAll();
+    expect(autoPlay(mounted().player)).toBe(true);
+    await finishAll();
   });
 
   it("renders a static inline copy whose text is the Unicode fallback", () => {
     const node = inlineAnimatedEmoji(fire);
-    expect(node.querySelector("svg")).not.toBeNull();
+    expect(node.querySelector(".otw-ae-live, .otw-ae-still")).not.toBeNull();
     expect(node.textContent).toBe("🔥");
     expect(node.getAttribute("aria-label")).toBe(fire.name);
+  });
+
+  describe("静止帧是一张图", () => {
+    const light: Record<string, string> = {
+      "--ae-red": "#e5484d",
+      "--ae-orange": "#f0701f",
+      "--ae-amber": "#e3a008",
+      "--ae-green": "#2f9e62",
+      "--ae-blue": "#2f63d8",
+      "--ae-sky": "#3a8fd6",
+      "--ae-purple": "#7c5cd6",
+      "--ae-pink": "#e0569a",
+      "--ae-brown": "#9a6440",
+      "--ae-slate": "#6f7b8c",
+      "--color-canvas": "#ffffff",
+      "--color-ink": "#1a1a18",
+    };
+    const setPalette = (values: Record<string, string>) => {
+      for (const [name, value] of Object.entries(values)) {
+        document.documentElement.style.setProperty(name, value);
+      }
+    };
+    /** 静止帧：<svg class="otw-ae-still"><image href="data:…"/></svg> */
+    const stillOf = (host: Element) => host.querySelector<SVGSVGElement>("svg.otw-ae-still")!;
+    const decode = (still: SVGSVGElement) =>
+      decodeURIComponent(
+        (still.querySelector("image")?.getAttribute("href") ?? "").replace(
+          /^data:image\/svg\+xml;charset=utf-8,/,
+          "",
+        ),
+      );
+
+    it("draws the resting frame as one image carrying its own colours and styles", () => {
+      setPalette(light);
+      const { host } = mounted();
+      const still = stillOf(host);
+      expect(still).not.toBeNull();
+      // 静止时框里只有这一个小 SVG，里面只有一张图
+      expect(host.children).toHaveLength(1);
+      expect(still.querySelectorAll("*")).toHaveLength(1);
+      // 外框和活的 SVG 同一个 viewBox；图自己的画布四周多留 3 个单位，放在 (-3, -3)
+      expect(still.getAttribute("viewBox")).toBe(EMOJI_VIEWBOX);
+      const image = still.querySelector("image")!;
+      expect(["x", "y", "width", "height"].map((name) => image.getAttribute(name))).toEqual([
+        "-3",
+        "-3",
+        "30",
+        "30",
+      ]);
+      const svg = decode(still);
+      expect(svg).toContain('viewBox="-3 -3 30 30"');
+      expect(svg).toContain("--ae-orange:#f0701f");
+      expect(svg).toContain("--color-canvas:#ffffff");
+      expect(svg).toContain(EMOJI_PART_CSS.split("\n")[5]!);
+      // 同一个表情的所有实例共用同一张图
+      expect(decode(stillOf(mounted().host))).toBe(svg);
+    });
+
+    it("lays the live SVG over the image only while it plays", async () => {
+      const { finishAll } = fakeAnimations();
+      const { host, player } = mounted();
+      const still = stillOf(host);
+      void player.play();
+      expect(player.liveSvg).not.toBeNull();
+      expect(host.querySelector("svg.otw-ae-live")).toBe(player.liveSvg);
+      expect(still.style.display).toBe("none");
+      expect(still.isConnected).toBe(true);
+      await finishAll();
+      expect(player.liveSvg).toBeNull();
+      expect(host.querySelector("svg.otw-ae-live")).toBeNull();
+      expect(still.style.display).toBe("");
+    });
+
+    it("keeps the live SVG when a replay interrupts a round", async () => {
+      const { finishAll } = fakeAnimations();
+      const { player } = mounted();
+      void player.play();
+      void player.play();
+      // 第一轮被 cancel 掉，它的收尾不能把第二轮的 SVG 摘掉
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(player.liveSvg).not.toBeNull();
+      await finishAll();
+      expect(player.liveSvg).toBeNull();
+    });
+
+    it("keeps the live SVG between loop rounds and drops it on stop", async () => {
+      const { finishAll } = fakeAnimations();
+      const { player } = mounted();
+      player.loop(10_000);
+      await finishAll();
+      expect(player.liveSvg).not.toBeNull();
+      player.stop();
+      expect(player.liveSvg).toBeNull();
+    });
+
+    it("recolours every resting image when the theme changes", async () => {
+      const { host } = mounted();
+      const still = stillOf(host);
+      setPalette({ "--ae-orange": "#ff8d4a", "--color-canvas": "#1e1e1c" });
+      document.documentElement.dataset.theme = "dark";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(decode(still)).toContain("--ae-orange:#ff8d4a");
+      expect(decode(still)).toContain("--color-canvas:#1e1e1c");
+      // 新挂的也是新颜色
+      expect(decode(stillOf(mounted().host))).toContain("--ae-orange:#ff8d4a");
+    });
   });
 });

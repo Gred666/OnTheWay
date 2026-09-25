@@ -927,6 +927,8 @@ body {
    半个像素，标题里多出 4px —— CodeMirror 的高度图就歪了）。图本身画成
    1.3em，绝对定位压在这个框上，多出来的部分只是视觉溢出。动画只在 SVG
    里面动 transform / opacity / stroke-dashoffset，不改任何尺寸。
+
+   静止时框里只有一张图（见 animatedEmoji.ts「静止帧」），动起来才叠上活的 SVG。
    ------------------------------------------------------------ */
 :root {
   --ae-red: #e5484d;
@@ -976,7 +978,12 @@ body {
   vertical-align: -0.12em;
   line-height: 0;
 }
-.otw-ae-svg {
+/* 静止帧（.otw-ae-still，里面一张图）和动起来时的 SVG（.otw-ae-live）叠在同一个
+   框里：同框同 viewBox，像素对齐，换来换去看不出接缝。框是 1.3em 的正方形，
+   顶在外框上方 0.15em，画出界的部分靠 overflow: visible。
+   部件的配色类在 animatedEmoji.ts 的 EMOJI_PART_CSS（静止帧的图片里要嵌同一份）。 */
+.otw-ae-still,
+.otw-ae-live {
   position: absolute;
   top: -0.15em;
   left: 0;
@@ -992,117 +999,6 @@ body {
   opacity: 0;
   font-size: 1px;
   pointer-events: none;
-}
-
-.otw-ae-svg,
-.otw-ae-svg .hue-amber {
-  --h: var(--ae-amber);
-}
-.otw-ae-svg.hue-red,
-.otw-ae-svg .hue-red {
-  --h: var(--ae-red);
-}
-.otw-ae-svg.hue-orange,
-.otw-ae-svg .hue-orange {
-  --h: var(--ae-orange);
-}
-.otw-ae-svg.hue-green,
-.otw-ae-svg .hue-green {
-  --h: var(--ae-green);
-}
-.otw-ae-svg.hue-blue,
-.otw-ae-svg .hue-blue {
-  --h: var(--ae-blue);
-}
-.otw-ae-svg.hue-sky,
-.otw-ae-svg .hue-sky {
-  --h: var(--ae-sky);
-}
-.otw-ae-svg.hue-purple,
-.otw-ae-svg .hue-purple {
-  --h: var(--ae-purple);
-}
-.otw-ae-svg.hue-pink,
-.otw-ae-svg .hue-pink {
-  --h: var(--ae-pink);
-}
-.otw-ae-svg.hue-brown,
-.otw-ae-svg .hue-brown {
-  --h: var(--ae-brown);
-}
-.otw-ae-svg.hue-slate,
-.otw-ae-svg .hue-slate {
-  --h: var(--ae-slate);
-}
-
-.otw-ae-svg .o {
-  fill: none;
-  stroke: var(--h);
-}
-.otw-ae-svg .t {
-  fill: color-mix(in srgb, var(--h) 22%, var(--ae-paper));
-  stroke: var(--h);
-}
-/* 笑脸的底色要更「黄」一点，不然看着是米色 */
-.otw-ae-svg .t.face {
-  fill: color-mix(in srgb, var(--h) 34%, var(--ae-paper));
-}
-.otw-ae-svg .k {
-  fill: var(--h);
-  stroke: none;
-}
-.otw-ae-svg .p {
-  fill: var(--ae-paper);
-  stroke: var(--h);
-}
-.otw-ae-svg .i {
-  fill: none;
-  stroke: color-mix(in srgb, var(--h) 45%, var(--color-ink));
-}
-.otw-ae-svg .ik {
-  fill: color-mix(in srgb, var(--h) 45%, var(--color-ink));
-  stroke: none;
-}
-.otw-ae-svg .blush {
-  fill: var(--ae-pink);
-  stroke: none;
-  opacity: 0.32;
-}
-.otw-ae-svg .shine {
-  fill: none;
-  stroke: var(--ae-paper);
-  stroke-width: 1.4;
-  opacity: 0.85;
-}
-.otw-ae-svg .shade {
-  fill: var(--h);
-  stroke: none;
-  opacity: 0.28;
-}
-.otw-ae-svg .road {
-  fill: none;
-  stroke: color-mix(in srgb, var(--h) 22%, var(--ae-paper));
-  stroke-width: 4.2;
-}
-.otw-ae-svg .bold {
-  stroke-width: 2.1;
-}
-.otw-ae-svg .thin {
-  stroke-width: 1.3;
-}
-.otw-ae-svg .draw {
-  stroke-dasharray: 1 1;
-}
-.otw-ae-svg .dash {
-  stroke-dasharray: 0.1 0.08;
-}
-.otw-ae-svg .fx {
-  opacity: 0;
-}
-.otw-ae-svg [data-a],
-.otw-ae-svg .otw-ae-body {
-  transform-box: fill-box;
-  transform-origin: center;
 }
 
 /* 编辑器里：比正文字形略大一点，点得中；悬停轻轻亮一下 */

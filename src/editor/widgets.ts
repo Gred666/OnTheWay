@@ -427,7 +427,7 @@ export class AnimatedEmojiWidget extends WidgetType {
 
     const player = new EmojiPlayer(this.emoji);
     emojiPlayers.set(node, player);
-    node.append(player.element);
+    player.mount(node);
 
     // 刚从选择器插进来的：整个弹出来再做动作；其余的第一次露出视口时播一遍
     // （同时自动播的有上限，见 autoPlay）
