@@ -1,6 +1,11 @@
 export interface DebouncedSaver {
   schedule: (markdown: string) => void;
   flush: () => Promise<void>;
+  /**
+   * 不等结果的 flush（失焦、Mod-S、卸载）。失败已经由 store 的 saveError 显示、
+   * 失败的版本也放回了队列，这里只是不让它变成一个没人接的 rejected promise。
+   */
+  flushQuietly: () => void;
   pending: () => boolean;
 }
 
@@ -53,6 +58,7 @@ export function createDebouncedSaver(
       }, delay);
     },
     flush,
+    flushQuietly: () => void flush().catch(() => undefined),
     pending: () => pendingMarkdown !== null,
   };
 }

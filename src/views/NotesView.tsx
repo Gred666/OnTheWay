@@ -59,11 +59,17 @@ export function NotesList({ notes }: { notes: Note[] }) {
     const q = query.trim().toLowerCase();
     const filtered = q ? notes.filter((n) => n.title.toLowerCase().includes(q)) : notes;
 
-    const sorted = [...filtered].sort((a, b) => {
-      if (sort === "title") return a.title.localeCompare(b.title, "zh-Hans-CN");
-      if (sort === "created") return b.createdAt - a.createdAt;
-      return b.updatedAt - a.updatedAt;
-    });
+    // 「按更新时间」直接用 store 里的顺序（加载 / 置顶 / 归档时已按 updatedAt 排好），
+    // 不在这里按 updatedAt 重排：自动保存每 400ms 刷新一次它，正在编辑的那篇
+    // 会在侧栏里当着用户的面往上跳 —— store 刻意不重排就是为了避免这个。
+    const sorted =
+      sort === "updated"
+        ? filtered
+        : [...filtered].sort((a, b) =>
+            sort === "title"
+              ? a.title.localeCompare(b.title, "zh-Hans-CN")
+              : b.createdAt - a.createdAt,
+          );
 
     return {
       pinned: sorted.filter((n) => n.isPinned),
@@ -118,7 +124,7 @@ export function NotesList({ notes }: { notes: Note[] }) {
       belowTitle={<SearchInput value={query} onChange={setQuery} placeholder="搜索标题" />}
     >
       {empty ? (
-        <EmptyResult query={query} />
+        <EmptyResult query={query} emptyTitle="还没有笔记" emptyHint="点右上角的 + 新建一篇" />
       ) : (
         <>
           {pinned.length > 0 && (
@@ -299,19 +305,35 @@ function NoteCard({
   );
 }
 
-export function EmptyResult({ query }: { query: string }) {
+/**
+ * 列表空了。有搜索词时是「没搜到」；没有搜索词就是真的一篇都没有 ——
+ * 以前两种情况都说「没有匹配的内容，试试更短的关键词」，可用户什么都没搜。
+ */
+export function EmptyResult({
+  query,
+  emptyTitle,
+  emptyHint,
+}: {
+  query: string;
+  /** 没有搜索词、列表本身就是空的时候显示的文案 */
+  emptyTitle: string;
+  emptyHint: string;
+}) {
+  const searching = query.trim() !== "";
   return (
     <AnimatePresence mode="wait">
       <motion.div
-        key={query}
+        key={searching ? query : "empty"}
         initial={{ opacity: 0, y: 6 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0 }}
         transition={tween.base}
         className="px-3 pt-10 text-center"
       >
-        <p className="text-[12.5px] text-muted">没有匹配的内容</p>
-        <p className="mt-1 text-[11.5px] text-faint">试试更短的关键词</p>
+        <p className="text-[12.5px] text-muted">{searching ? "没有匹配的内容" : emptyTitle}</p>
+        <p className="mt-1 text-[11.5px] text-faint">
+          {searching ? "试试更短的关键词" : emptyHint}
+        </p>
       </motion.div>
     </AnimatePresence>
   );

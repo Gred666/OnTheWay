@@ -1,5 +1,5 @@
 import { periodStartOf } from "@/lib/date";
-import { countWords } from "@/lib/markdown";
+import { countWords, makeExcerpt } from "@/lib/plainText";
 import type { Backend } from "./backend";
 import { seedArchivedRaw, seedDayNotes, seedGoalsRaw, seedNotesRaw, seedTasksRaw } from "./seed";
 import {
@@ -34,6 +34,8 @@ interface MockState {
   days: Record<string, { title: string; noteMd: string; updatedAt: number }>;
   /** 按 `horizon:periodStart` 索引的目标 */
   goals: Record<string, Goal>;
+  /** 删掉的笔记。和 Rust 侧的软删除一样可以撤销；旧版存档里没有这一项 */
+  trash?: Note[];
 }
 
 function load(): MockState {
@@ -83,6 +85,17 @@ function summary(n: Note): NoteSummary {
   };
 }
 
+/** 某个列表（笔记 / 归档）的笔记，顺序和 Rust 侧一样：置顶在前，再按更新 / 归档时间倒序 */
+function listed(archived: boolean): Note[] {
+  const key = archived ? "archivedAt" : "updatedAt";
+  return state.notes
+    .filter((n) => n.isArchived === archived)
+    .sort((a, b) => {
+      if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+      return (b[key] ?? 0) - (a[key] ?? 0);
+    });
+}
+
 function hydrate(n: Note): Note {
   const ids = seedNoteActions[n.id];
   if (!ids) return { ...n, actionGroup: null };
@@ -117,14 +130,12 @@ const emptyGoal = (horizon: GoalHorizon, periodStart: string): Goal => ({
 export const mockBackend: Backend = {
   async noteList(archived) {
     await tick();
-    return state.notes
-      .filter((n) => n.isArchived === archived)
-      .sort((a, b) => {
-        if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
-        const key = archived ? "archivedAt" : "updatedAt";
-        return (b[key] ?? 0) - (a[key] ?? 0);
-      })
-      .map(summary);
+    return listed(archived).map(summary);
+  },
+
+  async noteListFull(archived) {
+    await tick();
+    return listed(archived).map(hydrate);
   },
 
   async noteGet(id) {
@@ -140,11 +151,7 @@ export const mockBackend: Backend = {
     const id = input.id ?? crypto.randomUUID();
     const current = state.notes.find((x) => x.id === id);
     const contentMd = input.contentMd;
-    const excerpt = contentMd
-      .replace(/^\s*(?:#{1,6}|>|[-*])\s*/gm, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 60);
+    const excerpt = makeExcerpt(contentMd, 60);
 
     if (current) {
       current.title = input.title;
@@ -209,7 +216,18 @@ export const mockBackend: Backend = {
     await tick();
     const i = state.notes.findIndex((x) => x.id === id);
     if (i < 0) notFound(`note ${id}`);
-    state.notes.splice(i, 1);
+    const [removed] = state.notes.splice(i, 1);
+    state.trash = [...(state.trash ?? []), { ...removed!, updatedAt: Date.now() }];
+    save(state);
+  },
+
+  async noteUndelete(id) {
+    await tick();
+    const trash = state.trash ?? [];
+    const i = trash.findIndex((x) => x.id === id);
+    if (i < 0) notFound(`deleted note ${id}`);
+    const [restored] = trash.splice(i, 1);
+    state.notes.push(restored!);
     save(state);
   },
 

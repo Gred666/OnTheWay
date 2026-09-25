@@ -45,6 +45,25 @@ describe("debounced save", () => {
     expect(writes).toEqual(["first"]);
   });
 
+  it("flushQuietly leaves no unhandled rejection and keeps the version for a retry", async () => {
+    // vitest 把未处理的 rejection 当成失败：以前失焦 / Mod-S / 卸载时的
+    // `void saver.flush()` 在保存失败时就会留下一个
+    let attempts = 0;
+    const writes: string[] = [];
+    const saver = createDebouncedSaver(async (value) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("temporary failure");
+      writes.push(value);
+    });
+
+    saver.schedule("first");
+    saver.flushQuietly();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(saver.pending()).toBe(true);
+    await saver.flush();
+    expect(writes).toEqual(["first"]);
+  });
+
   it("prefers newer text when a write fails during continued typing", async () => {
     let rejectFirst!: (error: Error) => void;
     const writes: string[] = [];

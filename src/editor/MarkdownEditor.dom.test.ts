@@ -17,11 +17,7 @@ function mount(doc: string, anchor: number) {
     state: EditorState.create({
       doc,
       selection: { anchor: Math.min(anchor, doc.length) },
-      extensions: [
-        markdownSupport(),
-        typoraDecorations,
-        keymap.of(markdownKeymap),
-      ],
+      extensions: [markdownSupport(), typoraDecorations, keymap.of(markdownKeymap)],
     }),
   });
   views.push(view);

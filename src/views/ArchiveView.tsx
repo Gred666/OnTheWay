@@ -46,7 +46,11 @@ export function ArchiveList({
       belowTitle={<SearchInput value={query} onChange={setQuery} placeholder="搜索归档内容" />}
     >
       {filtered.length === 0 ? (
-        <EmptyResult query={query} />
+        <EmptyResult
+          query={query}
+          emptyTitle="归档是空的"
+          emptyHint="归档的笔记会保留在这里，不出现在日常列表中"
+        />
       ) : (
         <div className="flex flex-col">
           {filtered.map((n, i) => (

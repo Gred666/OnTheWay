@@ -20,10 +20,16 @@ desktop-runtime = [
   "tauri/dynamic-acl",
   "tauri/x11",
   "tauri/dbus",
-  # 笔记里 `![](C:\…\a.png)` 这类本机图片走 asset 协议（tauri.conf.json 里开了 assetProtocol）
-  "tauri/protocol-asset",
 ]
-typegen = ["dep:tauri", "dep:tauri-specta", "tauri/test"]
+# capabilities/default.json 引用了 opener / window-state 的权限，tauri-build 生成 ACL 时
+# 要能找到这两个插件，所以导出绑定也得带上它们
+typegen = [
+  "dep:tauri",
+  "dep:tauri-specta",
+  "tauri/test",
+  "dep:tauri-plugin-opener",
+  "dep:tauri-plugin-window-state",
+]
 
 [lib]
 # 桌面端二进制和未来的移动端共用这个 lib
@@ -34,7 +40,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", default-features = false, features = [], optional = true }
+# protocol-asset：笔记里 `![](C:\…\a.png)` 这类本机图片走 asset 协议（tauri.conf.json
+# 里开了 assetProtocol）。必须写在这一行的 features 里 —— tauri-build 只核对这里，
+# 写在上面 [features] 里的话，不经 tauri CLI 直接 cargo build / 导出绑定都会被它拦下。
+tauri = { version = "2", default-features = false, features = ["protocol-asset"], optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
 tauri-plugin-window-state = { version = "2", optional = true }
 

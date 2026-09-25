@@ -272,9 +272,7 @@ export function renderMarkdown(md: string, ns = "h"): ReactNode[] {
           { key, className: b.items.some((it) => it.checked !== null) ? "prose-tasks" : undefined },
           b.items.map((it, j) => (
             <li key={`${key}-${it.text.slice(0, 24)}`}>
-              {it.checked !== null && (
-                <input type="checkbox" checked={it.checked} disabled />
-              )}
+              {it.checked !== null && <input type="checkbox" checked={it.checked} disabled />}
               {renderInline(it.text, `${key}-${j}`)}
             </li>
           )),
@@ -345,15 +343,4 @@ export function buildOutline(md: string, actionGroupTitle?: string): OutlineItem
     items.unshift({ id: "doc-top", text: "概览", level: 1, line: 1 });
   }
   return items;
-}
-
-/** 正文字数：中文按字算，英文按词算 */
-export function countWords(md: string): number {
-  const plain = md
-    .replace(/^>\s*\[!.+?\]\s*$/gm, "")
-    .replace(/[#>*`\-[\]()]/g, " ")
-    .trim();
-  const cjk = (plain.match(/[一-龥]/g) ?? []).length;
-  const words = (plain.match(/[a-zA-Z0-9]+/g) ?? []).length;
-  return cjk + words;
 }

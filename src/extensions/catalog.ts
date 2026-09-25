@@ -82,32 +82,70 @@ const officialExtensions: CatalogExtension[] = [
   },
 ];
 
+const CATEGORIES: readonly ExtensionCategory[] = [
+  "editor",
+  "appearance",
+  "productivity",
+  "integration",
+];
+
+/**
+ * 校验导入的清单。清单是用户选的任意 JSON 文件，每个字段都要先看类型：
+ * 以前 `name: 5` 会在 `.trim()` 上抛出一个看不懂的 TypeError，`id: 7` 被正则
+ * 转成字符串后直接通过、以数字存了下来，`permissions` 里什么都能塞。
+ */
 export function validateExtensionManifest(value: unknown): ExtensionManifest {
-  if (!value || typeof value !== "object") throw new Error("扩展包必须是 JSON 对象");
-  const manifest = value as Partial<ExtensionManifest>;
-  if (manifest.schemaVersion !== 1) throw new Error("暂不支持此扩展清单版本");
-  if (!manifest.id || !ID_PATTERN.test(manifest.id)) throw new Error("扩展 id 格式不正确");
-  if (!manifest.name?.trim() || !manifest.version?.trim() || !manifest.author?.trim()) {
-    throw new Error("扩展缺少 name、version 或 author");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("扩展包必须是 JSON 对象");
   }
-  if (!manifest.summary?.trim()) throw new Error("扩展缺少 summary");
-  if (
-    !(["editor", "appearance", "productivity", "integration"] as const).includes(manifest.category!)
-  ) {
+  const manifest = value as Record<string, unknown>;
+  /** 必填 / 选填的字符串字段：类型不对就报出字段名；选填的空串当作没填 */
+  const text = (field: string, required: boolean): string | undefined => {
+    const raw = manifest[field];
+    if (raw === undefined || raw === null) {
+      if (required) throw new Error(`扩展缺少 ${field}`);
+      return undefined;
+    }
+    if (typeof raw !== "string") throw new Error(`扩展的 ${field} 必须是字符串`);
+    const trimmed = raw.trim();
+    if (required && !trimmed) throw new Error(`扩展缺少 ${field}`);
+    return trimmed || undefined;
+  };
+
+  if (manifest.schemaVersion !== 1) throw new Error("暂不支持此扩展清单版本");
+  if (typeof manifest.id !== "string" || !ID_PATTERN.test(manifest.id)) {
+    throw new Error("扩展 id 格式不正确");
+  }
+  const name = text("name", true)!;
+  const version = text("version", true)!;
+  const author = text("author", true)!;
+  const summary = text("summary", true)!;
+  const description = text("description", false);
+  const icon = text("icon", false);
+  const homepage = text("homepage", false);
+  if (homepage && !/^https?:\/\//i.test(homepage)) {
+    throw new Error("扩展 homepage 只能是 http(s) 地址");
+  }
+  if (!CATEGORIES.includes(manifest.category as ExtensionCategory)) {
     throw new Error("扩展 category 不受支持");
   }
+  const permissions = manifest.permissions ?? [];
+  if (!Array.isArray(permissions) || !permissions.every((item) => typeof item === "string")) {
+    throw new Error("扩展 permissions 必须是字符串数组");
+  }
+
   return {
     schemaVersion: 1,
     id: manifest.id,
-    name: manifest.name.trim(),
-    version: manifest.version.trim(),
-    author: manifest.author.trim(),
-    summary: manifest.summary.trim(),
-    description: manifest.description?.trim(),
-    category: manifest.category!,
-    icon: manifest.icon,
-    homepage: manifest.homepage,
-    permissions: Array.isArray(manifest.permissions) ? manifest.permissions : [],
+    name,
+    version,
+    author,
+    summary,
+    description,
+    category: manifest.category as ExtensionCategory,
+    icon,
+    homepage,
+    permissions,
   };
 }
 

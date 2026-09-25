@@ -32,7 +32,10 @@ export function Sidebar() {
 
   return (
     // z-20：中列表栏（z-10）进出场时要从这条导航栏底下滑出来 / 滑回去
-    <nav className="relative z-20 flex h-full w-[240px] shrink-0 flex-col bg-rail" aria-label="主导航">
+    <nav
+      className="relative z-20 flex h-full w-[240px] shrink-0 flex-col bg-rail"
+      aria-label="主导航"
+    >
       {/* 顶部：Logo。pt 留出无边框窗口的拖拽区高度 */}
       <div className="flex h-[76px] shrink-0 items-end px-[22px] pb-4">
         <Logo />
