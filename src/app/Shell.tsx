@@ -1,6 +1,7 @@
 import { LIST_WIDTH, RAIL_WIDTH, hasListColumn, startTodayTicker, useApp } from "@/app/store";
 import { CommandPalette } from "@/components/CommandPalette";
 import { DocumentView } from "@/components/DocumentView";
+import { ErrorToast } from "@/components/ErrorToast";
 import { ReminderCard } from "@/components/ReminderCard";
 import { Sidebar } from "@/components/Sidebar";
 import { TitleBar } from "@/components/TitleBar";
@@ -233,7 +234,12 @@ export function Shell() {
           {workspace !== "extensions" && <ReminderCard reminder={reminder} />}
         </div>
 
-        <UndoToast />
+        {/* 底部居中的提示条：错误在上、撤销在下。容器不接收指针，只有提示条本身接收。
+            离底 72px：再低就压在文档底部状态栏上了，「保存失败」恰好显示在那一行 */}
+        <div className="pointer-events-none fixed inset-x-0 bottom-[72px] z-40 flex flex-col items-center gap-2">
+          <ErrorToast />
+          <UndoToast />
+        </div>
         <CommandPalette />
       </div>
     </MotionConfig>

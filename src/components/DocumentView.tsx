@@ -5,6 +5,7 @@ import type { EditorOutlineHandle } from "@/editor/MarkdownEditor";
 import { cn } from "@/lib/cn";
 import { buildOutline, renderMarkdown } from "@/lib/markdown";
 import { spring, tween } from "@/lib/motion";
+import { MOD_KEY } from "@/lib/platform";
 import { AlertTriangle, Archive, Maximize2, Minimize2, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -126,7 +127,15 @@ export function DocumentView({
   }, [pendingAnchor, doc.key, editorOutline, outline, setPendingAnchor]);
 
   const saving = useData((state) => (doc.editor ? state.savingDocs.has(saveKey(doc)) : false));
-  const saveError = useData((state) => state.saveError);
+  // 只显示这一篇自己的保存失败（以及不属于某一篇的，比如关窗时那次）。
+  // saveError 只有一格，别的文档后来又失败会把它覆盖；这一篇还有草稿没落盘的话照样提示。
+  const saveError = useData((state) => {
+    if (!doc.editor) return null;
+    const key = saveKey(doc);
+    const failure = state.saveError;
+    if (failure && (failure.key === null || failure.key === key)) return failure.message;
+    return state.drafts[key] ? `有修改还没存进去，继续编辑或按 ${MOD_KEY}+S 重试` : null;
+  });
 
   // 切换文档时滚回顶部。用 instant 而不是 smooth ——
   // 换了一篇文档还看到旧位置平滑滚动，是错误的心智模型。
@@ -345,7 +354,7 @@ export function DocumentView({
               parts={doc.statusParts}
               onDelete={doc.deletable ? onDelete : undefined}
               saving={saving}
-              saveError={doc.editor ? saveError : null}
+              saveError={saveError}
             />
           </motion.div>
         </div>

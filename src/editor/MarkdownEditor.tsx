@@ -190,7 +190,7 @@ export function MarkdownEditor({
         }),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) {
-            if (update.focusChanged && !update.view.hasFocus) void saver.flush();
+            if (update.focusChanged && !update.view.hasFocus) saver.flushQuietly();
             return;
           }
           const markdown = update.state.doc.toString();
@@ -201,7 +201,7 @@ export function MarkdownEditor({
             return;
           }
           saver.schedule(markdown);
-          if (update.focusChanged && !update.view.hasFocus) void saver.flush();
+          if (update.focusChanged && !update.view.hasFocus) saver.flushQuietly();
         }),
         keymap.of([
           {
@@ -209,7 +209,7 @@ export function MarkdownEditor({
             preventDefault: true,
             run: (view) => {
               saver.schedule(view.state.doc.toString());
-              void saver.flush();
+              saver.flushQuietly();
               return true;
             },
           },
@@ -258,7 +258,7 @@ export function MarkdownEditor({
     return () => {
       unregisterFlush();
       if (outlineTimer) clearTimeout(outlineTimer);
-      void saver.flush();
+      saver.flushQuietly();
       saverRef.current = null;
       viewRef.current = null;
       onOutlineHandle(null);

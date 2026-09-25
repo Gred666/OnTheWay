@@ -53,7 +53,7 @@ pnpm lint
 pnpm test
 ```
 
-Rust 测试（`--no-default-features` 下 `main.rs` 编不过，必须加 `--lib`）：
+Rust 测试（`--no-default-features` 下 `main.rs` 编不过，必须加 `--lib`；装了 WebView 依赖的机器上 `cargo test --lib` 会连 `commands.rs` 一起测）：
 
 ```bash
 cd src-tauri; cargo test --no-default-features --lib
@@ -241,6 +241,10 @@ Milkdown 在实机上接入后被整个换掉：AST ↔ Markdown 互转导致输
 - **笔记列表只按标题筛**：全文匹配的结果和标题栏对不上，异步回填还会闪一次。全文搜索留给专门的入口。
 - **自动保存不重排列表**：每 400ms 刷新 `updatedAt`，按它排序会让正在编辑的笔记当着用户的面往上跳。「按更新时间」排序直接用 store 的顺序，不在 `NotesView` 里再按 `updatedAt` 排。
 - **删除 = 软删除 + 6 秒撤销**：不弹确认框（多数删除是有意的），删完底部给「撤销」，走 `note_undelete` 清掉 `deleted_at`。没有回收站界面。
+- **保存失败的正文留作草稿**：`drafts` 按 `saveKeyOf` 的键存，切走再切回来还在（adapter 优先用它），下一次保存成功就清掉，关窗时编辑器 flush 之后再试一次（`flushDrafts`）。状态栏只显示这一篇自己的保存失败。
+- **其它操作失败走 ErrorToast**：置顶 / 归档 / 恢复 / 删除 / 勾选 / 新建 / 加载失败写进 `error`，底部提示条显示；启动加载失败时常驻并带「重试」。保存失败不走这里。
+- **同一篇文档的写入排队**（store 里的 `serialized`）：标题和正文两条路保存、各自写整篇，并发时后到的会把另一半覆盖回旧值。
+- **迁移期间关外键**：`migrate::run` 事务外关、每次迁移后 `foreign_key_check` 只拦新增的悬空引用，结束再恢复。重建表时开着外键，DROP TABLE 会级联删掉引用它的行。
 - **启动一次取全文**：`note_list_full` 每个列表一次往返，不再「摘要列表 + 逐篇 `note_get`」。
 - **摘要 / 字数的算法改了要升 `note_derived_vN`**：启动时 `refresh_derived_columns` 按这个版本号把已有笔记整体重算一遍（不动 `updated_at`）。
 - **Logo 改成手写 SVG**：九段笔画按书写顺序 `stroke-dashoffset` 描出再收回，`pathLength="1"` 归一化、`currentColor` 跟主题走。原来的 `Brand.png` 是 53760×11528 的巨图，缩到 22px 发糊，已删。减少动效时停在「写完」态。

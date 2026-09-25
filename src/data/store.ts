@@ -26,12 +26,26 @@ interface DataState {
   markedDates: Set<string>;
   initialized: boolean;
   loading: boolean;
+  /** 保存以外的操作（加载、置顶、归档、勾选…）失败的原因，由 ErrorToast 显示。 */
   error: string | null;
+  clearError: () => void;
   /** 正在保存的文档，键为 `kind:id`。界面据此显示「保存中」。 */
   savingDocs: Set<string>;
-  /** 最近一次保存失败的原因。null 表示一切正常。 */
-  saveError: string | null;
+  /**
+   * 最近一次保存失败：哪篇文档（saveKeyOf 的键）、为什么。只在那篇文档的状态栏里
+   * 显示 —— 以前是一个全局字符串，A 篇存失败了，切到 B 篇也挂着「保存失败」。
+   * key 为 null 的是不属于某一篇的（关窗时的保存），每篇都显示。
+   */
+  saveError: { key: string | null; message: string } | null;
   clearSaveError: () => void;
+  /**
+   * 保存失败、还没落盘的正文，键同 saveKeyOf。编辑器一卸载（切到别的文档），它自己
+   * 的保存队列就跟着没了 —— 失败的那一版以前就这样丢了，再打开还是旧内容。现在留在
+   * 这里：再打开这篇显示的是它（adapter），下一次保存成功就清掉，关窗时也会再试一次。
+   */
+  drafts: Record<string, { target: DocumentSaveTarget; contentMd: string }>;
+  /** 把所有草稿再存一遍。关窗时在编辑器 flush 之后调用。 */
+  flushDrafts: () => Promise<void>;
 
   initialize: () => Promise<void>;
   /**
@@ -147,6 +161,23 @@ function patchTask(state: DataState, id: string, task: Task): Partial<DataState>
 }
 
 let initializePromise: Promise<void> | null = null;
+
+/**
+ * 同一篇文档的写入排队。标题和正文是两条路保存的，但写的都是整篇
+ * （笔记 upsert 带 title + contentMd，某一天带 title + noteMd），各自带着另一半的
+ * 旧值：两次写同时在路上时，后落库的会把先落库那次改的另一半覆盖回去。
+ * 排队之后，每次写都在上一次把 store 更新完之后才去读 source，带的就是最新的另一半。
+ */
+const writeQueues = new Map<string, Promise<unknown>>();
+function serialized<T>(key: string, write: () => Promise<T>): Promise<T> {
+  const next = (writeQueues.get(key) ?? Promise.resolve()).then(write);
+  const tail = next.catch(() => undefined);
+  writeQueues.set(key, tail);
+  void tail.then(() => {
+    if (writeQueues.get(key) === tail) writeQueues.delete(key);
+  });
+  return next;
+}
 /** 正在进行的删除。撤销要排在它后面：删除还没落库就恢复，恢复会扑空，随后删除又生效。 */
 let pendingDelete: Promise<unknown> = Promise.resolve();
 
@@ -160,9 +191,17 @@ export const useData = create<DataState>((set, get) => ({
   initialized: false,
   loading: false,
   error: null,
+  clearError: () => set({ error: null }),
   savingDocs: new Set(),
   saveError: null,
   clearSaveError: () => set({ saveError: null }),
+  drafts: {},
+  flushDrafts: async () => {
+    const pending = Object.values(get().drafts);
+    await Promise.all(
+      pending.map(({ target, contentMd }) => get().saveDocument(target, contentMd)),
+    );
+  },
 
   initialize: async () => {
     if (get().initialized) return;
@@ -244,13 +283,17 @@ export const useData = create<DataState>((set, get) => ({
   saveDocument: async (target, contentMd) => {
     const key = saveKeyOf(target);
 
-    /** 真正写库的部分。三种目标各自判重后再落盘。 */
+    /**
+     * 真正写库的部分。三种目标各自判重后再落盘。返回 false 表示文档还没加载、
+     * 什么都没做；true 表示库里已经是这一版了（刚写的，或者本来就一样）。
+     */
     const write = async (): Promise<boolean> => {
       if (target.kind === "goal") {
         const { horizon, periodStart } = target;
         const source = get().goals[goalKey(horizon, periodStart)];
         // 这个周期还没取回来就别写：编辑器是空的，一输入会把已有的目标整篇覆盖
-        if (!source || source.contentMd === contentMd) return false;
+        if (!source) return false;
+        if (source.contentMd === contentMd) return true;
         const updated = await (await backend()).goalSave(horizon, periodStart, contentMd);
         set((state) => ({ goals: withGoal(state.goals, updated) }));
         return true;
@@ -262,7 +305,8 @@ export const useData = create<DataState>((set, get) => ({
         // 这一天还没加载完就别写。以前 `source?.noteMd === contentMd` 在
         // source 为 undefined 时不拦截，编辑器又是空的，
         // 于是一输入就把当天原有的备注整篇覆盖掉了。
-        if (!source || source.noteMd === contentMd) return false;
+        if (!source) return false;
+        if (source.noteMd === contentMd) return true;
         // 延续来的今天：第一次编辑就带着延续来的标题一起，以今天的身份落库
         const updated = await (await backend()).calendarDaySave(id, source.title, contentMd);
         set((state) => ({
@@ -278,7 +322,8 @@ export const useData = create<DataState>((set, get) => ({
       const id = target.id;
       const source =
         get().notes.find((note) => note.id === id) ?? get().archived.find((note) => note.id === id);
-      if (!source || source.contentMd === contentMd) return false;
+      if (!source) return false;
+      if (source.contentMd === contentMd) return true;
 
       const api = await backend();
       await api.noteUpsert({ id, title: source.title, contentMd, icon: source.icon });
@@ -299,11 +344,18 @@ export const useData = create<DataState>((set, get) => ({
 
     set((state) => ({ savingDocs: new Set(state.savingDocs).add(key) }));
     try {
-      await write();
-      set({ saveError: null, error: null });
+      const stored = await serialized(key, write);
+      set((state) => ({
+        ...(clearsSaveError(state, key) ? { saveError: null } : {}),
+        // 编辑器发来的总是整篇的最新内容，存进去了，之前失败的那一版就作废了
+        ...(stored && state.drafts[key] ? { drafts: withoutKey(state.drafts, key) } : {}),
+      }));
     } catch (error) {
       // 保存失败必须能被界面看见 —— 光写进 store 没人读等于没说。
-      set({ saveError: messageOf(error), error: messageOf(error) });
+      set((state) => ({
+        saveError: { key, message: messageOf(error) },
+        drafts: { ...state.drafts, [key]: { target, contentMd } },
+      }));
       throw error;
     } finally {
       set((state) => {
@@ -337,8 +389,10 @@ export const useData = create<DataState>((set, get) => ({
   saveTitle: async (target, title) => {
     const cleanTitle = title.trim();
     if (!cleanTitle || target.kind === "goal") return;
+    const key = saveKeyOf(target);
 
-    try {
+    // 和正文的保存排在同一条队里，source 在轮到自己时才读（见 serialized）
+    const write = async () => {
       const api = await backend();
 
       if (target.kind === "day") {
@@ -349,7 +403,6 @@ export const useData = create<DataState>((set, get) => ({
         set((state) => ({
           dayDocs: withDay(state.dayDocs, updated),
           markedDates: new Set(state.markedDates).add(target.id),
-          error: null,
         }));
         return;
       }
@@ -370,10 +423,14 @@ export const useData = create<DataState>((set, get) => ({
         // 同样不重排：改标题时列表在脚下跳一下同样很吓人。
         notes: state.notes.map((note) => (note.id === id ? updated : note)),
         archived: state.archived.map((note) => (note.id === id ? updated : note)),
-        error: null,
       }));
+    };
+
+    try {
+      await serialized(key, write);
+      set((state) => (clearsSaveError(state, key) ? { saveError: null } : {}));
     } catch (error) {
-      set({ error: messageOf(error) });
+      set({ saveError: { key, message: messageOf(error) } });
       throw error;
     }
   },
@@ -522,6 +579,16 @@ export const useData = create<DataState>((set, get) => ({
 
   dismissUndo: () => set({ lastDeleted: null }),
 }));
+
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const { [key]: _removed, ...rest } = record;
+  return rest;
+}
+
+/** 这篇保存成功之后该不该清掉 saveError：是它自己的，或者是不属于某一篇的（关窗那种）。 */
+function clearsSaveError(state: DataState, key: string): boolean {
+  return !!state.saveError && (state.saveError.key === key || state.saveError.key === null);
+}
 
 /** 保存中状态的键：和 DocumentView 里 savingDocs.has(saveKey(doc)) 用同一个算法 */
 export function saveKeyOf(target: DocumentSaveTarget): string {

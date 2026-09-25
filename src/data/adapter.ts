@@ -12,10 +12,11 @@ import {
   toISODate,
 } from "@/lib/date";
 import { seedReminders } from "./seed";
-import { NEW_NOTE_TITLE, useData } from "./store";
+import { NEW_NOTE_TITLE, saveKeyOf, useData } from "./store";
 import {
   type DayDoc,
   type DocumentModel,
+  type DocumentSaveTarget,
   type Goal,
   type GoalHorizon,
   type Reminder,
@@ -49,6 +50,10 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
   const archived = useData((s) => s.archived);
   const goals = useData((s) => s.goals);
   const dayDocs = useData((s) => s.dayDocs);
+  // 保存失败、还没落盘的正文优先于库里的版本：切走再切回来，用户写的东西还在
+  const drafts = useData((s) => s.drafts);
+  const draftOr = (target: DocumentSaveTarget, stored: string) =>
+    drafts[saveKeyOf(target)]?.contentMd ?? stored;
 
   switch (workspace) {
     /* ---------------- 笔记 ---------------- */
@@ -64,7 +69,7 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
         doc: {
           key: `note-${note.id}`,
           title: note.title,
-          bodyMd: note.contentMd,
+          bodyMd: draftOr({ kind: "note", id: note.id }, note.contentMd),
           statusParts: [
             `${note.wordCount} 字`,
             `创建时间 ${formatTimestampFull(note.createdAt)}`,
@@ -81,7 +86,7 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
     case "today": {
       const day = dayDocs.find((d) => d.date === todayDate);
       return {
-        doc: dayDocument(todayDate, day, todayDate, undefined),
+        doc: dayDocument(todayDate, day, todayDate, undefined, draftOr),
         reminder: seedReminders.default!,
       };
     }
@@ -91,11 +96,17 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
       const periodStart = periodStartOf(goalHorizon, todayDate);
       const goal = goals[goalKey(goalHorizon, periodStart)];
       return {
-        doc: goalDocument(goalHorizon, periodStart, goal, {
-          group: "goal",
-          options: ["周", "月", "年"],
-          active: horizonLabel(goalHorizon),
-        }),
+        doc: goalDocument(
+          goalHorizon,
+          periodStart,
+          goal,
+          {
+            group: "goal",
+            options: ["周", "月", "年"],
+            active: horizonLabel(goalHorizon),
+          },
+          draftOr,
+        ),
         reminder: seedReminders.goal!,
       };
     }
@@ -113,14 +124,14 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
         const periodStart = periodStartOf(calendarScope, selectedDate);
         const goal = goals[goalKey(calendarScope, periodStart)];
         return {
-          doc: goalDocument(calendarScope, periodStart, goal, segments),
+          doc: goalDocument(calendarScope, periodStart, goal, segments, draftOr),
           reminder: seedReminders.goal!,
         };
       }
 
       const day = dayDocs.find((d) => d.date === selectedDate);
       return {
-        doc: dayDocument(selectedDate, day, todayDate, segments),
+        doc: dayDocument(selectedDate, day, todayDate, segments, draftOr),
         reminder: seedReminders.goal!,
       };
     }
@@ -142,7 +153,7 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
             icon: "archive",
             text: `已归档 · ${formatFullCN(toISODate(new Date(note.archivedAt ?? note.updatedAt)))}`,
           },
-          bodyMd: note.contentMd,
+          bodyMd: draftOr({ kind: "note", id: note.id }, note.contentMd),
           statusParts: [
             `${note.wordCount} 字`,
             `创建时间 ${formatTimestampFull(note.createdAt)}`,
@@ -164,6 +175,9 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
 
 /* ---------------- 两种按周期 / 按天的文档 ---------------- */
 
+/** 有草稿就用草稿，没有就用库里的正文 */
+type DraftOr = (target: DocumentSaveTarget, stored: string) => string;
+
 /**
  * 某一天的文档。`day` 还没取回来之前不给编辑器 —— 否则它会以空文档挂载，
  * 用户在空白页上一输入就把当天原有的内容覆盖掉。
@@ -173,6 +187,7 @@ function dayDocument(
   day: DayDoc | undefined,
   todayDate: ISODate,
   segments: DocumentModel["segments"],
+  draftOr: DraftOr,
 ): DocumentModel {
   const tasks = day?.tasks ?? [];
   const isToday = date === todayDate;
@@ -197,7 +212,7 @@ function dayDocument(
     title: day?.title || NEW_NOTE_TITLE,
     eyebrow: isToday ? `今天 · ${formatDayEyebrowCN(date)}` : formatDayEyebrowCN(date),
     segments,
-    bodyMd: day?.noteMd ?? "",
+    bodyMd: day ? draftOr({ kind: "day", id: date }, day.noteMd) : "",
     actionGroup: tasks.length ? { title: "当日安排", tasks, hideHeader: true } : undefined,
     statusParts,
     editor: day ? { target: { kind: "day", id: date }, titleEditable: true } : undefined,
@@ -210,6 +225,7 @@ function goalDocument(
   periodStart: ISODate,
   goal: Goal | undefined,
   segments: DocumentModel["segments"],
+  draftOr: DraftOr,
 ): DocumentModel {
   const statusParts: string[] = [formatPeriodCN(horizon, periodStart)];
   if (!goal) statusParts.push("载入中…");
@@ -224,7 +240,7 @@ function goalDocument(
     key: `goal-${goalKey(horizon, periodStart)}`,
     title: goalTitle(horizon, periodStart),
     segments,
-    bodyMd: goal?.contentMd ?? "",
+    bodyMd: goal ? draftOr({ kind: "goal", horizon, periodStart }, goal.contentMd) : "",
     statusParts,
     editor: goal ? { target: { kind: "goal", horizon, periodStart } } : undefined,
   };

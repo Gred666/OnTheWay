@@ -46,36 +46,35 @@ export function UndoToast() {
 
   const title = deleted?.note.title.trim() || NEW_NOTE_TITLE;
 
+  // 定位交给 Shell 里的 ToastStack，和错误提示叠在一起
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center">
-      <AnimatePresence>
-        {deleted && (
-          <motion.div
-            key={deleted.note.id}
-            role="status"
-            initial={{ opacity: 0, y: 12, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, transition: tween.fast }}
-            transition={spring.gentle}
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
-            className="pointer-events-auto flex max-w-[420px] items-center gap-3 rounded-xl
+    <AnimatePresence>
+      {deleted && (
+        <motion.div
+          key={deleted.note.id}
+          role="status"
+          initial={{ opacity: 0, y: 12, scale: 0.97 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 8, transition: tween.fast }}
+          transition={spring.gentle}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          className="pointer-events-auto flex max-w-[420px] items-center gap-3 rounded-xl
                        bg-ink py-2 pl-3.5 pr-2 text-[12.5px] text-canvas shadow-float"
-          >
-            <Trash2 size={13} strokeWidth={1.9} className="shrink-0 opacity-70" />
-            <span className="min-w-0 truncate">已删除「{title}」</span>
-            <button
-              type="button"
-              onClick={() => void undo()}
-              disabled={busy}
-              className="shrink-0 rounded-md px-2 py-1 font-semibold text-canvas
+        >
+          <Trash2 size={13} strokeWidth={1.9} className="shrink-0 opacity-70" />
+          <span className="min-w-0 truncate">已删除「{title}」</span>
+          <button
+            type="button"
+            onClick={() => void undo()}
+            disabled={busy}
+            className="shrink-0 rounded-md px-2 py-1 font-semibold text-canvas
                          transition-colors duration-[140ms] hover:bg-canvas/15 disabled:opacity-60"
-            >
-              撤销
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+          >
+            撤销
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

@@ -51,7 +51,9 @@ export async function installCloseGuard(): Promise<() => void> {
       // 「放弃」只针对当时那次失败。之后保存可能早已恢复、又攒了几百毫秒还没
       // 落盘的输入，所以仍然尽力 flush 一次；失败或卡住（最多等 2 秒）才真的放弃。
       await Promise.race([
-        flushAllEditors().catch(() => undefined),
+        flushAllEditors()
+          .then(() => useData.getState().flushDrafts())
+          .catch(() => undefined),
         new Promise((resolve) => setTimeout(resolve, 2000)),
       ]);
       await win.forceClose();
@@ -60,6 +62,9 @@ export async function installCloseGuard(): Promise<() => void> {
     event.preventDefault();
     try {
       await flushAllEditors();
+      // 编辑器已经卸载、保存失败留下的草稿也再试一次。放在编辑器之后：开着的那篇
+      // 如果刚存成功，它的草稿已经清掉了，不会用旧草稿盖掉新内容。
+      await useData.getState().flushDrafts();
       closing = true;
       await win.forceClose();
     } catch (error) {
@@ -67,7 +72,10 @@ export async function installCloseGuard(): Promise<() => void> {
       const reason = messageOf(error);
       console.error("保存失败，已取消本次关闭", error);
       useData.setState({
-        saveError: `${reason}（内容尚未保存；再次点击关闭将放弃这些修改）`,
+        saveError: {
+          key: null,
+          message: `${reason}（内容尚未保存；再次点击关闭将放弃这些修改）`,
+        },
       });
     }
   });
