@@ -24,12 +24,16 @@ import type {
 
 export interface Backend {
   noteList(archived: boolean): Promise<NoteSummary[]>;
+  /** 一个列表的全部笔记（含正文），一次取回。启动时用它，免得逐篇 noteGet。 */
+  noteListFull(archived: boolean): Promise<Note[]>;
   noteGet(id: string): Promise<Note>;
   noteUpsert(input: NoteInput): Promise<string>;
   noteSetPinned(id: string, pinned: boolean): Promise<void>;
   noteArchive(id: string, category?: string): Promise<void>;
   noteRestore(id: string): Promise<void>;
   noteDelete(id: string): Promise<void>;
+  /** 撤销删除（删除是软删除） */
+  noteUndelete(id: string): Promise<void>;
   searchNotes(query: string, limit: number): Promise<SearchResult>;
   taskToggle(id: string): Promise<Task>;
   /** 某个周期的目标；没写过的周期返回空文档（id 为空） */
@@ -51,6 +55,7 @@ async function unwrap<T>(request: Promise<IpcResult<T, unknown>>): Promise<T> {
 
 const tauriBackend: Backend = {
   noteList: (archived) => unwrap(commands.noteList(archived)) as Promise<NoteSummary[]>,
+  noteListFull: (archived) => unwrap(commands.noteListFull(archived)) as Promise<Note[]>,
   noteGet: (id) => unwrap(commands.noteGet(id)) as Promise<Note>,
   noteUpsert: (input) => unwrap(commands.noteUpsert(input)),
   noteSetPinned: async (id, pinned) => {
@@ -64,6 +69,9 @@ const tauriBackend: Backend = {
   },
   noteDelete: async (id) => {
     await unwrap(commands.noteDelete(id));
+  },
+  noteUndelete: async (id) => {
+    await unwrap(commands.noteUndelete(id));
   },
   searchNotes: (query, limit) =>
     unwrap(commands.searchNotes(query, limit)) as Promise<SearchResult>,

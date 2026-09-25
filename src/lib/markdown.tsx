@@ -344,14 +344,3 @@ export function buildOutline(md: string, actionGroupTitle?: string): OutlineItem
   }
   return items;
 }
-
-/** 正文字数：中文按字算，英文按词算 */
-export function countWords(md: string): number {
-  const plain = md
-    .replace(/^>\s*\[!.+?\]\s*$/gm, "")
-    .replace(/[#>*`\-[\]()]/g, " ")
-    .trim();
-  const cjk = (plain.match(/[一-龥]/g) ?? []).length;
-  const words = (plain.match(/[a-zA-Z0-9]+/g) ?? []).length;
-  return cjk + words;
-}

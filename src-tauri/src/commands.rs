@@ -35,6 +35,13 @@ pub async fn note_list(state: State<'_, AppState>, archived: bool) -> Result<Vec
     with_db(&state, move |c| note::list(c, archived)).await
 }
 
+// 启动时一次取回整个列表的全文，替代「摘要列表 + 逐篇 note_get」
+#[tauri::command]
+#[specta::specta]
+pub async fn note_list_full(state: State<'_, AppState>, archived: bool) -> Result<Vec<Note>> {
+    with_db(&state, move |c| note::list_full(c, archived)).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn note_get(state: State<'_, AppState>, id: String) -> Result<Note> {
@@ -76,6 +83,13 @@ pub async fn note_restore(state: State<'_, AppState>, id: String) -> Result<()> 
 #[specta::specta]
 pub async fn note_delete(state: State<'_, AppState>, id: String) -> Result<()> {
     with_db(&state, move |c| note::delete(c, &id)).await
+}
+
+// 删除后的「撤销」
+#[tauri::command]
+#[specta::specta]
+pub async fn note_undelete(state: State<'_, AppState>, id: String) -> Result<()> {
+    with_db(&state, move |c| note::undelete(c, &id)).await
 }
 
 /* ---------------- 搜索 ---------------- */

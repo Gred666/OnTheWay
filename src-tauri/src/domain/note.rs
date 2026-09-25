@@ -95,63 +95,137 @@ fn sync_wiki_links(conn: &Connection, src_id: &str, markdown: &str, now: i64) ->
     Ok(())
 }
 
+/// 摘要 / 字数的算法改过之后，库里已有的派生列不会自己变，要等每篇都再保存一次。
+/// 启动时按这个版本号整体重算一遍，每个版本只跑一次。
+const DERIVED_VERSION_KEY: &str = "note_derived_v2";
+
+/// 用当前算法重算所有笔记的 excerpt / word_count。不动 updated_at —— 这不是用户的编辑。
+pub fn refresh_derived_columns(conn: &mut Connection) -> Result<()> {
+    let done: i64 = conn.query_row(
+        "SELECT count(*) FROM setting WHERE key = ?1",
+        params![DERIVED_VERSION_KEY],
+        |r| r.get(0),
+    )?;
+    if done > 0 {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    {
+        let mut select = tx.prepare("SELECT id, content_md FROM note")?;
+        let notes = select
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        // 值没变的不写：每次 UPDATE 都会触发 note_au 重建这一行的全文索引
+        let mut update = tx.prepare(
+            "UPDATE note SET excerpt = ?1, word_count = ?2
+             WHERE id = ?3 AND (excerpt != ?1 OR word_count != ?2)",
+        )?;
+        for (id, markdown) in notes {
+            update.execute(params![
+                search::make_excerpt(&markdown, 60),
+                search::count_words(&markdown),
+                id
+            ])?;
+        }
+    }
+    tx.execute(
+        "INSERT INTO setting (key, value) VALUES (?1, 'true')",
+        params![DERIVED_VERSION_KEY],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// 列表：只取摘要列，不带 content_md。
 /// 一个 300px 宽的列表没必要把每篇全文传过来。
 pub fn list(conn: &Connection, archived: bool) -> Result<Vec<NoteSummary>> {
     let sql = format!(
         "SELECT {SUMMARY_COLS} FROM note
          WHERE deleted_at IS NULL AND is_archived = ?1
-         ORDER BY is_pinned DESC, {} DESC",
-        if archived {
-            "archived_at"
-        } else {
-            "updated_at"
-        }
+         ORDER BY {}",
+        list_order(archived)
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![archived as i64], summary_from_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+fn list_order(archived: bool) -> &'static str {
+    if archived {
+        "is_pinned DESC, archived_at DESC"
+    } else {
+        "is_pinned DESC, updated_at DESC"
+    }
+}
+
+const FULL_COLS: &str = "id, title, content_md, excerpt, icon, word_count, is_pinned, is_archived,
+                         archive_category, archived_at, action_title, created_at, updated_at";
+
+/// 全文一行 + 它的 action_title（旧版行动项分组的标题，迁移 0003 之后都是 NULL）
+fn full_from_row(r: &Row) -> rusqlite::Result<(Note, Option<String>)> {
+    Ok((
+        Note {
+            id: r.get("id")?,
+            title: r.get("title")?,
+            content_md: r.get("content_md")?,
+            excerpt: r.get("excerpt")?,
+            icon: r.get("icon")?,
+            word_count: r.get("word_count")?,
+            is_pinned: r.get::<_, i64>("is_pinned")? != 0,
+            is_archived: r.get::<_, i64>("is_archived")? != 0,
+            archive_category: r.get("archive_category")?,
+            archived_at: r.get("archived_at")?,
+            created_at: r.get("created_at")?,
+            updated_at: r.get("updated_at")?,
+            action_group: None,
+        },
+        r.get::<_, Option<String>>("action_title")?,
+    ))
+}
+
+fn with_action_group(
+    conn: &Connection,
+    (mut note, action_title): (Note, Option<String>),
+) -> Result<Note> {
+    if let Some(title) = action_title {
+        let tasks = task::for_host(conn, "note", &note.id)?;
+        if !tasks.is_empty() {
+            note.action_group = Some(ActionGroup { title, tasks });
+        }
+    }
+    Ok(note)
+}
+
 /// 单篇全文 + 挂在它下面的行动项
 pub fn get(conn: &Connection, id: &str) -> Result<Note> {
-    let mut note = conn
+    let row = conn
         .query_row(
-            "SELECT id, title, content_md, excerpt, icon, word_count, is_pinned, is_archived,
-                    archive_category, archived_at, action_title, created_at, updated_at
-             FROM note WHERE id = ?1 AND deleted_at IS NULL",
+            &format!("SELECT {FULL_COLS} FROM note WHERE id = ?1 AND deleted_at IS NULL"),
             params![id],
-            |r| {
-                Ok((
-                    Note {
-                        id: r.get("id")?,
-                        title: r.get("title")?,
-                        content_md: r.get("content_md")?,
-                        excerpt: r.get("excerpt")?,
-                        icon: r.get("icon")?,
-                        word_count: r.get("word_count")?,
-                        is_pinned: r.get::<_, i64>("is_pinned")? != 0,
-                        is_archived: r.get::<_, i64>("is_archived")? != 0,
-                        archive_category: r.get("archive_category")?,
-                        archived_at: r.get("archived_at")?,
-                        created_at: r.get("created_at")?,
-                        updated_at: r.get("updated_at")?,
-                        action_group: None,
-                    },
-                    r.get::<_, Option<String>>("action_title")?,
-                ))
-            },
+            full_from_row,
         )
         .optional()?
         .ok_or_else(|| AppError::NotFound(format!("note {id}")))?;
+    with_action_group(conn, row)
+}
 
-    if let Some(title) = note.1.take() {
-        let tasks = task::for_host(conn, "note", id)?;
-        if !tasks.is_empty() {
-            note.0.action_group = Some(ActionGroup { title, tasks });
-        }
-    }
-    Ok(note.0)
+/// 一个列表（笔记 / 归档）的全部笔记，含正文，顺序和 `list` 一样。
+/// 前端启动时要的就是全文；以前先取摘要列表再逐篇 note_get，N 篇就是 N 次 IPC 往返。
+pub fn list_full(conn: &Connection, archived: bool) -> Result<Vec<Note>> {
+    let sql = format!(
+        "SELECT {FULL_COLS} FROM note
+         WHERE deleted_at IS NULL AND is_archived = ?1
+         ORDER BY {}",
+        list_order(archived)
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params![archived as i64], full_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|row| with_action_group(conn, row))
+        .collect()
 }
 
 /// 新建或更新。
@@ -278,6 +352,21 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
         return Err(AppError::NotFound(format!("note {id}")));
     }
     activity::log(&tx, "note", id, "deleted", None)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// 撤销删除。删除只是软删除，恢复就是把 deleted_at 清掉。
+pub fn undelete(conn: &Connection, id: &str) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let n = tx.execute(
+        "UPDATE note SET deleted_at=NULL WHERE id=?1 AND deleted_at IS NOT NULL",
+        params![id],
+    )?;
+    if n == 0 {
+        return Err(AppError::NotFound(format!("deleted note {id}")));
+    }
+    activity::log(&tx, "note", id, "undeleted", None)?;
     tx.commit()?;
     Ok(())
 }
@@ -542,6 +631,78 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn list_full_matches_list_order_and_carries_bodies() {
+        let conn = test_conn();
+        let first = mk(&conn, "先建的", "正文一");
+        let second = mk(&conn, "后建的", "正文二");
+        let archived = mk(&conn, "归档的", "正文三");
+        set_pinned(&conn, &first, true).unwrap();
+        archive(&conn, &archived, None).unwrap();
+
+        let full = list_full(&conn, false).unwrap();
+        let ids: Vec<&str> = full.iter().map(|n| n.id.as_str()).collect();
+        let summary_ids: Vec<String> = list(&conn, false)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(ids, summary_ids);
+        assert_eq!(ids, vec![first.as_str(), second.as_str()]);
+        assert_eq!(full[1].content_md, "正文二");
+
+        let full_archived = list_full(&conn, true).unwrap();
+        assert_eq!(full_archived.len(), 1);
+        assert!(full_archived[0].is_archived);
+        assert_eq!(full_archived[0].content_md, "正文三");
+    }
+
+    #[test]
+    fn undelete_brings_a_deleted_note_back() {
+        let conn = test_conn();
+        let id = mk(&conn, "误删的", "内容");
+        delete(&conn, &id).unwrap();
+        assert!(list(&conn, false).unwrap().is_empty());
+
+        undelete(&conn, &id).unwrap();
+        assert_eq!(get(&conn, &id).unwrap().content_md, "内容");
+        assert_eq!(search_notes(&conn, "误删", 10).unwrap().hits.len(), 1);
+
+        // 没被删过的不能「撤销删除」
+        assert!(matches!(undelete(&conn, &id), Err(AppError::NotFound(_))));
+    }
+
+    #[test]
+    fn refresh_recomputes_stale_excerpts_once_without_touching_updated_at() {
+        let mut conn = test_conn();
+        let id = mk(
+            &conn,
+            "旧笔记",
+            "- [x] 已完成\n见 [官网](https://example.com)",
+        );
+        conn.execute(
+            "UPDATE note SET excerpt = 'x 已完成 见 官网https://example.com', word_count = 99,
+                             updated_at = 7 WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+
+        refresh_derived_columns(&mut conn).unwrap();
+        let n = get(&conn, &id).unwrap();
+        assert_eq!(n.excerpt, "已完成 见 官网");
+        assert_eq!(n.word_count, 6);
+        assert_eq!(n.updated_at, 7, "重算摘要不是用户的编辑，不该改 updated_at");
+
+        // 同一版本只跑一次
+        conn.execute(
+            "UPDATE note SET excerpt = '手动' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+        refresh_derived_columns(&mut conn).unwrap();
+        assert_eq!(get(&conn, &id).unwrap().excerpt, "手动");
     }
 
     #[test]

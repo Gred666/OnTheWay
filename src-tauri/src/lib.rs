@@ -91,12 +91,14 @@ fn command_builder() -> Builder<tauri::Wry> {
         win_is_maximized,
         win_start_dragging,
         commands::note_list,
+        commands::note_list_full,
         commands::note_get,
         commands::note_upsert,
         commands::note_set_pinned,
         commands::note_archive,
         commands::note_restore,
         commands::note_delete,
+        commands::note_undelete,
         commands::search_notes,
         commands::task_toggle,
         commands::goal_get,
@@ -117,12 +119,14 @@ pub fn export_typescript_bindings(path: impl AsRef<std::path::Path>) {
     #[cfg(all(feature = "typegen", not(feature = "desktop-runtime")))]
     let builder = Builder::<tauri::test::MockRuntime>::new().commands(collect_commands![
         commands::note_list,
+        commands::note_list_full,
         commands::note_get,
         commands::note_upsert,
         commands::note_set_pinned,
         commands::note_archive,
         commands::note_restore,
         commands::note_delete,
+        commands::note_undelete,
         commands::search_notes,
         commands::task_toggle,
         commands::goal_get,
@@ -188,6 +192,11 @@ pub fn run() {
             {
                 let mut conn = pool.get().expect("拿连接失败");
                 domain::seed::ensure(&mut conn).expect("写入示例内容失败");
+                // 摘要算法改过之后把已有笔记的摘要 / 字数重算一遍。失败不影响使用，
+                // 只是列表里的摘要还是旧的，下次保存那篇时自然会更新。
+                if let Err(error) = domain::note::refresh_derived_columns(&mut conn) {
+                    eprintln!("重算笔记摘要失败: {error}");
+                }
             }
 
             app.manage(AppState { pool, db_path });

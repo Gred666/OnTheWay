@@ -101,14 +101,23 @@ pub fn make_excerpt(md: &str, n: usize) -> String {
     out
 }
 
-/// 字数：中文按字算，英文按词算。
+/// 字数：中文按字算，英文按词算；裸网址算一个词。
 pub fn count_words(md: &str) -> i64 {
     let plain = strip_markdown(md);
     let cjk = plain.chars().filter(|c| is_cjk(*c)).count();
-    let words = plain
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .count();
+    let words: usize = plain
+        .split_whitespace()
+        .map(|token| {
+            if token.contains("://") {
+                1
+            } else {
+                token
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .count()
+            }
+        })
+        .sum();
     (cjk + words) as i64
 }
 
@@ -116,28 +125,318 @@ fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF)
 }
 
-/// 极简 Markdown 去标记。够用于摘要和字数统计，不追求完备。
+/* ============================================================
+摘要和字数用的纯文本。
+只认最常见的写法，不追求完备 —— 但标记本身不能漏进去：以前 `- [x] 任务`
+的摘要是「x 任务」，`[官网](https://…)` 是「官网https://…」，网址的每一段
+还都各算一个字。前端 mock（src/lib/plainText.ts）按同一套规则实现。
+
+整行跳过：front matter、围栏行、分隔线 / Setext 下划线、表格分隔行、
+链接和缩写定义、`[TOC]`、callout 标签行、HTML 注释。
+行首剥掉：引用、标题、列表符号、任务勾选框、脚注定义的 `[^id]:`。
+行内：见 strip_inline。
+============================================================ */
+
 fn strip_markdown(md: &str) -> String {
+    let lines: Vec<&str> = md.lines().collect();
     let mut out = String::with_capacity(md.len());
-    for raw in md.lines() {
-        let line = raw.trim();
-        // 跳过 callout 的标签行 `> [!核心判断]`
-        if line.starts_with("> [!") {
+    let mut in_comment = false;
+
+    for raw in &lines[front_matter_len(&lines)..] {
+        let mut line = raw.trim();
+        if in_comment {
+            let Some(end) = line.find("-->") else {
+                continue;
+            };
+            in_comment = false;
+            line = line[end + 3..].trim();
+        }
+        if let Some(start) = line.find("<!--") {
+            if !line[start..].contains("-->") {
+                in_comment = true;
+                line = line[..start].trim();
+            }
+        }
+        if is_markup_only_line(line) {
             continue;
         }
-        let line = line
-            .trim_start_matches('>')
-            .trim_start_matches(|c| c == '#' || c == '-' || c == '*')
-            .trim();
-        if line.is_empty() {
-            continue;
+
+        let mut text = strip_inline(strip_line_prefix(line));
+        if line.starts_with('|') {
+            text = text.replace('|', " ");
         }
-        if !out.is_empty() {
-            out.push(' ');
+        for word in text.split_whitespace() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(word);
         }
-        out.push_str(&line.replace(['`', '[', ']', '(', ')', '*'], ""));
     }
     out
+}
+
+/// 文档开头的 YAML front matter 占几行。规则和编辑器（editor/frontMatter.ts）一致：
+/// 第一行 `---`，60 行以内以 `---` 收尾，中间至少有一行 `key: value`。
+fn front_matter_len(lines: &[&str]) -> usize {
+    let is_fence = |line: &str| line.trim_end() == "---";
+    if lines.len() < 3 || !is_fence(lines[0]) {
+        return 0;
+    }
+    let mut saw_key = false;
+    for (index, line) in lines.iter().enumerate().take(60).skip(1) {
+        if is_fence(line) {
+            return if saw_key { index + 1 } else { 0 };
+        }
+        saw_key |= is_yaml_key(line);
+    }
+    0
+}
+
+fn is_yaml_key(line: &str) -> bool {
+    let mut chars = line.chars();
+    if !chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        return false;
+    }
+    chars
+        .as_str()
+        .trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        .trim_start()
+        .starts_with(':')
+}
+
+/// 整行都是标记、没有可读文字的行。
+fn is_markup_only_line(line: &str) -> bool {
+    let only = |allowed: &[char]| !line.is_empty() && line.chars().all(|c| allowed.contains(&c));
+    line.starts_with("```")
+        || line.starts_with("~~~")
+        // 分隔线、Setext 下划线
+        || only(&['-', '*', '_', '=', ' ', '\t'])
+        // 表格分隔行 `|---|:---:|`
+        || (line.starts_with('|') && only(&['|', '-', ':', ' ', '\t']))
+        // callout 标签行 `> [!核心判断]`
+        || (line.starts_with('>')
+            && line
+                .trim_start_matches(['>', ' ', '\t'])
+                .starts_with("[!"))
+        || line.eq_ignore_ascii_case("[toc]")
+        || line.eq_ignore_ascii_case("[[toc]]")
+        || is_definition(line)
+}
+
+/// 链接定义 `[标签]: 地址` 和缩写定义 `*[HTML]: …`。脚注定义 `[^1]: …` 的正文要留着。
+fn is_definition(line: &str) -> bool {
+    let rest = line.strip_prefix('*').unwrap_or(line);
+    let Some(rest) = rest.strip_prefix('[') else {
+        return false;
+    };
+    !rest.starts_with('^')
+        && rest
+            .find("]:")
+            .is_some_and(|end| !rest[..end].contains(['[', ']']))
+}
+
+/// 行首的块级标记：引用（可嵌套）、标题、列表符号、任务勾选框、脚注定义。
+fn strip_line_prefix(line: &str) -> &str {
+    let mut line = line.trim_start();
+    while let Some(rest) = line.strip_prefix('>') {
+        line = rest.trim_start();
+    }
+
+    let hashes = line.len() - line.trim_start_matches('#').len();
+    if (1..=6).contains(&hashes)
+        && line[hashes..]
+            .chars()
+            .next()
+            .map_or(true, char::is_whitespace)
+    {
+        let text = line[hashes..].trim();
+        // `## 标题 ##` 的收尾井号；`## C#` 里的不算（前面没有空格）
+        let unclosed = text.trim_end_matches('#');
+        return if unclosed.is_empty() || unclosed.ends_with(char::is_whitespace) {
+            unclosed.trim_end()
+        } else {
+            text
+        };
+    }
+
+    line = strip_list_marker(line);
+    for task in ["[ ]", "[x]", "[X]"] {
+        if let Some(rest) = line.strip_prefix(task) {
+            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                line = rest.trim_start();
+                break;
+            }
+        }
+    }
+    if line.starts_with("[^") {
+        if let Some(end) = line.find("]:") {
+            line = line[end + 2..].trim_start();
+        }
+    }
+    line
+}
+
+/// `- ` / `* ` / `+ ` / `1. ` / `1) `
+fn strip_list_marker(line: &str) -> &str {
+    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let marker = match line[digits..].chars().next() {
+        Some('-' | '*' | '+') if digits == 0 => 1,
+        Some('.' | ')') if (1..=9).contains(&digits) => digits + 1,
+        _ => return line,
+    };
+    let rest = &line[marker..];
+    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+        rest.trim_start()
+    } else {
+        line
+    }
+}
+
+/// 行内标记：图片留 alt，链接留文字，双链留别名（没有别名就是目标），行内代码
+/// 留原文，脚注引用、HTML 标签和注释去掉，强调 / 删除线 / 高亮的符号去掉。
+fn strip_inline(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        let step = match c {
+            '\\' => escaped(rest),
+            '`' => Some(code_span(rest)),
+            '!' if rest[1..].starts_with('[') => {
+                link_like(&rest[1..]).map(|(label, after)| (image_alt(label).to_string(), after))
+            }
+            '[' => wiki_link(rest)
+                .or_else(|| footnote_ref(rest))
+                .or_else(|| link_like(rest).map(|(label, after)| (strip_inline(label), after))),
+            '<' => html(rest),
+            '*' => Some((String::new(), &rest[1..])),
+            '~' | '=' | '_' if rest[1..].starts_with(c) => Some((String::new(), &rest[2..])),
+            _ => None,
+        };
+        match step {
+            Some((kept, after)) => {
+                out.push_str(&kept);
+                rest = after;
+            }
+            None => {
+                out.push(c);
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+    }
+    out
+}
+
+/// `\*` → `*`
+fn escaped(rest: &str) -> Option<(String, &str)> {
+    let next = rest[1..]
+        .chars()
+        .next()
+        .filter(char::is_ascii_punctuation)?;
+    Some((next.to_string(), &rest[1 + next.len_utf8()..]))
+}
+
+/// 行内代码原样留下（里面的 `*`、`==` 不是标记）；没闭合就只去掉反引号。
+fn code_span(rest: &str) -> (String, &str) {
+    let ticks = rest.len() - rest.trim_start_matches('`').len();
+    let body = &rest[ticks..];
+    match body.find(&rest[..ticks]) {
+        Some(end) => (body[..end].trim().to_string(), &body[end + ticks..]),
+        None => (String::new(), body),
+    }
+}
+
+/// `[文字](地址)` / `[文字][标签]`：返回文字和之后的剩余部分。
+/// 后面既不是 `(` 也不是 `[` 的方括号只是普通文字，返回 None。
+fn link_like(rest: &str) -> Option<(&str, &str)> {
+    let close = matching(rest, '[', ']')?;
+    let label = &rest[1..close];
+    let after = &rest[close + 1..];
+    if after.starts_with('(') {
+        let end = matching(after, '(', ')')?;
+        Some((label, &after[end + 1..]))
+    } else if after.starts_with('[') {
+        let end = after.find(']')?;
+        Some((label, &after[end + 1..]))
+    } else {
+        None
+    }
+}
+
+/// `s` 以 open 开头，返回和它配对的 close 的位置（允许嵌套）。
+fn matching(s: &str, open: char, close: char) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, c) in s.char_indices() {
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+/// Obsidian 式尺寸 `![alt|300]` / `![alt|300x200]` 不算 alt。
+fn image_alt(label: &str) -> &str {
+    match label.rsplit_once('|') {
+        Some((alt, size))
+            if !size.is_empty() && size.chars().all(|c| c.is_ascii_digit() || c == 'x') =>
+        {
+            alt.trim()
+        }
+        _ => label.trim(),
+    }
+}
+
+fn wiki_link(rest: &str) -> Option<(String, &str)> {
+    let body = rest.strip_prefix("[[")?;
+    let end = body.find("]]")?;
+    let inner = &body[..end];
+    let shown = inner.split_once('|').map_or(inner, |(_, alias)| alias);
+    Some((shown.trim().to_string(), &body[end + 2..]))
+}
+
+fn footnote_ref(rest: &str) -> Option<(String, &str)> {
+    let body = rest.strip_prefix("[^")?;
+    let end = body.find(']')?;
+    Some((String::new(), &body[end + 1..]))
+}
+
+/// HTML 注释和标签去掉（`<br>` 换成空格），`<https://…>` / `<a@b.c>` 留地址。
+/// 不像标签的 `<`（`a < b`）照原样留下。
+fn html(rest: &str) -> Option<(String, &str)> {
+    if let Some(body) = rest.strip_prefix("<!--") {
+        let end = body.find("-->")?;
+        return Some((String::new(), &body[end + 3..]));
+    }
+    let end = rest.find('>')?;
+    let inner = &rest[1..end];
+    let after = &rest[end + 1..];
+    if !inner.is_empty()
+        && !inner.contains(char::is_whitespace)
+        && (inner.contains("://") || inner.contains('@'))
+    {
+        return Some((inner.to_string(), after));
+    }
+    let name = inner.strip_prefix('/').unwrap_or(inner);
+    if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let tag: String = name
+        .chars()
+        .take_while(char::is_ascii_alphanumeric)
+        .collect();
+    let kept = if tag.eq_ignore_ascii_case("br") {
+        " "
+    } else {
+        ""
+    };
+    Some((kept.to_string(), after))
 }
 
 #[cfg(test)]
@@ -206,6 +505,65 @@ mod tests {
         assert!(!e.contains("[!"), "callout 标签漏进摘要: {e}");
         assert!(!e.contains('#'), "标题标记漏进摘要: {e}");
         assert!(e.contains("正文第一句"), "正文丢了: {e}");
+    }
+
+    #[test]
+    fn excerpt_is_plain_text() {
+        for (md, expected) in [
+            (
+                "- [x] 已完成的任务\n- [ ] 待办事项",
+                "已完成的任务 待办事项",
+            ),
+            ("1. 第一步\n2) 第二步", "第一步 第二步"),
+            ("见 [官网](https://example.com/a_(b)) 说明", "见 官网 说明"),
+            ("![截图|300x200](C:/img/a.png) 和 ![](b.png)", "截图 和"),
+            (
+                "[[目标笔记|别名]] 与 [[另一篇#小节]]",
+                "别名 与 另一篇#小节",
+            ),
+            (
+                "<b>粗体</b>第一行<br>第二行 <https://x.dev> <!-- 备注 -->",
+                "粗体第一行 第二行 https://x.dev",
+            ),
+            (
+                "**强调** ==高亮== ~~删除~~ __粗__ `a == b` \\*字面\\*",
+                "强调 高亮 删除 粗 a == b *字面*",
+            ),
+            ("正文[^1]\n\n[^1]: 脚注内容", "正文 脚注内容"),
+            ("## 标题 ##\n## C#\n#话题", "标题 C# #话题"),
+            (
+                "> > 嵌套引用\n> - [ ] 引用里的任务",
+                "嵌套引用 引用里的任务",
+            ),
+            (
+                "| 名称 | 数量 |\n|---|:-:|\n| 苹果 | 3 |",
+                "名称 数量 苹果 3",
+            ),
+            ("[草稿] 方括号只是文字 a < b", "[草稿] 方括号只是文字 a < b"),
+        ] {
+            assert_eq!(make_excerpt(md, 200), expected, "输入: {md:?}");
+        }
+    }
+
+    #[test]
+    fn excerpt_skips_markup_only_lines() {
+        let md = "---\ntitle: 周报\ntags: [a]\n---\n[TOC]\n\n```rust\nfn main() {}\n```\n\n\
+                  ***\n\n标题\n===\n\n[官网]: https://example.com\n*[HTML]: HyperText\n\n\
+                  <!--\n多行注释\n-->\n正文";
+        assert_eq!(make_excerpt(md, 200), "fn main() {} 标题 正文");
+    }
+
+    /// 以分隔线开头、却不是 front matter 的普通笔记：别把正文当 YAML 吃掉
+    #[test]
+    fn leading_rule_is_not_front_matter() {
+        assert_eq!(make_excerpt("---\n正文\n---\n后面", 200), "正文 后面");
+    }
+
+    #[test]
+    fn link_urls_do_not_inflate_word_count() {
+        assert_eq!(count_words("[官网](https://example.com/a/b/c)"), 2);
+        assert_eq!(count_words("裸网址 https://example.com/a/b/c"), 4);
+        assert_eq!(count_words("- [x] done task"), 2);
     }
 
     #[test]

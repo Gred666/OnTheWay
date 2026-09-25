@@ -7,10 +7,15 @@ import type { DayDoc, Note } from "./types";
 const api = {
   calendarDay: vi.fn(),
   calendarDaySave: vi.fn(),
+  calendarMarked: vi.fn(),
   goalGet: vi.fn(),
   goalSave: vi.fn(),
   noteUpsert: vi.fn(),
   noteGet: vi.fn(),
+  noteList: vi.fn(),
+  noteListFull: vi.fn(),
+  noteDelete: vi.fn(),
+  noteUndelete: vi.fn(),
 };
 
 vi.mock("./backend", () => ({
@@ -208,5 +213,92 @@ describe("forgetCarriedDays", () => {
     useData.setState({ dayDocs: [day("自己写的", { date: "2026-08-29" })] });
     useData.getState().forgetCarriedDays("2026-08-29");
     expect(useData.getState().dayDocs).toHaveLength(1);
+  });
+});
+
+describe("initialize", () => {
+  it("loads each list with one round trip instead of one per note", async () => {
+    const notes = [1, 2, 3].map((n) => ({ ...note(`正文${n}`), id: `n-${n}` }));
+    api.noteListFull.mockImplementation(async (archived: boolean) => (archived ? [] : notes));
+    api.calendarMarked.mockResolvedValue([]);
+
+    await useData.getState().initialize();
+    expect(api.noteListFull).toHaveBeenCalledTimes(2);
+    expect(api.noteGet).not.toHaveBeenCalled();
+    expect(api.noteList).not.toHaveBeenCalled();
+    expect(useData.getState().notes.map((item) => item.contentMd)).toEqual([
+      "正文1",
+      "正文2",
+      "正文3",
+    ]);
+  });
+});
+
+describe("deleteNote / undoDelete", () => {
+  const three = () => ["a", "b", "c"].map((id) => ({ ...note(id), id, title: id.toUpperCase() }));
+
+  it("offers an undo that puts the note back where it was, with fresh content", async () => {
+    useData.setState({ notes: three() });
+    api.noteDelete.mockResolvedValue(undefined);
+    api.noteUndelete.mockResolvedValue(undefined);
+    // 删之前失焦触发的保存可能晚一步落库：撤销后用库里的版本
+    api.noteGet.mockResolvedValue({ ...note("删之前刚存的"), id: "b", title: "B" });
+
+    await useData.getState().deleteNote("b");
+    expect(useData.getState().notes.map((item) => item.id)).toEqual(["a", "c"]);
+    expect(useData.getState().lastDeleted?.note.id).toBe("b");
+
+    expect(await useData.getState().undoDelete()).toBe("b");
+    expect(api.noteUndelete).toHaveBeenCalledWith("b");
+    expect(useData.getState().notes.map((item) => item.id)).toEqual(["a", "b", "c"]);
+    expect(useData.getState().notes[1]?.contentMd).toBe("删之前刚存的");
+    expect(useData.getState().lastDeleted).toBeNull();
+  });
+
+  it("waits for an in-flight delete before undoing it", async () => {
+    useData.setState({ notes: three() });
+    let finishDelete = () => {};
+    const order: string[] = [];
+    api.noteDelete.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDelete = () => {
+            order.push("deleted");
+            resolve();
+          };
+        }),
+    );
+    api.noteUndelete.mockImplementation(async () => {
+      order.push("undeleted");
+    });
+    api.noteGet.mockResolvedValue({ ...note("b"), id: "b" });
+
+    const deleting = useData.getState().deleteNote("b");
+    const undoing = useData.getState().undoDelete();
+    await Promise.resolve();
+    finishDelete();
+    await Promise.all([deleting, undoing]);
+    expect(order).toEqual(["deleted", "undeleted"]);
+    expect(useData.getState().notes.map((item) => item.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("rolls a failed delete back into place and withdraws the undo", async () => {
+    useData.setState({ notes: three() });
+    api.noteDelete.mockRejectedValue(new Error("磁盘只读"));
+
+    await useData.getState().deleteNote("b");
+    expect(useData.getState().notes.map((item) => item.id)).toEqual(["a", "b", "c"]);
+    expect(useData.getState().lastDeleted).toBeNull();
+    expect(useData.getState().error).toBe("磁盘只读");
+  });
+
+  it("does nothing once the undo was dismissed", async () => {
+    useData.setState({ notes: three() });
+    api.noteDelete.mockResolvedValue(undefined);
+    await useData.getState().deleteNote("b");
+    useData.getState().dismissUndo();
+
+    expect(await useData.getState().undoDelete()).toBeNull();
+    expect(api.noteUndelete).not.toHaveBeenCalled();
   });
 });

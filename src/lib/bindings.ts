@@ -46,6 +46,14 @@ async noteList(archived: boolean) : Promise<Result<NoteSummary[], AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+async noteListFull(archived: boolean) : Promise<Result<Note[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_list_full", { archived }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async noteGet(id: string) : Promise<Result<Note, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("note_get", { id }) };
@@ -89,6 +97,14 @@ async noteRestore(id: string) : Promise<Result<null, AppError>> {
 async noteDelete(id: string) : Promise<Result<null, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("note_delete", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteUndelete(id: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_undelete", { id }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

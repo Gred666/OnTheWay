@@ -4,6 +4,7 @@ import { DocumentView } from "@/components/DocumentView";
 import { ReminderCard } from "@/components/ReminderCard";
 import { Sidebar } from "@/components/Sidebar";
 import { TitleBar } from "@/components/TitleBar";
+import { UndoToast } from "@/components/UndoToast";
 import { labelToHorizon, labelToScope, useCurrentDocument } from "@/data/adapter";
 import { useData } from "@/data/store";
 import { cn } from "@/lib/cn";
@@ -232,6 +233,7 @@ export function Shell() {
           {workspace !== "extensions" && <ReminderCard reminder={reminder} />}
         </div>
 
+        <UndoToast />
         <CommandPalette />
       </div>
     </MotionConfig>
