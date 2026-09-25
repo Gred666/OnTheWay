@@ -915,6 +915,99 @@ body {
   animation: otw-fade-in 140ms var(--ease-out-quint) both;
 }
 
+/* ------------------------------------------------------------
+   动态表情（editor/animatedEmoji.ts）
+
+   线稿 + 淡彩：描边是色相本身，淡彩 = 色相 22% 混进纸色（--ae-paper，
+   默认是画布色）。暗色主题下纸色是深色，淡彩跟着变成深色调，不会像
+   GIF 那样带一圈白边。五官（i / ik）是色相混进墨色：亮色下偏深、暗色下偏亮。
+
+   排版上它只占一个汉字的位置：外框 1em 高、和汉字一样落在基线下 0.12em，
+   行盒子永远不会被它撑高（正文行高只有 1.4，1.3em 的框加上下沉就会多出
+   半个像素，标题里多出 4px —— CodeMirror 的高度图就歪了）。图本身画成
+   1.3em，绝对定位压在这个框上，多出来的部分只是视觉溢出。动画只在 SVG
+   里面动 transform / opacity / stroke-dashoffset，不改任何尺寸。
+
+   静止时框里只有一张图（见 animatedEmoji.ts「静止帧」），动起来才叠上活的 SVG。
+   ------------------------------------------------------------ */
+:root {
+  --ae-red: #e5484d;
+  --ae-orange: #f0701f;
+  --ae-amber: #e3a008;
+  --ae-green: #2f9e62;
+  --ae-blue: #2f63d8;
+  --ae-sky: #3a8fd6;
+  --ae-purple: #7c5cd6;
+  --ae-pink: #e0569a;
+  --ae-brown: #9a6440;
+  --ae-slate: #6f7b8c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ae-red: #ff6b6f;
+    --ae-orange: #ff8d4a;
+    --ae-amber: #f5c04a;
+    --ae-green: #58c48a;
+    --ae-blue: #6b93f0;
+    --ae-sky: #62b0f0;
+    --ae-purple: #a78bfa;
+    --ae-pink: #f28cbf;
+    --ae-brown: #c9956c;
+    --ae-slate: #9aa6b6;
+  }
+}
+:root[data-theme="dark"] {
+  --ae-red: #ff6b6f;
+  --ae-orange: #ff8d4a;
+  --ae-amber: #f5c04a;
+  --ae-green: #58c48a;
+  --ae-blue: #6b93f0;
+  --ae-sky: #62b0f0;
+  --ae-purple: #a78bfa;
+  --ae-pink: #f28cbf;
+  --ae-brown: #c9956c;
+  --ae-slate: #9aa6b6;
+}
+
+.otw-ae {
+  --ae-paper: var(--color-canvas);
+  position: relative;
+  display: inline-block;
+  width: 1.3em;
+  height: 1em;
+  vertical-align: -0.12em;
+  line-height: 0;
+}
+/* 静止帧（.otw-ae-still，里面一张图）和动起来时的 SVG（.otw-ae-live）叠在同一个
+   框里：同框同 viewBox，像素对齐，换来换去看不出接缝。框是 1.3em 的正方形，
+   顶在外框上方 0.15em，画出界的部分靠 overflow: visible。
+   部件的配色类在 animatedEmoji.ts 的 EMOJI_PART_CSS（静止帧的图片里要嵌同一份）。 */
+.otw-ae-still,
+.otw-ae-live {
+  position: absolute;
+  top: -0.15em;
+  left: 0;
+  width: 1.3em;
+  height: 1.3em;
+  overflow: visible;
+}
+/* 表格、目录里的静态版本带一个看不见的 Unicode 替身，只给 textContent 和复制用 */
+.otw-ae-alt {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 0;
+  font-size: 1px;
+  pointer-events: none;
+}
+
+/* 编辑器里：比正文字形略大一点，点得中；悬停轻轻亮一下 */
+.otw-editor .cm-otw-ae {
+  margin: 0 0.04em;
+  cursor: pointer;
+  animation: otw-fade-in 140ms var(--ease-out-quint) both;
+}
+
 /* 脚注：正文里是小小的上标徽章，定义行开头是同款徽章 */
 .otw-editor .cm-otw-footnote {
   display: inline-block;

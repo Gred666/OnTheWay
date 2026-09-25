@@ -28,4 +28,10 @@ describe("Markdown outline", () => {
       ["二级标题", 4],
     ]);
   });
+
+  it("shows animated emoji short codes as Unicode in the outline", () => {
+    const outline = buildOutline("## 冲刺 :otw_fire:\n\n> [!NOTE] 完成 :otw_done:\n> 内容");
+    expect(outline.map((item) => item.text)).toContain("冲刺 🔥");
+    expect(outline.map((item) => item.text)).toContain("完成 ✅");
+  });
 });

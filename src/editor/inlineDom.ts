@@ -1,3 +1,4 @@
+import { animatedEmojiFor, inlineAnimatedEmoji } from "./animatedEmoji";
 import { emojiFor } from "./emoji";
 import { decodeEntity } from "./entities";
 import { INLINE_HTML_TAGS, inlineStyleOf, parseTag, safeHref } from "./html";
@@ -8,7 +9,7 @@ import { INLINE_HTML_TAGS, inlineStyleOf, parseTag, safeHref } from "./html";
  * 给表格 widget 的单元格和目录 widget 用 —— 它们不在 CodeMirror 的装饰体系里，
  * 得自己画。永远只产出元素和文本节点，不走 innerHTML，所以没有注入面。
  * 覆盖：代码、粗体、斜体、删除线（一个或两个 `~`）、高亮、链接、双链、转义、
- * 实体、Emoji，以及白名单里的行内 HTML 标签（`<b>` `<mark>` `<sub>` `<span style>`…）
+ * 实体、Emoji（动态表情画成悬停会动的小图），以及白名单里的行内 HTML 标签（`<b>` `<mark>` `<sub>` `<span style>`…）
  * 和 `<br>` 换行。
  */
 const INLINE_RE =
@@ -76,7 +77,12 @@ export function renderInline(text: string): Node[] {
     } else if (entity !== undefined) {
       out.push(document.createTextNode(decodeEntity(entity) ?? entity));
     } else if (emoji !== undefined) {
-      out.push(document.createTextNode(emojiFor(emoji) ?? whole));
+      const animated = animatedEmojiFor(emoji);
+      out.push(
+        animated
+          ? inlineAnimatedEmoji(animated)
+          : document.createTextNode(emojiFor(emoji) ?? whole),
+      );
     } else {
       out.push(document.createTextNode(whole));
     }

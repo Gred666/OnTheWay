@@ -5,6 +5,7 @@ import { SearchInput } from "@/components/SearchInput";
 import { useData } from "@/data/store";
 import type { Note } from "@/data/types";
 import { cn } from "@/lib/cn";
+import { animatedEmojiText } from "@/lib/emojiText";
 import { spring, tween } from "@/lib/motion";
 import {
   ALargeSmall,
@@ -252,7 +253,7 @@ function NoteCard({
             <span className="truncate">{note.title}</span>
           </span>
           <span className="mt-[3px] block truncate text-[11.5px] leading-[1.45] text-muted">
-            {note.excerpt}
+            {animatedEmojiText(note.excerpt)}
           </span>
         </span>
 
