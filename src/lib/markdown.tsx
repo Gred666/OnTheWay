@@ -1,5 +1,6 @@
 import type { OutlineItem } from "@/data/types";
 import { type MarkdownTableModel, parseMarkdownTable } from "@/editor/markdownTable";
+import { animatedEmojiText } from "@/lib/emojiText";
 import { type ReactNode, createElement } from "react";
 
 /* ============================================================
@@ -306,7 +307,7 @@ export function buildOutline(md: string, actionGroupTitle?: string): OutlineItem
     const callout = /^\s*>\s*\[!(.+?)\][+-]?(?:[ \t]+(\S.*?))?\s*$/.exec(source);
     if (heading) {
       const depth = heading[1]!.length;
-      const text = heading[2]!.replace(/\s+#+\s*$/, "").trim();
+      const text = animatedEmojiText(heading[2]!.replace(/\s+#+\s*$/, "").trim());
       items.push({
         id: slug(text, index++, "h"),
         text,
@@ -314,7 +315,7 @@ export function buildOutline(md: string, actionGroupTitle?: string): OutlineItem
         line: lineIndex + 1,
       });
     } else if (source.trim() && setext) {
-      const text = source.trim();
+      const text = animatedEmojiText(source.trim());
       items.push({
         id: slug(text, index++, "h"),
         text,
@@ -323,7 +324,7 @@ export function buildOutline(md: string, actionGroupTitle?: string): OutlineItem
       });
       lineIndex += 1;
     } else if (callout) {
-      const text = (callout[2] ?? callout[1]!).trim();
+      const text = animatedEmojiText((callout[2] ?? callout[1]!).trim());
       items.push({ id: slug(text, index++, "h"), text, level: 1, line: lineIndex + 1 });
     }
   }

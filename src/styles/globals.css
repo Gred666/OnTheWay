@@ -915,6 +915,203 @@ body {
   animation: otw-fade-in 140ms var(--ease-out-quint) both;
 }
 
+/* ------------------------------------------------------------
+   动态表情（editor/animatedEmoji.ts）
+
+   线稿 + 淡彩：描边是色相本身，淡彩 = 色相 22% 混进纸色（--ae-paper，
+   默认是画布色）。暗色主题下纸色是深色，淡彩跟着变成深色调，不会像
+   GIF 那样带一圈白边。五官（i / ik）是色相混进墨色：亮色下偏深、暗色下偏亮。
+
+   排版上它只占一个汉字的位置：外框 1em 高、和汉字一样落在基线下 0.12em，
+   行盒子永远不会被它撑高（正文行高只有 1.4，1.3em 的框加上下沉就会多出
+   半个像素，标题里多出 4px —— CodeMirror 的高度图就歪了）。图本身画成
+   1.3em，绝对定位压在这个框上，多出来的部分只是视觉溢出。动画只在 SVG
+   里面动 transform / opacity / stroke-dashoffset，不改任何尺寸。
+   ------------------------------------------------------------ */
+:root {
+  --ae-red: #e5484d;
+  --ae-orange: #f0701f;
+  --ae-amber: #e3a008;
+  --ae-green: #2f9e62;
+  --ae-blue: #2f63d8;
+  --ae-sky: #3a8fd6;
+  --ae-purple: #7c5cd6;
+  --ae-pink: #e0569a;
+  --ae-brown: #9a6440;
+  --ae-slate: #6f7b8c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ae-red: #ff6b6f;
+    --ae-orange: #ff8d4a;
+    --ae-amber: #f5c04a;
+    --ae-green: #58c48a;
+    --ae-blue: #6b93f0;
+    --ae-sky: #62b0f0;
+    --ae-purple: #a78bfa;
+    --ae-pink: #f28cbf;
+    --ae-brown: #c9956c;
+    --ae-slate: #9aa6b6;
+  }
+}
+:root[data-theme="dark"] {
+  --ae-red: #ff6b6f;
+  --ae-orange: #ff8d4a;
+  --ae-amber: #f5c04a;
+  --ae-green: #58c48a;
+  --ae-blue: #6b93f0;
+  --ae-sky: #62b0f0;
+  --ae-purple: #a78bfa;
+  --ae-pink: #f28cbf;
+  --ae-brown: #c9956c;
+  --ae-slate: #9aa6b6;
+}
+
+.otw-ae {
+  --ae-paper: var(--color-canvas);
+  position: relative;
+  display: inline-block;
+  width: 1.3em;
+  height: 1em;
+  vertical-align: -0.12em;
+  line-height: 0;
+}
+.otw-ae-svg {
+  position: absolute;
+  top: -0.15em;
+  left: 0;
+  width: 1.3em;
+  height: 1.3em;
+  overflow: visible;
+}
+/* 表格、目录里的静态版本带一个看不见的 Unicode 替身，只给 textContent 和复制用 */
+.otw-ae-alt {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 0;
+  font-size: 1px;
+  pointer-events: none;
+}
+
+.otw-ae-svg,
+.otw-ae-svg .hue-amber {
+  --h: var(--ae-amber);
+}
+.otw-ae-svg.hue-red,
+.otw-ae-svg .hue-red {
+  --h: var(--ae-red);
+}
+.otw-ae-svg.hue-orange,
+.otw-ae-svg .hue-orange {
+  --h: var(--ae-orange);
+}
+.otw-ae-svg.hue-green,
+.otw-ae-svg .hue-green {
+  --h: var(--ae-green);
+}
+.otw-ae-svg.hue-blue,
+.otw-ae-svg .hue-blue {
+  --h: var(--ae-blue);
+}
+.otw-ae-svg.hue-sky,
+.otw-ae-svg .hue-sky {
+  --h: var(--ae-sky);
+}
+.otw-ae-svg.hue-purple,
+.otw-ae-svg .hue-purple {
+  --h: var(--ae-purple);
+}
+.otw-ae-svg.hue-pink,
+.otw-ae-svg .hue-pink {
+  --h: var(--ae-pink);
+}
+.otw-ae-svg.hue-brown,
+.otw-ae-svg .hue-brown {
+  --h: var(--ae-brown);
+}
+.otw-ae-svg.hue-slate,
+.otw-ae-svg .hue-slate {
+  --h: var(--ae-slate);
+}
+
+.otw-ae-svg .o {
+  fill: none;
+  stroke: var(--h);
+}
+.otw-ae-svg .t {
+  fill: color-mix(in srgb, var(--h) 22%, var(--ae-paper));
+  stroke: var(--h);
+}
+/* 笑脸的底色要更「黄」一点，不然看着是米色 */
+.otw-ae-svg .t.face {
+  fill: color-mix(in srgb, var(--h) 34%, var(--ae-paper));
+}
+.otw-ae-svg .k {
+  fill: var(--h);
+  stroke: none;
+}
+.otw-ae-svg .p {
+  fill: var(--ae-paper);
+  stroke: var(--h);
+}
+.otw-ae-svg .i {
+  fill: none;
+  stroke: color-mix(in srgb, var(--h) 45%, var(--color-ink));
+}
+.otw-ae-svg .ik {
+  fill: color-mix(in srgb, var(--h) 45%, var(--color-ink));
+  stroke: none;
+}
+.otw-ae-svg .blush {
+  fill: var(--ae-pink);
+  stroke: none;
+  opacity: 0.32;
+}
+.otw-ae-svg .shine {
+  fill: none;
+  stroke: var(--ae-paper);
+  stroke-width: 1.4;
+  opacity: 0.85;
+}
+.otw-ae-svg .shade {
+  fill: var(--h);
+  stroke: none;
+  opacity: 0.28;
+}
+.otw-ae-svg .road {
+  fill: none;
+  stroke: color-mix(in srgb, var(--h) 22%, var(--ae-paper));
+  stroke-width: 4.2;
+}
+.otw-ae-svg .bold {
+  stroke-width: 2.1;
+}
+.otw-ae-svg .thin {
+  stroke-width: 1.3;
+}
+.otw-ae-svg .draw {
+  stroke-dasharray: 1 1;
+}
+.otw-ae-svg .dash {
+  stroke-dasharray: 0.1 0.08;
+}
+.otw-ae-svg .fx {
+  opacity: 0;
+}
+.otw-ae-svg [data-a],
+.otw-ae-svg .otw-ae-body {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* 编辑器里：比正文字形略大一点，点得中；悬停轻轻亮一下 */
+.otw-editor .cm-otw-ae {
+  margin: 0 0.04em;
+  cursor: pointer;
+  animation: otw-fade-in 140ms var(--ease-out-quint) both;
+}
+
 /* 脚注：正文里是小小的上标徽章，定义行开头是同款徽章 */
 .otw-editor .cm-otw-footnote {
   display: inline-block;

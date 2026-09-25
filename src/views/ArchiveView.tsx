@@ -4,6 +4,7 @@ import { SearchInput } from "@/components/SearchInput";
 import type { Note } from "@/data/types";
 import { cn } from "@/lib/cn";
 import { formatSmartCN, toISODate } from "@/lib/date";
+import { animatedEmojiText } from "@/lib/emojiText";
 import { spring, tween } from "@/lib/motion";
 import { RotateCcw } from "lucide-react";
 import { motion } from "motion/react";
@@ -127,7 +128,7 @@ function ArchiveCard({
               {note.title}
             </span>
             <span className="mt-[3px] block truncate text-[11.5px] leading-[1.45] text-muted">
-              {note.excerpt}
+              {animatedEmojiText(note.excerpt)}
             </span>
             <span className="mt-[5px] flex items-center gap-1.5 text-[10.5px] text-faint">
               <span>{note.archiveCategory}</span>

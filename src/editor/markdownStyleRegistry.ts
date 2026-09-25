@@ -99,3 +99,20 @@ export function selectionTouchesRange(
     range.empty ? range.head >= from && range.head <= to : range.from < to && range.to > from,
   );
 }
+
+/**
+ * 选区是否「进到了」一个当字符用的替身里（动态表情）：光标严格落在内部，
+ * 或者选区只切到它的一部分。光标贴在两边、选区整个把它包住都不算 ——
+ * 这时它仍然显示成一个表情。
+ */
+export function selectionEntersRange(
+  ranges: readonly SelectionRangeLike[],
+  from: number,
+  to: number,
+): boolean {
+  return ranges.some((range) =>
+    range.empty
+      ? range.head > from && range.head < to
+      : range.from < to && range.to > from && (range.from > from || range.to < to),
+  );
+}

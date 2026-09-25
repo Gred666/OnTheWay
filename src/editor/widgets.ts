@@ -1,4 +1,12 @@
 import { EditorView, WidgetType } from "@codemirror/view";
+import {
+  type AnimatedEmoji,
+  EmojiPlayer,
+  autoPlay,
+  forgetVisibility,
+  takeIntro,
+  whenVisible,
+} from "./animatedEmoji";
 import { type CalloutHead, type CalloutKind, calloutIcon } from "./callout";
 import { hasRenderableHtml, safeHref, sanitizeHtml } from "./html";
 import { inlinePlainText, renderInline } from "./inlineDom";
@@ -374,6 +382,83 @@ export class GlyphWidget extends WidgetType {
       jumpToSource(view, this.sourcePosition);
     });
     return node;
+  }
+}
+
+/* ---------------- 动态表情 ---------------- */
+
+const emojiPlayers = new WeakMap<HTMLElement, EmojiPlayer>();
+
+/** 某个动态表情替身上的播放器（测试、调试用）。 */
+export function emojiPlayerOf(dom: HTMLElement): EmojiPlayer | undefined {
+  return emojiPlayers.get(dom);
+}
+
+/**
+ * `:otw_fire:` 的替身。
+ *
+ * 和普通 Emoji 不同，它表现得像一个字符：光标停在它旁边时不展开源码
+ * （否则刚插进去看到的就是一串短码），退格整个删掉，方向键一步跨过。
+ * 单击：光标落到点中的那一侧，并重播一遍；双击：展开源码可以改。
+ *
+ * eq 只比短码、不比位置：在它上面打字时 CodeMirror 复用 DOM，
+ * 动画不会从头再来，播放器也不用重建。位置点击时再问（positionOf）。
+ */
+export class AnimatedEmojiWidget extends WidgetType {
+  constructor(
+    readonly emoji: AnimatedEmoji,
+    /** 源码原文（大小写可能和标准短码不同）；它的长度决定单击后光标落在哪 */
+    readonly source: string,
+  ) {
+    super();
+  }
+
+  eq(other: AnimatedEmojiWidget) {
+    return other.emoji === this.emoji && other.source === this.source;
+  }
+
+  toDOM(view: EditorView) {
+    const node = document.createElement("span");
+    node.className = "otw-ae cm-otw-ae";
+    node.setAttribute("role", "img");
+    node.setAttribute("aria-label", this.emoji.name);
+    node.title = `${this.emoji.name}  ${this.emoji.shortcode}\n双击编辑`;
+    node.dataset.emoji = this.emoji.id;
+
+    const player = new EmojiPlayer(this.emoji);
+    emojiPlayers.set(node, player);
+    node.append(player.element);
+
+    // 刚从选择器插进来的：整个弹出来再做动作；其余的第一次露出视口时播一遍
+    // （同时自动播的有上限，见 autoPlay）
+    if (takeIntro(this.emoji)) void player.play({ intro: true });
+    else whenVisible(node, () => autoPlay(player));
+
+    node.addEventListener("pointerenter", () => {
+      if (!player.playing) void player.play();
+    });
+    node.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const from = positionOf(view, node);
+      if (event.detail >= 2) {
+        // 双击：光标放进短码里，源码展开
+        view.dispatch({ selection: { anchor: from + 1 } });
+      } else {
+        const box = node.getBoundingClientRect();
+        const after = event.clientX >= box.left + box.width / 2;
+        view.dispatch({ selection: { anchor: after ? from + this.source.length : from } });
+        void player.play();
+      }
+      view.focus();
+    });
+    return node;
+  }
+
+  destroy(dom: HTMLElement) {
+    forgetVisibility(dom);
+    emojiPlayers.get(dom)?.stop();
+    emojiPlayers.delete(dom);
   }
 }
 

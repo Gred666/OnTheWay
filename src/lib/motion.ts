@@ -106,4 +106,6 @@ export const layoutIds = {
   outlineIndicator: "outline-indicator",
   segmentThumb: (group: string) => `segment-thumb-${group}`,
   calendarDay: "calendar-day-badge",
+  /** 动态表情选择器里的当前格高亮 */
+  emojiCursor: "emoji-cursor",
 } as const;

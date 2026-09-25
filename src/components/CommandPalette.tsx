@@ -2,6 +2,7 @@ import { useApp } from "@/app/store";
 import { useData } from "@/data/store";
 import type { WorkspaceId } from "@/data/types";
 import { cn } from "@/lib/cn";
+import { animatedEmojiText } from "@/lib/emojiText";
 import { spring, tween } from "@/lib/motion";
 import {
   Archive,
@@ -99,7 +100,7 @@ export function CommandPalette() {
       ...notes.map<Cmd>((n) => ({
         id: `note-${n.id}`,
         label: n.title,
-        hint: n.excerpt,
+        hint: animatedEmojiText(n.excerpt),
         icon: Copy,
         group: "笔记",
         run: () => {

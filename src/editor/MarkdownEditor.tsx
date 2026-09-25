@@ -6,6 +6,7 @@ import { languages } from "@codemirror/language-data";
 import { search } from "@codemirror/search";
 import {
   Annotation,
+  EditorSelection,
   EditorState,
   type Extension,
   StateEffect,
@@ -21,7 +22,11 @@ import {
   keymap,
 } from "@codemirror/view";
 import type { SyntaxNode } from "@lezer/common";
-import { useEffect, useRef } from "react";
+import { AnimatePresence } from "motion/react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { EmojiPicker, type EmojiPickerAnchor } from "./EmojiPicker";
+import { type AnimatedEmoji, animatedEmojiFor, primeIntro } from "./animatedEmoji";
 import { type CalloutHead, parseCalloutHead } from "./callout";
 import { codeHighlight } from "./codeHighlight";
 import { type DebouncedSaver, createDebouncedSaver } from "./debouncedSave";
@@ -52,6 +57,7 @@ import {
   hiddenMarkerNodes,
   markdownSourceStyleRules,
   rulesByNode,
+  selectionEntersRange,
   selectionTouchesRange,
   widgetByNode,
 } from "./markdownStyleRegistry";
@@ -59,6 +65,7 @@ import { parseDelimitedTable, parseMarkdownTable } from "./markdownTable";
 import { MathWidget } from "./math";
 import { registerEditorFlush } from "./saveBus";
 import {
+  AnimatedEmojiWidget,
   CalloutBadgeWidget,
   CalloutFoldWidget,
   CodeFenceWidget,
@@ -149,6 +156,12 @@ export function MarkdownEditor({
   onSaveRef.current = onSave;
   onDocumentChangeRef.current = onDocumentChange;
   onWikiLinkRef.current = onWikiLink;
+  /** 动态表情选择器（Mod-E）：开着时是光标的视口坐标 */
+  const [emojiAnchor, setEmojiAnchor] = useState<EmojiPickerAnchor | null>(null);
+  /** 每次打开换一个 key：上一个还在退场时再按快捷键，得到的是一个全新的选择器（重新定位、重新聚焦） */
+  const [emojiSession, setEmojiSession] = useState(0);
+  /** 打开选择器前清掉了折行方向的原选区；没插入就关掉时还原 */
+  const savedSelectionRef = useRef<EditorSelection | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -213,6 +226,31 @@ export function MarkdownEditor({
               return true;
             },
           },
+          {
+            key: "Mod-e",
+            preventDefault: true,
+            run: (view) => {
+              // 光标带着折行方向（assoc，按 End 或点在折行处会有）时，编辑器一失焦
+              // CodeMirror 就会在下一次测量里 enforceCursorAssoc：改写 DOM 选区，
+              // 顺手把焦点抢回正文 —— 选择器的输入框刚聚焦就丢了。先把方向清掉，
+              // Esc 关闭时再还原。
+              const main = view.state.selection.main;
+              savedSelectionRef.current = null;
+              if (main.empty && main.assoc) {
+                savedSelectionRef.current = view.state.selection;
+                view.dispatch({ selection: EditorSelection.cursor(main.head) });
+              }
+              // 光标坐标在 CodeMirror 的测量周期里量，也让已经排下的测量先跑完
+              view.requestMeasure({
+                read: caretAnchor,
+                write: (anchor) => {
+                  setEmojiSession((session) => session + 1);
+                  setEmojiAnchor(anchor);
+                },
+              });
+              return true;
+            },
+          },
         ]),
       ],
     });
@@ -256,6 +294,7 @@ export function MarkdownEditor({
     host.dataset.editorReady = "true";
 
     return () => {
+      setEmojiAnchor(null);
       unregisterFlush();
       if (outlineTimer) clearTimeout(outlineTimer);
       saver.flushQuietly();
@@ -289,13 +328,87 @@ export function MarkdownEditor({
     });
   }, [initialMarkdown]);
 
+  const closeEmojiPicker = useCallback((refocus: boolean) => {
+    setEmojiAnchor(null);
+    const view = viewRef.current;
+    const saved = savedSelectionRef.current;
+    savedSelectionRef.current = null;
+    if (!view) return;
+    // 先聚焦再还原：聚焦时 CodeMirror 可能从 DOM 选区回读一次，会把折行方向冲掉
+    if (refocus) view.focus();
+    if (saved && view.state.selection.main.head === saved.main.head) {
+      view.dispatch({ selection: saved });
+    }
+  }, []);
+
+  const pickEmoji = useCallback((emoji: AnimatedEmoji) => {
+    setEmojiAnchor(null);
+    savedSelectionRef.current = null;
+    const view = viewRef.current;
+    if (!view) return;
+    insertAnimatedEmoji(view, emoji);
+  }, []);
+
   return (
-    <div
-      ref={hostRef}
-      data-editor-stable-island
-      className={fill ? "otw-editor mt-7 selectable" : "otw-editor is-compact mt-7 selectable"}
-    />
+    <>
+      <div
+        ref={hostRef}
+        data-editor-stable-island
+        className={fill ? "otw-editor mt-7 selectable" : "otw-editor is-compact mt-7 selectable"}
+      />
+      {createPortal(
+        <AnimatePresence>
+          {emojiAnchor && (
+            <EmojiPicker
+              key={emojiSession}
+              anchor={emojiAnchor}
+              onPick={pickEmoji}
+              onClose={closeEmojiPicker}
+            />
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
+    </>
   );
+}
+
+/**
+ * 选择器贴着主光标弹出来。光标所在的行量不到坐标（不在渲染范围里）时，
+ * 退到编辑区左上角 —— 宁可位置不那么贴，也不能按了快捷键没反应。
+ */
+function caretAnchor(view: EditorView): EmojiPickerAnchor {
+  const head = view.state.selection.main.head;
+  const coords = view.coordsAtPos(head, 1) ?? view.coordsAtPos(head, -1);
+  if (coords) return { left: coords.left, top: coords.top, bottom: coords.bottom };
+  const box = view.contentDOM.getBoundingClientRect();
+  return { left: box.left, top: box.top, bottom: box.top };
+}
+
+/**
+ * 在每个选区处插入短码，光标落在它后面 —— 替身这时就显示成表情，
+ * 并且因为刚 primeIntro 过，会整个弹出来。
+ *
+ * 两种情况先垫一个空格：
+ * - 前面紧挨着 `:词`：`12:30` 后面直接接 `:otw_fire:`，Markdown 会先把 `:30:`
+ *   认成短码，把我们的开头冒号吃掉；
+ * - 前面紧挨着 `]`：行首的 `[标签]:otw_fire:` 是一条引用定义，不是表情。
+ */
+export function insertAnimatedEmoji(view: EditorView, emoji: AnimatedEmoji): void {
+  const { state } = view;
+  primeIntro(emoji);
+  view.dispatch(
+    state.changeByRange((range) => {
+      const before = state.sliceDoc(Math.max(0, range.from - 64), range.from);
+      const text = (/(?::[A-Za-z0-9_]+|\])$/.test(before) ? " " : "") + emoji.shortcode;
+      return {
+        changes: { from: range.from, to: range.to, insert: text },
+        range: EditorSelection.cursor(range.from + text.length),
+      };
+    }),
+    { userEvent: "input.emoji", scrollIntoView: true },
+  );
+  view.focus();
 }
 
 export interface EditorOutlineHandle {
@@ -1045,6 +1158,19 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
         }
         if (widget === "emoji") {
           const source = state.sliceDoc(node.from, node.to);
+          const animated = animatedEmojiFor(source);
+          if (animated) {
+            if (selectionEntersRange(state.selection.ranges, node.from, node.to)) {
+              addMark(node.from, node.to, "cm-otw-glyph-source");
+            } else {
+              addReplacement(
+                node.from,
+                node.to,
+                Decoration.replace({ widget: new AnimatedEmojiWidget(animated, source) }),
+              );
+            }
+            return false;
+          }
           const glyph = emojiFor(source);
           if (glyph && !selfActive) {
             addReplacement(

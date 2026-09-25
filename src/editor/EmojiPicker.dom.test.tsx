@@ -1,0 +1,206 @@
+// @vitest-environment happy-dom
+
+import { MotionGlobalConfig } from "motion/react";
+import { act } from "react";
+import { type Root, createRoot } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  EmojiPicker,
+  gridRows,
+  loadRecent,
+  moveInGrid,
+  pickerSections,
+  rememberRecent,
+  searchEmojis,
+} from "./EmojiPicker";
+import { ANIMATED_EMOJIS, animatedEmojiFor } from "./animatedEmoji";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+// happy-dom 里 Motion 取消原生动画会留下没人接的 AbortError；这里测的是逻辑，不是动效
+MotionGlobalConfig.skipAnimations = true;
+
+const emoji = (id: string) => animatedEmojiFor(`:otw_${id}:`)!;
+const ids = (list: { id: string }[]) => list.map((item) => item.id);
+
+beforeEach(() => localStorage.clear());
+
+describe("搜索", () => {
+  it("matches Chinese names, synonyms, pinyin, English and the glyph itself", () => {
+    expect(ids(searchEmojis("冲"))).toContain("fire");
+    expect(ids(searchEmojis("火"))).toContain("fire");
+    expect(ids(searchEmojis("huo"))).toContain("fire");
+    expect(ids(searchEmojis("FIRE"))).toEqual(["fire"]);
+    expect(ids(searchEmojis("🔥"))).toEqual(["fire"]);
+    expect(ids(searchEmojis("晚安"))).toEqual(["moon"]);
+  });
+
+  it("accepts the short code the way people type it", () => {
+    expect(ids(searchEmojis(":otw_fire"))).toEqual(["fire"]);
+    expect(ids(searchEmojis(":otw_fire:"))).toEqual(["fire"]);
+  });
+
+  it("returns everything for a blank query and nothing for nonsense", () => {
+    expect(searchEmojis("  ")).toHaveLength(ANIMATED_EMOJIS.length);
+    expect(searchEmojis("zzzqqq")).toEqual([]);
+  });
+});
+
+describe("分区与网格", () => {
+  it("puts recents first, then the four groups", () => {
+    const sections = pickerSections("", [emoji("fire"), emoji("done")]);
+    expect(sections.map((section) => section.id)).toEqual([
+      "recent",
+      "mood",
+      "drive",
+      "way",
+      "daily",
+    ]);
+    expect(ids(sections[0]!.items)).toEqual(["fire", "done"]);
+  });
+
+  it("collapses to a single result section while searching", () => {
+    expect(pickerSections("星", []).map((section) => section.id)).toEqual(["search"]);
+    expect(pickerSections("zzzqqq", [])).toEqual([]);
+  });
+
+  it("walks the grid by row and column even when the recent row is short", () => {
+    const rows = gridRows(pickerSections("", [emoji("fire"), emoji("done")]));
+    expect(rows[0]).toEqual([0, 1]);
+    expect(rows[1]).toEqual([2, 3, 4, 5, 6, 7]);
+    // 从第二行第 5 列往上：最近那行只有两个，落到它最后一个
+    expect(moveInGrid(rows, 6, "ArrowUp")).toBe(1);
+    expect(moveInGrid(rows, 1, "ArrowDown")).toBe(3);
+    expect(moveInGrid(rows, 1, "ArrowRight")).toBe(2);
+    expect(moveInGrid(rows, 0, "ArrowLeft")).toBe(rows.flat().length - 1);
+    // 已经在第一行 / 最后一行：上下不动
+    expect(moveInGrid(rows, 0, "ArrowUp")).toBe(0);
+    const last = rows.flat().length - 1;
+    expect(moveInGrid(rows, last, "ArrowDown")).toBe(last);
+    expect(moveInGrid([], 0, "ArrowDown")).toBe(0);
+  });
+});
+
+describe("最近使用", () => {
+  it("keeps the latest six, most recent first, without duplicates", () => {
+    for (const id of ["fire", "done", "star", "sun", "moon", "rain", "party", "fire"]) {
+      rememberRecent(emoji(id));
+    }
+    expect(ids(loadRecent())).toEqual(["fire", "party", "rain", "moon", "sun", "star"]);
+  });
+
+  it("survives broken or unavailable storage", () => {
+    localStorage.setItem("otw.emoji.recent", "{not json");
+    expect(loadRecent()).toEqual([]);
+    localStorage.setItem("otw.emoji.recent", JSON.stringify(["gone", "fire"]));
+    expect(ids(loadRecent())).toEqual(["fire"]);
+
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    expect(() => rememberRecent(emoji("sun"))).not.toThrow();
+    spy.mockRestore();
+  });
+});
+
+describe("<EmojiPicker>", () => {
+  let root: Root | null = null;
+  let host: HTMLElement;
+
+  function open(props: Partial<Parameters<typeof EmojiPicker>[0]> = {}) {
+    host = document.createElement("div");
+    document.body.append(host);
+    const onPick = vi.fn();
+    const onClose = vi.fn();
+    act(() => {
+      root = createRoot(host);
+      root.render(
+        <EmojiPicker
+          anchor={{ left: 100, top: 100, bottom: 120 }}
+          onPick={onPick}
+          onClose={onClose}
+          {...props}
+        />,
+      );
+    });
+    const input = host.querySelector("input")!;
+    const selected = () =>
+      host.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.dataset.emoji;
+    const key = (init: KeyboardEventInit) =>
+      act(() => {
+        input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init }));
+      });
+    const type = (value: string) =>
+      act(() => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+        setter.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    return { input, selected, key, type, onPick, onClose };
+  }
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    root = null;
+    document.body.replaceChildren();
+  });
+
+  it("focuses the search box and highlights the first emoji", () => {
+    const { input, selected } = open();
+    expect(document.activeElement).toBe(input);
+    expect(selected()).toBe("smile");
+    expect(input.getAttribute("aria-activedescendant")).toMatch(/^otw-emoji-smile-/);
+  });
+
+  it("moves with the arrow keys and inserts with Enter", () => {
+    const { selected, key, onPick } = open();
+    key({ key: "ArrowDown" });
+    key({ key: "ArrowRight" });
+    expect(selected()).toBe("fire");
+    key({ key: "Enter" });
+    expect(onPick).toHaveBeenCalledWith(emoji("fire"));
+    expect(ids(loadRecent())).toEqual(["fire"]);
+  });
+
+  it("ignores Enter while an IME is composing", () => {
+    const { key, onPick } = open();
+    key({ key: "Enter", isComposing: true });
+    key({ key: "Process", keyCode: 229 });
+    expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it("filters as you type and shows an empty state", () => {
+    const { selected, type, key, onPick } = open();
+    type("rocket");
+    expect(selected()).toBe("rocket");
+    key({ key: "Enter" });
+    expect(onPick).toHaveBeenCalledWith(emoji("rocket"));
+
+    type("zzzqqq");
+    expect(host.textContent).toContain("没有找到");
+    key({ key: "Enter" });
+    expect(onPick).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes with Escape or the shortcut (refocusing the editor) and on outside clicks (not)", () => {
+    const { key, onClose } = open();
+    key({ key: "Escape" });
+    expect(onClose).toHaveBeenLastCalledWith(true);
+    key({ key: "e", ctrlKey: true });
+    expect(onClose).toHaveBeenLastCalledWith(true);
+    act(() => {
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(onClose).toHaveBeenLastCalledWith(false);
+  });
+
+  it("picks with the mouse without stealing focus from the search box", () => {
+    const { input, onPick } = open();
+    const star = host.querySelector<HTMLElement>('[data-emoji="star"]')!;
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    star.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    act(() => star.click());
+    expect(onPick).toHaveBeenCalledWith(emoji("star"));
+    expect(document.activeElement).toBe(input);
+  });
+});
