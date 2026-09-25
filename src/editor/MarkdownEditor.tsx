@@ -48,7 +48,6 @@ import {
 } from "./links";
 import { markdownKeymap } from "./markdownKeymap";
 import { markdownSupport } from "./markdownParser";
-import { MathWidget } from "./math";
 import {
   hiddenMarkerNodes,
   markdownSourceStyleRules,
@@ -57,6 +56,7 @@ import {
   widgetByNode,
 } from "./markdownStyleRegistry";
 import { parseDelimitedTable, parseMarkdownTable } from "./markdownTable";
+import { MathWidget } from "./math";
 import { registerEditorFlush } from "./saveBus";
 import {
   CalloutBadgeWidget,

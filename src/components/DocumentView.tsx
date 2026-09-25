@@ -106,7 +106,6 @@ export function DocumentView({
     app.setPendingAnchor(heading ? { docKey: `note-${hit.id}`, heading } : null);
   }, []);
 
-
   const outlineSource = liveMarkdown ?? doc.bodyMd;
   const outline = useMemo(
     () =>

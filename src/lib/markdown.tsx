@@ -272,9 +272,7 @@ export function renderMarkdown(md: string, ns = "h"): ReactNode[] {
           { key, className: b.items.some((it) => it.checked !== null) ? "prose-tasks" : undefined },
           b.items.map((it, j) => (
             <li key={`${key}-${it.text.slice(0, 24)}`}>
-              {it.checked !== null && (
-                <input type="checkbox" checked={it.checked} disabled />
-              )}
+              {it.checked !== null && <input type="checkbox" checked={it.checked} disabled />}
               {renderInline(it.text, `${key}-${j}`)}
             </li>
           )),
