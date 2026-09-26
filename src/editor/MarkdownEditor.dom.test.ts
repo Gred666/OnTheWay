@@ -106,6 +106,31 @@ describe("Typora DOM decorations", () => {
   it("keeps an empty fence reachable instead of folding it out of existence", () => {
     const { parent } = mount("```\n```\n\n后", 999);
     expect(parent.querySelectorAll(".cm-otw-code-fence")).toHaveLength(0);
+    // 没折叠的围栏行照样画成封口那样的框
+    expect(parent.querySelectorAll(".cm-line.cm-otw-fence-source")).toHaveLength(2);
+  });
+
+  it("draws the revealed fence lines as caps of the same size, so the block never jumps", () => {
+    // 光标一进代码块，封口换回源码行；源码行带上 is-open / is-close，
+    // globals.css 按「围栏的几何」把它们排得和封口一样高
+    const source = "前\n\n```ts\nconst value = 1;\n```\n\n后";
+    const { parent, view } = mount(source, 0);
+    expect(parent.querySelectorAll(".cm-line.cm-otw-fence-source")).toHaveLength(0);
+    view.dispatch({ selection: { anchor: source.indexOf("value") } });
+    expect(parent.querySelectorAll(".cm-otw-code-fence")).toHaveLength(0);
+    const open = parent.querySelector(".cm-line.cm-otw-fence-source.is-open");
+    const close = parent.querySelector(".cm-line.cm-otw-fence-source.is-close");
+    expect(open?.textContent).toBe("```ts");
+    expect(close?.textContent).toBe("```");
+    view.dispatch({ selection: { anchor: 0 } });
+    expect(parent.querySelectorAll(".cm-line.cm-otw-fence-source")).toHaveLength(0);
+    expect(parent.querySelectorAll(".cm-otw-code-fence")).toHaveLength(2);
+  });
+
+  it("does not mark an unclosed fence's last line as a closing cap", () => {
+    const { parent } = mount("```js\nlet a;\nlet b;", 8);
+    expect(parent.querySelectorAll(".cm-line.cm-otw-fence-source.is-open")).toHaveLength(1);
+    expect(parent.querySelectorAll(".cm-line.cm-otw-fence-source.is-close")).toHaveLength(0);
   });
 
   it("folds the Setext underline row instead of leaving a blank line", () => {
@@ -115,9 +140,13 @@ describe("Typora DOM decorations", () => {
   });
 
   it("replaces a horizontal rule row without leaving the source line behind", () => {
-    const { parent } = mount("上\n\n---\n\n下", 0);
+    const { parent, view } = mount("上\n\n---\n\n下", 0);
     expect(parent.querySelectorAll(".cm-otw-hr")).toHaveLength(1);
     expect(lines(parent)).toEqual(["上", "", "", "下"]);
+    // 光标放上去：露出 `---`，这一行和分隔线一样高
+    view.dispatch({ selection: { anchor: 4 } });
+    expect(parent.querySelector(".cm-otw-hr")).toBeNull();
+    expect(parent.querySelector(".cm-line.cm-otw-hr-source")?.textContent).toBe("---");
   });
 
   it("renders an inactive GFM table as a real table", () => {

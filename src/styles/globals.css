@@ -891,6 +891,9 @@ body {
   color: var(--color-faint);
   font-family: var(--font-mono);
   font-size: 0.9em;
+  /* 等宽字体的上下伸部和正文字体不一样，按正文的行高排会把这一行撑高
+     零点几像素 —— 光标一进一出，下面整篇跟着抖。行高压到 1，永远落在正文的行盒子里 */
+  line-height: 1;
 }
 .otw-editor .cm-otw-html-block {
   color: var(--color-faint);
@@ -1152,7 +1155,8 @@ body {
 }
 .otw-editor .cm-otw-code-info {
   position: absolute;
-  top: 0.35em;
+  /* 和封口里的语言名同一个位置：封口框里上下居中 */
+  top: calc(var(--fence-gap) + (var(--fence-open) - 11px) / 2);
   right: 12px;
   color: var(--color-faint);
   font-family: var(--font-sans);
@@ -1161,11 +1165,27 @@ body {
   line-height: 1;
 }
 
+/* 围栏的几何。
+   光标不在代码块里时，``` 两行折成封口（widget）；光标一进来，封口换回源码行。
+   两种状态下这一行必须一样高 —— 以前源码行比封口矮 15px：一点进代码块，
+   上面的围栏行缩下去，整块代码连同刚点的那一行一起往上跳；点出来再跳回去。
+   所以封口和源码行共用下面这几个数，源码行用 ::before 画出同样的圆角框。 */
+.otw-editor {
+  /* 代码块和上下文之间的留白 */
+  --fence-gap: 8px;
+  /* 开头封口的高度（含 1px 边框）：语言名和复制按钮在这里 */
+  --fence-open: 28px;
+  /* 结尾封口的高度（含 1px 边框） */
+  --fence-close: 14px;
+  /* 源码行里 ``` 那一行的行高：放进开头封口里，上下居中 */
+  --fence-line: 18px;
+}
+
 /* 折叠掉的围栏行的替身：给代码块封上下两个口，
    顺带在开头那条显示语言名和复制按钮。 */
 .otw-editor .cm-otw-code-fence {
   display: flex;
-  height: 10px;
+  height: var(--fence-close);
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
@@ -1177,13 +1197,13 @@ body {
   animation: otw-fade-in 140ms var(--ease-out-quint) both;
 }
 .otw-editor .cm-otw-fence-block.is-open {
-  padding-top: 0.5em;
+  padding-top: var(--fence-gap);
 }
 .otw-editor .cm-otw-fence-block.is-close {
-  padding-bottom: 0.5em;
+  padding-bottom: var(--fence-gap);
 }
 .otw-editor .cm-otw-code-fence.is-open {
-  height: 28px;
+  height: var(--fence-open);
   border-top: 1px solid var(--color-line-strong);
   border-top-left-radius: 8px;
   border-top-right-radius: 8px;
@@ -1192,6 +1212,53 @@ body {
   border-bottom: 1px solid var(--color-line-strong);
   border-bottom-right-radius: 8px;
   border-bottom-left-radius: 8px;
+}
+
+/* 光标在代码块里时露出来的围栏源码行：和封口一样高、一样的框。
+   框画在 ::before 上（这一行自成层叠上下文，框垫在文字后面），留白那一截透明。
+   ``` 和语言名跟别的语法标记一样用小一号的淡色字。 */
+.otw-editor .cm-line.cm-otw-fence-source {
+  z-index: 0;
+  /* 两侧边框改由 ::before 画；这里留着透明的边框占位，文字不左右挪 */
+  border-right-color: transparent;
+  border-left-color: transparent;
+  background: transparent;
+  color: var(--color-faint);
+  font-size: 13px;
+  line-height: var(--fence-line);
+}
+.otw-editor .cm-line.cm-otw-fence-source::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  /* 绝对定位按内边距盒算，左右各往外推 1px 盖住透明边框，和上下代码行的边框对齐 */
+  inset: 0 -1px;
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-panel);
+  pointer-events: none;
+}
+.otw-editor .cm-line.cm-otw-fence-source.is-open {
+  padding-top: calc(var(--fence-gap) + 1px + (var(--fence-open) - 1px - var(--fence-line)) / 2);
+  padding-bottom: calc((var(--fence-open) - 1px - var(--fence-line)) / 2);
+}
+.otw-editor .cm-line.cm-otw-fence-source.is-open::before {
+  top: var(--fence-gap);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+.otw-editor .cm-line.cm-otw-fence-source.is-close {
+  padding-bottom: calc(var(--fence-gap) + 1px);
+  line-height: calc(var(--fence-close) - 1px);
+}
+.otw-editor .cm-line.cm-otw-fence-source.is-close::before {
+  bottom: var(--fence-gap);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+}
+/* 行高已经按框算好了，里面的 ``` 别再缩小、上抬 —— 那会把这一行撑高零点几像素 */
+.otw-editor .cm-otw-fence-source .cm-otw-syntax-marker {
+  font-size: inherit;
+  vertical-align: baseline;
 }
 .otw-editor .cm-otw-code-lang {
   color: var(--color-faint);
@@ -1483,6 +1550,12 @@ body {
   animation: otw-fade-in 160ms var(--ease-out-quint) both;
 }
 
+/* 光标在分隔线上时露出来的 `---`：和分隔线（1px + 上下各 0.9em）一样高 */
+.otw-editor .cm-line.cm-otw-hr-source {
+  color: var(--color-faint);
+  line-height: calc(1.8em + 1px);
+}
+
 /* ---------- 图片 ---------- */
 
 .otw-editor .cm-otw-image {
@@ -1585,15 +1658,56 @@ body {
   font-size: 0.86em;
   line-height: 1.7;
 }
+/* 和代码块一样：属性块的上下封口（widget）和光标进来后露出的 `---` 源码行一样高，
+   点进属性块时下面的正文不跳。源码行的框同样画在 ::before 上。 */
+.otw-editor {
+  /* 属性块和正文之间的留白 */
+  --frontmatter-gap: 14px;
+  /* 开头 / 结尾封口的高度（含 1px 边框） */
+  --frontmatter-open: 26px;
+  --frontmatter-close: 14px;
+}
 .otw-editor .cm-otw-frontmatter-fence-line {
+  z-index: 0;
+  border-right-color: transparent;
+  border-left-color: transparent;
+  background: transparent;
   color: var(--color-faint);
+  font-size: 13px;
+}
+.otw-editor .cm-otw-frontmatter-fence-line::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  /* 绝对定位按内边距盒算，左右各往外推 1px 盖住透明边框，和上下代码行的边框对齐 */
+  inset: 0 -1px;
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-panel);
+  pointer-events: none;
+}
+.otw-editor .cm-otw-frontmatter-fence-line.is-open {
+  padding-top: 1px;
+  line-height: calc(var(--frontmatter-open) - 1px);
+}
+.otw-editor .cm-otw-frontmatter-fence-line.is-open::before {
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+.otw-editor .cm-otw-frontmatter-fence-line.is-close {
+  padding-bottom: calc(var(--frontmatter-gap) + 1px);
+  line-height: calc(var(--frontmatter-close) - 1px);
+}
+.otw-editor .cm-otw-frontmatter-fence-line.is-close::before {
+  bottom: var(--frontmatter-gap);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
 }
 .otw-editor .cm-otw-frontmatter-block.is-close {
-  padding-bottom: 0.8em;
+  padding-bottom: var(--frontmatter-gap);
 }
 .otw-editor .cm-otw-frontmatter-fence {
   display: flex;
-  height: 10px;
+  height: var(--frontmatter-close);
   align-items: center;
   box-sizing: border-box;
   border-right: 1px solid var(--color-line-strong);
@@ -1604,7 +1718,7 @@ body {
   animation: otw-fade-in 140ms var(--ease-out-quint) both;
 }
 .otw-editor .cm-otw-frontmatter-fence.is-open {
-  height: 26px;
+  height: var(--frontmatter-open);
   border-top: 1px solid var(--color-line-strong);
   border-top-left-radius: 8px;
   border-top-right-radius: 8px;
@@ -1674,8 +1788,18 @@ body {
   cursor: text;
   animation: otw-fade-in 140ms var(--ease-out-quint) both;
 }
+/* 整行注释收成的小标记：和它的源码行（.cm-otw-html-block，0.9em）一样高 ——
+   不加留白、字号跟源码行走，光标进出时下面不跳。小标记本身的大小不变。 */
 .otw-editor .cm-otw-comment-block {
-  padding: 0.25em 0;
+  display: flex;
+  /* 正文行高 1.4（CodeMirror 的 .cm-scroller 定的）；小标记在这一行里上下居中 */
+  height: 1.4em;
+  align-items: center;
+  padding: 0;
+  font-size: 0.9em;
+}
+.otw-editor .cm-otw-comment-block .cm-otw-comment {
+  font-size: 0.8em;
 }
 
 /* ---------- 块级 HTML 的替身 ---------- */
@@ -1809,6 +1933,10 @@ body {
   color: var(--color-muted);
   font-family: var(--font-mono);
   font-size: 0.9em;
+}
+/* 行内公式露出的源码：同上面等宽的源码标记，别把行撑高（整行的公式块源码不受影响） */
+.otw-editor span.cm-otw-math-source {
+  line-height: 1;
 }
 .otw-editor .cm-otw-math.is-error {
   color: var(--color-danger);

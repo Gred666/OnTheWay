@@ -199,6 +199,11 @@ describe("块级构造", () => {
     view.dispatch({ selection: { anchor: 6 } });
     expect(parent.querySelectorAll(".cm-otw-frontmatter-fence")).toHaveLength(0);
     expect(lines(parent).slice(0, 4)).toEqual(["---", "title: 笔记", "tags: [a]", "---"]);
+    // 露出来的 `---` 和封口一样高（globals.css），点进属性块时正文不跳
+    expect(parent.querySelector(".cm-otw-frontmatter-fence-line.is-open")?.textContent).toBe("---");
+    expect(parent.querySelector(".cm-otw-frontmatter-fence-line.is-close")?.textContent).toBe(
+      "---",
+    );
   });
 
   it("keeps front matter folded when a fresh editor sits at position 0", () => {

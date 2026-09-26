@@ -50,3 +50,36 @@ describe("widget 间距不能用 margin", () => {
     });
   }
 });
+
+/**
+ * 代码块 / 属性块的围栏：光标不在里面时是封口 widget，进去以后是源码行。两种
+ * 状态这一行必须一样高，否则一点进代码块，上面的围栏行一变高矮，整块代码连同
+ * 刚点的那一行一起跳。两边都从同一组变量取数，这里守着别有人只改一边。
+ */
+describe("围栏的封口和源码行同高", () => {
+  const uses = (className: string, variable: string) =>
+    declarationsFor(className).some((d) => d.includes(`var(${variable})`));
+
+  it("code fence caps and revealed fence lines share the fence geometry", () => {
+    expect(uses("cm-otw-code-fence.is-open", "--fence-open")).toBe(true);
+    expect(uses("cm-otw-code-fence", "--fence-close")).toBe(true);
+    expect(uses("cm-otw-fence-block.is-open", "--fence-gap")).toBe(true);
+    expect(uses("cm-otw-fence-block.is-close", "--fence-gap")).toBe(true);
+    for (const variable of ["--fence-gap", "--fence-open", "--fence-line"]) {
+      expect(uses("cm-otw-fence-source.is-open", variable), variable).toBe(true);
+    }
+    for (const variable of ["--fence-gap", "--fence-close"]) {
+      expect(uses("cm-otw-fence-source.is-close", variable), variable).toBe(true);
+    }
+  });
+
+  it("front matter caps and revealed fence lines share the front matter geometry", () => {
+    expect(uses("cm-otw-frontmatter-fence.is-open", "--frontmatter-open")).toBe(true);
+    expect(uses("cm-otw-frontmatter-fence", "--frontmatter-close")).toBe(true);
+    expect(uses("cm-otw-frontmatter-block.is-close", "--frontmatter-gap")).toBe(true);
+    expect(uses("cm-otw-frontmatter-fence-line.is-open", "--frontmatter-open")).toBe(true);
+    for (const variable of ["--frontmatter-gap", "--frontmatter-close"]) {
+      expect(uses("cm-otw-frontmatter-fence-line.is-close", variable), variable).toBe(true);
+    }
+  });
+});
