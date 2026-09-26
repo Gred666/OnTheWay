@@ -1686,6 +1686,8 @@ body {
 .otw-editor .cm-otw-html-widget {
   cursor: text;
   animation: otw-block-in var(--duration-base) var(--ease-out-quint) both;
+  /* 编辑区是 break-spaces，不改回来的话 `<li>` 之间的换行和缩进都会变成空行 */
+  white-space: normal;
 }
 .otw-editor .cm-otw-html-widget :is(h1, h2, h3, h4, h5, h6) {
   margin: 0.5em 0 0.25em;
@@ -1711,6 +1713,14 @@ body {
 }
 .otw-editor .cm-otw-html-widget :is(ul, ol) {
   margin: 0.3em 0;
+  padding-left: 1.6em;
+}
+/* 和 Markdown 的定义列表（.cm-otw-dt / .cm-otw-dd）一个样子 */
+.otw-editor .cm-otw-html-widget dt {
+  color: var(--color-ink);
+  font-weight: 650;
+}
+.otw-editor .cm-otw-html-widget dd {
   padding-left: 1.6em;
 }
 .otw-editor .cm-otw-html-widget ul {
