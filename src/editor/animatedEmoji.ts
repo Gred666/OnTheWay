@@ -13,7 +13,7 @@ import {
 
    为什么不是 GIF / Lottie：这套图是我们自己画的线稿，SVG + Web Animations
    API 就够了 —— 矢量、任意缩放都清晰、颜色跟主题变量走、能精确控制
-   「播一次 / 悬停重播 / 循环」、减少动效时停在静止帧，而且不用引 WASM、
+   「看得见就循环、滚出去就停」、减少动效时停在静止帧，而且不用引 WASM、
    不用改 CSP。以后要接外部的彩色动画表情，再上 Lottie。
 
    Markdown 源文里始终只是短码。别的编辑器打开看到的是 `:otw_fire:`，
@@ -101,7 +101,7 @@ export function keyframesOf(steps: readonly Step[]): Keyframe[] {
   });
 }
 
-/** 一个表情播完一轮要多久（含各部件的延迟和重复），循环时据此排下一轮。 */
+/** 一个表情播完一轮要多久（含各部件的延迟和重复），循环的周期据此来定。 */
 export function motionLength(emoji: AnimatedEmojiDesign): number {
   return Math.max(
     0,
@@ -109,19 +109,6 @@ export function motionLength(emoji: AnimatedEmojiDesign): number {
       (motion: EmojiMotion) => (motion.delay ?? 0) + motion.duration * (motion.iterations ?? 1),
     ),
   );
-}
-
-const keyframeCache = new Map<string, Map<string, Keyframe[]>>();
-
-function keyframesFor(emoji: AnimatedEmoji): Map<string, Keyframe[]> {
-  let frames = keyframeCache.get(emoji.id);
-  if (!frames) {
-    frames = new Map(
-      Object.entries(emoji.motion).map(([part, motion]) => [part, keyframesOf(motion.steps)]),
-    );
-    keyframeCache.set(emoji.id, frames);
-  }
-  return frames;
 }
 
 /* ---------------- 部件样式 ----------------
@@ -216,10 +203,11 @@ function templateFor(emoji: AnimatedEmoji): SVGSVGElement {
 }
 
 /* ---------------- 静止帧：一张图 ----------------
-   绝大多数时候表情是静止的。一个活的 SVG 大约 10 个元素，每个都要算样式；
-   一屏几百个时光样式重算就上百毫秒。静止时换成一张图：同一份 SVG 连同
-   当前主题解析好的颜色序列化成 data: 图片，每个表情每套主题只生成一次，
-   同一张图在页面里画多少遍都只解析一次。动起来的时候才把活的 SVG 叠上去。
+   只有看得见的表情在动；CodeMirror 在视口上下多渲染的那些、排队等名额的那些
+   都是静止的。一个活的 SVG 大约 10 个元素，每个都要算样式；一屏几百个时光
+   样式重算就上百毫秒。静止时换成一张图：同一份 SVG 连同当前主题解析好的
+   颜色序列化成 data: 图片，每个表情每套主题只生成一次，同一张图在页面里画
+   多少遍都只解析一次。动起来的时候才把活的 SVG 叠上去。
 
    图不用 <img> 画，而是放进一个和活的 SVG 同框同 viewBox 的小 <svg> 里用
    <image> 画：<img> 的落点会被吸附到整设备像素，而行内 SVG 按亚像素位置
@@ -330,19 +318,39 @@ const INTRO_FRAMES: Keyframe[] = [
   { transform: "scale(1) rotate(0deg)", opacity: 1 },
 ];
 
+/* ---------------- 循环 ----------------
+   一轮动作做完停一会儿，再从头来。停顿期间所有部件的动画都已经结束（fill 只有
+   backwards），SVG 就是一张不动的图，浏览器不用每帧重算它的样式 —— 设计稿里
+   部件平均约三分之一的时间是停着的（等 delay、做完了等别的部件、两轮之间的
+   停顿），这段时间一概不占帧。代价是每轮一个计时器，几十个表情每秒也就几十次。 */
+
+/** 两轮之间停多久。 */
+export const LOOP_GAP = 700;
+
+const keyframeCache = new Map<string, Map<string, Keyframe[]>>();
+
+function keyframesFor(emoji: AnimatedEmoji): Map<string, Keyframe[]> {
+  let frames = keyframeCache.get(emoji.id);
+  if (!frames) {
+    frames = new Map(
+      Object.entries(emoji.motion).map(([part, motion]) => [part, keyframesOf(motion.steps)]),
+    );
+    keyframeCache.set(emoji.id, frames);
+  }
+  return frames;
+}
+
 /**
  * 一个表情实例。静止时宿主里只有一张图（拿不到主题颜色时退回活的 SVG）；
- * 播放时把活的 SVG 叠上去、把图藏起来（display: none，不卸载，图片资源还在，换回来不会闪），
- * 播完再摘掉。两者同一个 viewBox、同一个框，静止帧像素一致。
+ * 循环期间把活的 SVG 叠上去、把图藏起来（display: none，不卸载，图片资源还在，换回来不会闪），
+ * stop() 再摘掉。两者同一个 viewBox、同一个框，静止帧像素一致。
  */
 export class EmojiPlayer {
   private host: HTMLElement | null = null;
   private still: SVGSVGElement | null = null;
   private live: SVGSVGElement | null = null;
   private running: Animation[] = [];
-  /** 每次 play 递增：被打断的那一轮播完时不该去摘新一轮的 SVG */
-  private round = 0;
-  private loopTimer: ReturnType<typeof setTimeout> | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
   private looping = false;
 
   constructor(readonly emoji: AnimatedEmoji) {}
@@ -356,34 +364,58 @@ export class EmojiPlayer {
     host.prepend(this.still);
   }
 
-  /** 当前显示的活 SVG（没在播时为 null，退回模式下就是静止帧本身） */
+  /** 当前显示的活 SVG（还没开始或已经停下时为 null，退回模式下就是静止帧本身） */
   get liveSvg(): SVGSVGElement | null {
     return this.live?.isConnected ? this.live : null;
   }
 
   get playing(): boolean {
-    return this.running.some((animation) => animation.playState === "running");
+    return this.looping;
   }
 
   /**
-   * 从头播一遍。intro：先整个弹出来再做动作（刚插入时用）。
-   * 减少动效时什么也不做 —— 静止态本身就是一张完整的图。
+   * 一直循环（两轮之间停 gap 毫秒），直到 stop()。减少动效时什么也不做 —— 静止态
+   * 本身就是一张完整的图。
+   * - wait：先停在静止帧等这么久再开始第一轮。自动播放用它把同屏的表情错开。
+   * - intro：先整个弹出来再做动作（刚插入时用）。
    */
-  play(options: { intro?: boolean } = {}): Promise<void> {
+  loop(options: { gap?: number; wait?: number; intro?: boolean } = {}): void {
+    this.stop();
+    if (motionReduced() || !this.host) return;
+    this.looping = true;
+    const period = motionLength(this.emoji) + (options.gap ?? LOOP_GAP);
+    const cycle = (intro: boolean) => {
+      if (!this.looping) return;
+      this.timer = setTimeout(() => cycle(false), period + (intro ? INTRO_LEAD : 0));
+      this.playRound(intro);
+    };
+    if (options.intro || !options.wait) cycle(!!options.intro);
+    else this.timer = setTimeout(() => cycle(false), options.wait);
+  }
+
+  /** 停下并回到静止态。 */
+  stop(): void {
+    this.looping = false;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
     this.cancel();
-    const round = ++this.round;
-    if (motionReduced() || !this.host) return Promise.resolve();
+    this.hideLive();
+  }
+
+  /** 从头做一轮动作。上一轮的动画这时都已经结束，取消掉只是释放对象。 */
+  private playRound(intro: boolean): void {
+    this.cancel();
     const svg = this.showLive();
     if (typeof svg.animate !== "function") {
-      this.hideLive();
-      return Promise.resolve();
+      this.stop();
+      return;
     }
-    const lead = options.intro ? INTRO_LEAD : 0;
-    const frames = keyframesFor(this.emoji);
-    if (options.intro) {
+    const lead = intro ? INTRO_LEAD : 0;
+    if (intro) {
       const body = svg.querySelector<SVGGElement>(".otw-ae-body");
       if (body) this.running.push(body.animate(INTRO_FRAMES, { duration: 420, fill: "backwards" }));
     }
+    const frames = keyframesFor(this.emoji);
     for (const part of svg.querySelectorAll<SVGElement>("[data-a]")) {
       const name = part.dataset.a ?? "";
       const motion = this.emoji.motion[name];
@@ -394,42 +426,19 @@ export class EmojiPlayer {
           duration: motion.duration,
           delay: lead + (motion.delay ?? 0),
           iterations: motion.iterations ?? 1,
-          // 带延迟的部件（彩纸、泪滴）在开始前就得处于第一帧，不然会先闪一下静止态
+          // 带延迟的部件（彩纸、泪滴）在开始前就得处于第一帧，不然会先闪一下静止态。
+          // 只要 backwards：做完以后回到底下的静止样式，和最后一帧一样（单测守着），
+          // 而且结束了的动画不再每帧参与样式计算
           fill: "backwards",
         }),
       );
     }
-    const settle = () => {
-      // 播完（或被 stop 打断）后摘掉活的 SVG；被新一轮 play 打断的不管，交给新一轮
-      if (round === this.round && !this.looping) this.hideLive();
-    };
-    // cancel() 会让 finished 以 AbortError 拒绝：被打断不是错误
-    return Promise.all(this.running.map((animation) => animation.finished)).then(settle, settle);
   }
 
-  /** 循环播放，两轮之间停 gap 毫秒。选择器里的当前项用它。 */
-  loop(gap = 650): void {
-    this.stop();
-    if (motionReduced()) return;
-    this.looping = true;
-    const next = () => {
-      if (!this.looping) return;
-      void this.play().then(() => {
-        if (!this.looping) return;
-        this.loopTimer = setTimeout(next, gap);
-      });
-    };
-    next();
-  }
-
-  /** 停下并回到静止态。 */
-  stop(): void {
-    this.looping = false;
-    if (this.loopTimer) clearTimeout(this.loopTimer);
-    this.loopTimer = null;
-    this.round += 1;
-    this.cancel();
-    this.hideLive();
+  private cancel(): void {
+    const running = this.running;
+    this.running = [];
+    for (const animation of running) animation.cancel();
   }
 
   private liveElement(): SVGSVGElement {
@@ -441,7 +450,7 @@ export class EmojiPlayer {
     const svg = this.liveElement();
     if (svg === this.still) return svg;
     if (!svg.isConnected) this.host?.prepend(svg);
-    // display: none：播放期间静止帧不参与布局和绘制；元素和图片资源都留着，换回来不用重新加载
+    // display: none：动画期间静止帧不参与布局和绘制；元素和图片资源都留着，换回来不用重新加载
     if (this.still) this.still.style.display = "none";
     return svg;
   }
@@ -451,67 +460,180 @@ export class EmojiPlayer {
     this.live.remove();
     if (this.still) this.still.style.display = "";
   }
-
-  private cancel(): void {
-    const running = this.running;
-    this.running = [];
-    for (const animation of running) animation.cancel();
-  }
 }
 
-/* ---------------- 进入视口才播 ----------------
-   CodeMirror 会把视口上下一段距离内的行都渲染出来，挂载 ≠ 看得见。
-   全编辑器共用一个 IntersectionObserver，第一次露出来时播一遍。 */
+/* ---------------- 看得见才动 ----------------
+   正文里的表情露出视口就一直循环，滚出去就停回静止帧（一张图，几乎没有成本）。
+   CodeMirror 会把视口上下一段距离内的行都渲染出来，挂载 ≠ 看得见，所以用一个
+   全局共享的 IntersectionObserver 盯着；上下各多看一点，滚进来的时候已经在动了。
 
-const onVisible = new WeakMap<Element, () => void>();
+   同时在动的有上限：满屏几百个表情一起动（小字号、整篇都是表情的极端文档），
+   软件渲染下会掉帧。超出的先停在静止帧排队，前面有滚出去的就依次补上。
+   悬停、点击、刚插入这些用户自己触发的不受限。 */
+
+export const AUTO_PLAY_LIMIT = 48;
+
+interface Watched {
+  player: EmojiPlayer;
+  visible: boolean;
+  /** 占着一个名额 */
+  counted: boolean;
+}
+
+const watched = new Map<Element, Watched>();
+/** 露出来了但名额满了，按先来后到排队 */
+const waiting = new Set<Element>();
+let animating = 0;
 let observer: IntersectionObserver | null = null;
+let motionWatcher: (() => void) | null = null;
 
 function visibilityObserver(): IntersectionObserver | null {
   if (typeof IntersectionObserver === "undefined") return null;
-  observer ??= new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      if (!entry.isIntersecting) continue;
-      const callback = onVisible.get(entry.target);
-      observer?.unobserve(entry.target);
-      onVisible.delete(entry.target);
-      callback?.();
-    }
-  });
+  observer ??= new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        const state = watched.get(entry.target);
+        if (!state) continue;
+        state.visible = entry.isIntersecting;
+        if (state.visible) start(entry.target, state);
+        else halt(entry.target, state);
+      }
+      sweep();
+    },
+    { rootMargin: "64px 0px" },
+  );
   return observer;
 }
 
-export function whenVisible(element: Element, callback: () => void): void {
-  const io = visibilityObserver();
-  if (!io) {
-    callback();
+function start(
+  target: Element,
+  state: Watched,
+  options: { force?: boolean; intro?: boolean } = {},
+) {
+  if (motionReduced()) return;
+  if (state.player.playing && !options.intro) return;
+  if (!options.force && !state.counted && animating >= AUTO_PLAY_LIMIT) {
+    waiting.add(target);
     return;
   }
-  onVisible.set(element, callback);
-  io.observe(element);
+  waiting.delete(target);
+  if (!state.counted) {
+    state.counted = true;
+    animating += 1;
+  }
+  // 自动开始的随机晚一点：同屏同时露出来的一排表情不会齐步走
+  if (options.force) state.player.loop({ intro: options.intro });
+  else state.player.loop({ wait: Math.random() * LOOP_GAP });
 }
 
-export function forgetVisibility(element: Element): void {
-  onVisible.delete(element);
-  observer?.unobserve(element);
+function halt(target: Element, state: Watched) {
+  waiting.delete(target);
+  state.player.stop();
+  if (!state.counted) return;
+  state.counted = false;
+  animating -= 1;
+  // 腾出一个名额：排队的里面第一个还看得见的补上
+  for (const next of waiting) {
+    if (animating >= AUTO_PLAY_LIMIT) break;
+    const queued = watched.get(next);
+    waiting.delete(next);
+    if (queued?.visible && next.isConnected) start(next, queued);
+  }
 }
 
-/* ---------------- 自动播放的预算 ----------------
-   一屏几百个表情同时动，每个表情几个部件、每个部件一条 SVG 动画，软件渲染下
-   能掉到十几帧。「出现时播一遍」这种自动播放同一时刻最多放行这么多个，
-   其余的保持静止帧；悬停、点击、刚插入这些用户自己触发的不受限。 */
+/**
+ * 表格、目录里的表情没有 destroy 钩子，被整块换掉以后只是从文档里摘掉了。
+ * 摘掉时如果它正看得见，观察器会报一次「看不见」，动画在那时就停了；这里再把
+ * 已经不在文档里的清出名单。CodeMirror 的 widget 在 toDOM 时还没挂上去，
+ * 所以只能在观察器回调里清（那时候该挂的都挂上了），不能在登记时清。
+ */
+function sweep() {
+  for (const [target, state] of watched) {
+    if (target.isConnected) continue;
+    halt(target, state);
+    watched.delete(target);
+    observer?.unobserve(target);
+  }
+}
 
-export const AUTO_PLAY_LIMIT = 12;
-let autoPlaying = 0;
-
-/** 预算内就播一遍，超了就不播。返回是否真的播了。 */
-export function autoPlay(player: EmojiPlayer): boolean {
-  if (autoPlaying >= AUTO_PLAY_LIMIT || motionReduced()) return false;
-  autoPlaying += 1;
-  // 被打断（重播、销毁）时 play() 同样会 resolve，名额一定会还回来
-  void player.play().then(() => {
-    autoPlaying -= 1;
+/** 减少动效的开关随时可能拨动：拨上时全部停回静止帧，拨回来时看得见的接着动。 */
+function watchMotionPreference() {
+  if (motionWatcher) return;
+  const recheck = () => {
+    const reduced = motionReduced();
+    for (const [target, state] of watched) {
+      if (reduced) halt(target, state);
+      else if (state.visible) start(target, state);
+    }
+  };
+  const attributes = typeof MutationObserver === "undefined" ? null : new MutationObserver(recheck);
+  attributes?.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-reduce-motion"],
   });
-  return true;
+  const media =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-reduced-motion: reduce)")
+      : null;
+  media?.addEventListener?.("change", recheck);
+  motionWatcher = () => {
+    attributes?.disconnect();
+    media?.removeEventListener?.("change", recheck);
+  };
+}
+
+/**
+ * 露出视口时一直循环、滚出去停下。intro：刚插入的，立刻整个弹出来（不等观察器、不占排队）。
+ * 没有 IntersectionObserver 的环境（测试）直接当作看得见。
+ */
+export function animateWhileVisible(
+  target: HTMLElement,
+  player: EmojiPlayer,
+  options: { intro?: boolean } = {},
+): void {
+  const state: Watched = { player, visible: false, counted: false };
+  watched.set(target, state);
+  watchMotionPreference();
+  if (options.intro) start(target, state, { force: true, intro: true });
+  const io = visibilityObserver();
+  if (io) {
+    io.observe(target);
+  } else {
+    state.visible = true;
+    start(target, state);
+  }
+}
+
+/** 用户碰了它（点击）：从头再来一遍，不管名额。 */
+export function replay(target: Element): void {
+  const state = watched.get(target);
+  if (state) start(target, state, { force: true });
+}
+
+/** 悬停：排队中的（名额满了还没动的）先动起来。 */
+export function wake(target: Element): void {
+  const state = watched.get(target);
+  if (state && !state.player.playing) start(target, state, { force: true });
+}
+
+/** 不再盯着它，停回静止帧（widget 销毁时）。 */
+export function stopAnimating(target: Element): void {
+  const state = watched.get(target);
+  if (!state) return;
+  halt(target, state);
+  watched.delete(target);
+  observer?.unobserve(target);
+}
+
+/** 测试用：清空所有登记，名额归零，下次登记时重新创建观察器。 */
+export function resetAnimationBudget(): void {
+  for (const target of [...watched.keys()]) stopAnimating(target);
+  waiting.clear();
+  animating = 0;
+  observer?.disconnect();
+  observer = null;
+  motionWatcher?.();
+  motionWatcher = null;
 }
 
 /* ---------------- 刚从选择器插入的那一个 ----------------
@@ -531,7 +653,7 @@ export function takeIntro(emoji: AnimatedEmoji): boolean {
 }
 
 /**
- * 表格单元格、[TOC] 这类自己画 DOM 的地方用的静态版本：悬停时播一遍。
+ * 表格单元格、[TOC] 这类自己画 DOM 的地方用的版本：和正文里一样，看得见就一直动。
  * 里面藏一个 Unicode 替身，textContent / 复制都能拿到正常的表情。
  */
 export function inlineAnimatedEmoji(emoji: AnimatedEmoji): HTMLElement {
@@ -546,8 +668,7 @@ export function inlineAnimatedEmoji(emoji: AnimatedEmoji): HTMLElement {
   alt.textContent = emoji.fallback;
   node.append(alt);
   player.mount(node);
-  node.addEventListener("pointerenter", () => {
-    if (!player.playing) void player.play();
-  });
+  animateWhileVisible(node, player);
+  node.addEventListener("pointerenter", () => wake(node));
   return node;
 }
