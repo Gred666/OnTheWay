@@ -1,6 +1,6 @@
-import { type EditorView, WidgetType } from "@codemirror/view";
+import type { EditorView } from "@codemirror/view";
 import type katex from "katex";
-import { positionOf } from "./widgets";
+import { OtwWidget, positionOf } from "./widgets";
 
 /* ============================================================
    `$…$` / `$$…$$` 的 KaTeX 替身。
@@ -44,7 +44,7 @@ function render(engine: Katex, node: HTMLElement, tex: string, display: boolean)
   }
 }
 
-export class MathWidget extends WidgetType {
+export class MathWidget extends OtwWidget {
   constructor(
     private readonly tex: string,
     private readonly display: boolean,
@@ -81,10 +81,10 @@ export class MathWidget extends WidgetType {
       });
     }
 
-    if (!this.display) return node;
+    if (!this.display) return this.settle(node);
     const block = document.createElement("div");
     block.className = "cm-otw-math-block";
     block.append(node);
-    return block;
+    return this.settle(block);
   }
 }

@@ -6,6 +6,7 @@ import { languages } from "@codemirror/language-data";
 import { search } from "@codemirror/search";
 import {
   Annotation,
+  type ChangeSet,
   EditorSelection,
   EditorState,
   type Extension,
@@ -76,16 +77,17 @@ import {
   FrontMatterFenceWidget,
   GlyphWidget,
   HardBreakWidget,
+  HorizontalRuleWidget,
   HtmlBlockWidget,
   type ImageSpec,
   ImageWidget,
   LineBreakWidget,
   ListMarkerWidget,
+  OtwWidget,
   TableWidget,
   TaskWidget,
   type TocEntry,
   TocWidget,
-  horizontalRuleWidget,
 } from "./widgets";
 
 /**
@@ -457,6 +459,35 @@ function selectionTouches(state: EditorState, from: number, to: number): boolean
 
 type DecorationRange = { from: number; to: number; value: Decoration };
 
+/**
+ * 替身该不该播入场动画（见 widgets.ts 的 OtwWidget）：它盖住的源码是不是这一次才
+ * 出现 / 改动的。changes 为 null 表示整篇初次构建（刚打开笔记），全都算新的；
+ * 只动了光标、只滚了视口时 changes 是空的，谁都不算新。
+ * 边界相接也算碰到：刚打完 `:smile:` 最后那个冒号，改动正好落在短码末尾。
+ */
+function freshness(changes: ChangeSet | null): (from: number, to: number) => boolean {
+  if (!changes) return () => true;
+  const touched: number[] = [];
+  changes.iterChangedRanges((_fromA, _toA, fromB, toB) => touched.push(fromB, toB));
+  if (!touched.length) return () => false;
+  return (from, to) => {
+    for (let index = 0; index < touched.length; index += 2) {
+      if (touched[index]! <= to && touched[index + 1]! >= from) return true;
+    }
+    return false;
+  };
+}
+
+/** 把替身放进文档前，按它盖住的范围定下要不要播入场动画。 */
+function markFreshness(
+  widget: WidgetType | undefined,
+  from: number,
+  to: number,
+  fresh: (from: number, to: number) => boolean,
+) {
+  if (widget instanceof OtwWidget) widget.fresh = fresh(from, to);
+}
+
 const toDecorationSet = (items: DecorationRange[]) =>
   Decoration.set(
     items.map(({ from, to, value }) => value.range(from, to)),
@@ -581,8 +612,9 @@ function collectHeadings(state: EditorState, frontMatter: FrontMatterRange | nul
 /** 围栏的语言名：info 串的第一个词，小写。 */
 const fenceLanguage = (info: string) => info.split(/\s+/)[0]?.toLowerCase() ?? "";
 
-function buildBlockDecorations(state: EditorState): TyporaBlockState {
+function buildBlockDecorations(state: EditorState, changes: ChangeSet | null): TyporaBlockState {
   const ranges: DecorationRange[] = [];
+  const fresh = freshness(changes);
   const foldedLines = new Set<number>();
   const referenceLabels = new Set<string>();
   const abbreviations = new Map<string, string>();
@@ -593,6 +625,7 @@ function buildBlockDecorations(state: EditorState): TyporaBlockState {
 
   const foldLine = (from: number, to: number, widget?: WidgetType) => {
     if (to <= from) return;
+    markFreshness(widget, from, to, fresh);
     foldedLines.add(from);
     ranges.push({ from, to, value: Decoration.replace({ block: true, widget }) });
   };
@@ -601,6 +634,7 @@ function buildBlockDecorations(state: EditorState): TyporaBlockState {
     if (to <= from) return;
     const first = state.doc.lineAt(from);
     const last = state.doc.lineAt(to);
+    markFreshness(widget, first.from, last.to, fresh);
     for (let number = first.number; number <= last.number; number += 1) {
       foldedLines.add(state.doc.line(number).from);
     }
@@ -655,9 +689,8 @@ function buildBlockDecorations(state: EditorState): TyporaBlockState {
       lineClass(open.from, "cm-otw-frontmatter cm-otw-frontmatter-fence-line is-open");
       lineClass(close.from, "cm-otw-frontmatter cm-otw-frontmatter-fence-line is-close");
     } else {
-      const firstKey = state.doc.line(open.number + 1).from;
-      foldLine(open.from, open.to, new FrontMatterFenceWidget("open", firstKey));
-      foldLine(close.from, close.to, new FrontMatterFenceWidget("close", firstKey));
+      foldLine(open.from, open.to, new FrontMatterFenceWidget("open"));
+      foldLine(close.from, close.to, new FrontMatterFenceWidget("close"));
     }
   }
 
@@ -725,7 +758,7 @@ function buildBlockDecorations(state: EditorState): TyporaBlockState {
 
       if (name === "CommentBlock") {
         if (!selectionTouches(state, node.from, node.to)) {
-          foldRange(node.from, node.to, new CommentWidget(true, node.from));
+          foldRange(node.from, node.to, new CommentWidget(true));
         }
         return false;
       }
@@ -765,7 +798,7 @@ function buildBlockDecorations(state: EditorState): TyporaBlockState {
         // 分隔线独占一行时整行替换，别让源码行留成一条空行。
         if (line.from === node.from && line.to === node.to) {
           if (!selectionTouches(state, node.from, node.to)) {
-            foldLine(line.from, line.to, horizontalRuleWidget);
+            foldLine(line.from, line.to, new HorizontalRuleWidget());
           } else {
             // 露出来的 `---` 和分隔线一样高，光标进出时下面的正文不跳
             lineClass(line.from, "cm-otw-hr-source");
@@ -797,11 +830,7 @@ function buildBlockDecorations(state: EditorState): TyporaBlockState {
           foldRange(
             bodyFrom,
             node.to,
-            new CalloutFoldWidget(
-              last.number - line.number,
-              head.kind,
-              line.from + head.foldOffset,
-            ),
+            new CalloutFoldWidget(last.number - line.number, head.kind, head.foldOffset),
           );
           return false;
         }
@@ -826,12 +855,13 @@ function buildBlockDecorations(state: EditorState): TyporaBlockState {
 }
 
 export const typoraBlockDecorations = StateField.define<TyporaBlockState>({
-  create: buildBlockDecorations,
+  // 初次构建（刚打开这篇）没有 changes：替身全都算新出现，照常播入场动画
+  create: (state) => buildBlockDecorations(state, null),
   update(value, transaction) {
     // 折叠与否取决于光标在不在块里，所以选区变化也要重算。
     // 文档没变时旧值里的位置依然有效，直接沿用。
     if (transaction.docChanged || transaction.selection) {
-      return buildBlockDecorations(transaction.state);
+      return buildBlockDecorations(transaction.state, transaction.changes);
     }
     return value;
   },
@@ -848,8 +878,9 @@ export interface TyporaInlineState {
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-function buildInlineDecorations(view: EditorView): TyporaInlineState {
+function buildInlineDecorations(view: EditorView, changes: ChangeSet | null): TyporaInlineState {
   const { state } = view;
+  const fresh = freshness(changes);
   const block = state.field(typoraBlockDecorations, false);
   const foldedLines = block?.foldedLines;
   const referenceLabels = block?.referenceLabels;
@@ -884,6 +915,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
       ranges.push({ from, to, value: Decoration.mark({ class: className, attributes }) });
   };
   const addReplacement = (from: number, to: number, value: Decoration) => {
+    markFreshness(value.spec.widget, from, to, fresh);
     const range = { from, to, value };
     ranges.push(range);
     atomicRanges.push(range);
@@ -956,11 +988,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
     if (tag.name === "br" && !tag.closing) {
       if (selfActive) addMark(node.from, node.to, "cm-otw-html");
       else
-        addReplacement(
-          node.from,
-          node.to,
-          Decoration.replace({ widget: new LineBreakWidget(node.from) }),
-        );
+        addReplacement(node.from, node.to, Decoration.replace({ widget: new LineBreakWidget() }));
       return;
     }
     if (tag.name === "img" && !tag.closing) {
@@ -1041,7 +1069,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
           addReplacement(
             line.from,
             line.from + footnote[0].length,
-            Decoration.replace({ widget: new FootnoteWidget(footnote[1]!, "def", line.from + 2) }),
+            Decoration.replace({ widget: new FootnoteWidget(footnote[1]!, "def") }),
           );
         }
         continue;
@@ -1149,7 +1177,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
           addReplacement(
             node.from,
             node.to,
-            Decoration.replace({ widget: new TaskWidget(checked, node.from, node.to) }),
+            Decoration.replace({ widget: new TaskWidget(checked) }),
           );
           return;
         }
@@ -1185,7 +1213,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
               node.from,
               node.to,
               Decoration.replace({
-                widget: new GlyphWidget("emoji", glyph, source, node.from + 1),
+                widget: new GlyphWidget("emoji", glyph, source),
               }),
             );
           } else {
@@ -1201,7 +1229,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
               node.from,
               node.to,
               Decoration.replace({
-                widget: new GlyphWidget("entity", glyph, source, node.from + 1),
+                widget: new GlyphWidget("entity", glyph, source),
               }),
             );
           } else {
@@ -1219,7 +1247,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
               addReplacement(
                 node.from,
                 markerTo,
-                Decoration.replace({ widget: new HardBreakWidget(node.from) }),
+                Decoration.replace({ widget: new HardBreakWidget() }),
               );
             }
           }
@@ -1259,7 +1287,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
             addReplacement(
               node.from,
               node.to,
-              Decoration.replace({ widget: new CommentWidget(false, node.from) }),
+              Decoration.replace({ widget: new CommentWidget(false) }),
             );
           }
           return false;
@@ -1284,7 +1312,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
               Decoration.replace({
                 widget: taskGap
                   ? undefined
-                  : new ListMarkerWidget(listMarkerText(node.node, marker), node.from),
+                  : new ListMarkerWidget(listMarkerText(node.node, marker)),
               }),
             );
           } else {
@@ -1298,7 +1326,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
             node.from,
             node.to,
             Decoration.replace({
-              widget: new CodeInfoWidget(state.sliceDoc(node.from, node.to), node.from),
+              widget: new CodeInfoWidget(state.sliceDoc(node.from, node.to)),
             }),
           );
           return;
@@ -1313,7 +1341,8 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
             const calloutLabel = head && CALLOUT_LABEL_RE.exec(text);
             if (head && calloutLabel) {
               const headActive = selectionTouches(state, line.from, line.to);
-              const foldPosition = head.fold ? line.from + head.foldOffset : null;
+              // 折叠符离徽章开头多远（徽章从 `[` 起，折叠符紧跟在 `]` 后面）
+              const foldOffset = head.fold ? line.from + head.foldOffset - node.from : null;
               if (headActive) {
                 addMark(node.from, node.to, "cm-otw-callout-label");
                 addSyntaxMarker(node.from, node.from + 2, true);
@@ -1323,7 +1352,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
                   node.from,
                   node.to + (head.fold ? 1 : 0),
                   Decoration.replace({
-                    widget: new CalloutBadgeWidget(head, node.from + 2, foldPosition),
+                    widget: new CalloutBadgeWidget(head, foldOffset),
                   }),
                 );
               }
@@ -1346,7 +1375,6 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
                     widget: new FootnoteWidget(
                       footnote[1]!,
                       "ref",
-                      node.from + 2,
                       footnotes?.get(footnote[1]!) ?? "",
                     ),
                   }),
@@ -1492,7 +1520,7 @@ function buildInlineDecorations(view: EditorView): TyporaInlineState {
       addReplacement(
         from,
         to,
-        Decoration.replace({ widget: new GlyphWidget("smart", glyph, match[0], from) }),
+        Decoration.replace({ widget: new GlyphWidget("smart", glyph, match[0]) }),
       );
     }
 
@@ -1523,7 +1551,8 @@ const typoraInlineDecorations = ViewPlugin.fromClass(
     atomic: DecorationSet;
 
     constructor(view: EditorView) {
-      const built = buildInlineDecorations(view);
+      // 刚挂上：替身全都算新出现，照常播入场动画
+      const built = buildInlineDecorations(view, null);
       this.decorations = built.decorations;
       this.atomic = built.atomic;
     }
@@ -1531,7 +1560,8 @@ const typoraInlineDecorations = ViewPlugin.fromClass(
     update(update: ViewUpdate) {
       // 视口滚动同样要重算 —— 行内装饰只覆盖看得见的那一段。
       if (update.docChanged || update.viewportChanged || update.selectionSet) {
-        const built = buildInlineDecorations(update.view);
+        // 只动了光标 / 视口时 changes 是空的：这时重建出来的替身不再重放入场动画
+        const built = buildInlineDecorations(update.view, update.changes);
         this.decorations = built.decorations;
         this.atomic = built.atomic;
       }

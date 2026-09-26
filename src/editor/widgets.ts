@@ -40,6 +40,29 @@ export function positionOf(view: EditorView, dom: HTMLElement): number {
   return view.posAtDOM(dom);
 }
 
+/**
+ * 所有替身的基类，只多一个开关：这一份 DOM 要不要播入场动画。
+ *
+ * 替身的 DOM 每创建一次，CSS 里的入场动画（淡入、弹出）就播一次。可「创建」不都是
+ * 「新出现」：光标从一个语法里移开，源码换回替身，也是新建一份 DOM —— 以前每次
+ * 光标离开，列表圆点、徽章、表格都从透明重新淡入一遍，看着就是闪了一下。
+ *
+ * 所以由装饰层在把替身放进文档时判断（MarkdownEditor 里的 freshness）：这段源码是
+ * 这一下才打出来 / 改动过的，或者整篇刚打开，才播；光标移开、滚进视口、别处的
+ * 改动带来的重建，直接以最终状态出现（加 is-settled，CSS 里关掉入场动画）。
+ *
+ * fresh 不进 eq：同一个替身不会因为这个开关不同就被重建。
+ */
+export abstract class OtwWidget extends WidgetType {
+  fresh = true;
+
+  /** toDOM 返回根节点前过一下：不是新内容就标成 is-settled */
+  protected settle<T extends Element>(dom: T): T {
+    if (!this.fresh) dom.classList.add("is-settled");
+    return dom;
+  }
+}
+
 function svg(viewBox: string, d: string, className: string): SVGSVGElement {
   const node = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   node.setAttribute("viewBox", viewBox);
@@ -59,17 +82,20 @@ function svg(viewBox: string, d: string, className: string): SVGSVGElement {
 
 /* ---------------- 任务勾选框 ---------------- */
 
-export class TaskWidget extends WidgetType {
-  constructor(
-    private readonly checked: boolean,
-    private readonly from: number,
-    private readonly to: number,
-  ) {
+/*
+ * 下面这些小替身的身份（eq）里都不放文档位置，点击时再用 positionOf 问 CodeMirror。
+ * 位置进了 eq 的话，在它上方打一个字，后面同屏的每一个替身都会被判定为「换了个
+ * widget」而重建 DOM、重放入场动画 —— 在列表第一项里打一个字，下面十几个圆点
+ * 一起闪一下。
+ */
+
+export class TaskWidget extends OtwWidget {
+  constructor(private readonly checked: boolean) {
     super();
   }
 
   eq(other: TaskWidget) {
-    return other.checked === this.checked && other.from === this.from && other.to === this.to;
+    return other.checked === this.checked;
   }
 
   toDOM(view: EditorView) {
@@ -82,12 +108,12 @@ export class TaskWidget extends WidgetType {
     box.append(svg("0 0 16 16", "M3.5 8.5l3 3 6-6.5", "cm-otw-task-check"));
     box.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      view.dispatch({
-        changes: { from: this.from, to: this.to, insert: this.checked ? "[ ]" : "[x]" },
-      });
+      // 勾选框替身盖住的正好是 `[ ]` / `[x]` 这三个字符
+      const from = positionOf(view, box);
+      view.dispatch({ changes: { from, to: from + 3, insert: this.checked ? "[ ]" : "[x]" } });
       view.focus();
     });
-    return box;
+    return this.settle(box);
   }
 }
 
@@ -97,16 +123,13 @@ export class TaskWidget extends WidgetType {
  * 显示什么由调用方算好传进来：有序列表按在列表里的位置自动编号（源码里写
  * `1. 1. 1.` 也显示 1 2 3），无序列表按嵌套深度换 • ◦ ▪。
  */
-export class ListMarkerWidget extends WidgetType {
-  constructor(
-    private readonly display: string,
-    private readonly sourcePosition: number,
-  ) {
+export class ListMarkerWidget extends OtwWidget {
+  constructor(private readonly display: string) {
     super();
   }
 
   eq(other: ListMarkerWidget) {
-    return other.display === this.display && other.sourcePosition === this.sourcePosition;
+    return other.display === this.display;
   }
 
   toDOM(view: EditorView) {
@@ -115,24 +138,21 @@ export class ListMarkerWidget extends WidgetType {
     marker.textContent = this.display;
     marker.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      jumpToSource(view, this.sourcePosition);
+      jumpToSource(view, positionOf(view, marker));
     });
-    return marker;
+    return this.settle(marker);
   }
 }
 
 /* ---------------- 代码块 ---------------- */
 
-export class CodeInfoWidget extends WidgetType {
-  constructor(
-    private readonly language: string,
-    private readonly sourcePosition: number,
-  ) {
+export class CodeInfoWidget extends OtwWidget {
+  constructor(private readonly language: string) {
     super();
   }
 
   eq(other: CodeInfoWidget) {
-    return other.language === this.language && other.sourcePosition === this.sourcePosition;
+    return other.language === this.language;
   }
 
   toDOM(view: EditorView) {
@@ -141,9 +161,9 @@ export class CodeInfoWidget extends WidgetType {
     label.textContent = this.language;
     label.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      jumpToSource(view, this.sourcePosition);
+      jumpToSource(view, positionOf(view, label));
     });
-    return label;
+    return this.settle(label);
   }
 }
 
@@ -152,7 +172,7 @@ const COPY_ICON =
 const DONE_ICON = "M4 9.5l3.5 3.5L15 5";
 
 /** 折叠掉的围栏行本身的替身：代码块的上下封口，开头那条顺带显示语言名和复制按钮。 */
-export class CodeFenceWidget extends WidgetType {
+export class CodeFenceWidget extends OtwWidget {
   constructor(
     private readonly side: "open" | "close",
     private readonly language: string,
@@ -181,7 +201,7 @@ export class CodeFenceWidget extends WidgetType {
       cap.append(this.copyButton(view));
     }
     block.append(cap);
-    return block;
+    return this.settle(block);
   }
 
   private copyButton(view: EditorView): HTMLButtonElement {
@@ -248,15 +268,18 @@ async function copyText(text: string, view: EditorView): Promise<boolean> {
 
 /* ---------------- 分隔线 ---------------- */
 
-class HorizontalRuleWidget extends WidgetType {
+/** 每次构建装饰都新建一个（fresh 是逐个设的），所有分隔线彼此相等。 */
+export class HorizontalRuleWidget extends OtwWidget {
+  eq() {
+    return true;
+  }
+
   toDOM() {
     const rule = document.createElement("div");
     rule.className = "cm-otw-hr";
-    return rule;
+    return this.settle(rule);
   }
 }
-
-export const horizontalRuleWidget = new HorizontalRuleWidget();
 
 /* ---------------- 图片 ---------------- */
 
@@ -269,7 +292,7 @@ export interface ImageSpec {
   height: number | null;
 }
 
-export class ImageWidget extends WidgetType {
+export class ImageWidget extends OtwWidget {
   constructor(private readonly image: ImageSpec) {
     super();
   }
@@ -301,13 +324,13 @@ export class ImageWidget extends WidgetType {
     image.addEventListener("error", () => settle("is-error"));
     image.src = this.image.source;
     if (image.complete && image.naturalWidth > 0) settle("is-loaded");
-    return image;
+    return this.settle(image);
   }
 }
 
 /* ---------------- 表格 ---------------- */
 
-export class TableWidget extends WidgetType {
+export class TableWidget extends OtwWidget {
   private readonly key: string;
 
   constructor(private readonly table: MarkdownTableModel) {
@@ -347,30 +370,24 @@ export class TableWidget extends WidgetType {
       });
     }
     block.append(table);
-    return block;
+    return this.settle(block);
   }
 }
 
 /* ---------------- 行内小替身：Emoji / 实体 / 硬换行 ---------------- */
 
 /** `:smile:` → 😄 / `&mdash;` → — / `---` → —。点一下光标回到源码，可以继续改。 */
-export class GlyphWidget extends WidgetType {
+export class GlyphWidget extends OtwWidget {
   constructor(
     private readonly kind: "emoji" | "entity" | "smart",
     private readonly glyph: string,
     private readonly source: string,
-    private readonly sourcePosition: number,
   ) {
     super();
   }
 
   eq(other: GlyphWidget) {
-    return (
-      other.kind === this.kind &&
-      other.glyph === this.glyph &&
-      other.source === this.source &&
-      other.sourcePosition === this.sourcePosition
-    );
+    return other.kind === this.kind && other.glyph === this.glyph && other.source === this.source;
   }
 
   toDOM(view: EditorView) {
@@ -380,9 +397,11 @@ export class GlyphWidget extends WidgetType {
     node.title = this.source;
     node.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      jumpToSource(view, this.sourcePosition);
+      // 短码、实体把光标放进 `:` / `&` 后面，源码才会展开；智能标点放在它前面就行
+      const inside = this.kind === "smart" ? 0 : 1;
+      jumpToSource(view, positionOf(view, node) + inside);
     });
-    return node;
+    return this.settle(node);
   }
 }
 
@@ -406,7 +425,7 @@ export function emojiPlayerOf(dom: HTMLElement): EmojiPlayer | undefined {
  * eq 只比短码、不比位置：在它上面打字时 CodeMirror 复用 DOM，
  * 动画不会从头再来，播放器也不用重建。位置点击时再问（positionOf）。
  */
-export class AnimatedEmojiWidget extends WidgetType {
+export class AnimatedEmojiWidget extends OtwWidget {
   constructor(
     readonly emoji: AnimatedEmoji,
     /** 源码原文（大小写可能和标准短码不同）；它的长度决定单击后光标落在哪 */
@@ -451,7 +470,7 @@ export class AnimatedEmojiWidget extends WidgetType {
       }
       view.focus();
     });
-    return node;
+    return this.settle(node);
   }
 
   destroy(dom: HTMLElement) {
@@ -461,13 +480,9 @@ export class AnimatedEmojiWidget extends WidgetType {
 }
 
 /** 硬换行（行尾两个空格或反斜杠）：留一个极淡的 ↵，否则谁也看不出这里有东西。 */
-export class HardBreakWidget extends WidgetType {
-  constructor(private readonly sourcePosition: number) {
-    super();
-  }
-
-  eq(other: HardBreakWidget) {
-    return other.sourcePosition === this.sourcePosition;
+export class HardBreakWidget extends OtwWidget {
+  eq() {
+    return true;
   }
 
   toDOM(view: EditorView) {
@@ -477,9 +492,9 @@ export class HardBreakWidget extends WidgetType {
     node.title = "硬换行";
     node.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      jumpToSource(view, this.sourcePosition);
+      jumpToSource(view, positionOf(view, node));
     });
-    return node;
+    return this.settle(node);
   }
 }
 
@@ -496,12 +511,15 @@ export function toggleCalloutFold(view: EditorView, foldPosition: number): void 
   });
 }
 
-export class CalloutBadgeWidget extends WidgetType {
+/**
+ * `[!标签]` 的徽章。替身盖住的是 `[!标签]`（可折叠时连同后面的 `-` / `+`），
+ * 所以折叠符离替身开头的距离是固定的，存距离、不存位置。
+ */
+export class CalloutBadgeWidget extends OtwWidget {
   constructor(
     private readonly head: Pick<CalloutHead, "label" | "kind" | "fold">,
-    private readonly sourcePosition: number,
-    /** 折叠符在文档里的位置；不可折叠时是 null */
-    private readonly foldPosition: number | null,
+    /** 折叠符离替身开头几个字符；不可折叠时是 null */
+    private readonly foldOffset: number | null,
   ) {
     super();
   }
@@ -511,8 +529,7 @@ export class CalloutBadgeWidget extends WidgetType {
       other.head.label === this.head.label &&
       other.head.kind === this.head.kind &&
       other.head.fold === this.head.fold &&
-      other.sourcePosition === this.sourcePosition &&
-      other.foldPosition === this.foldPosition
+      other.foldOffset === this.foldOffset
     );
   }
 
@@ -522,27 +539,33 @@ export class CalloutBadgeWidget extends WidgetType {
     const text = document.createElement("span");
     text.textContent = this.head.label;
     badge.append(calloutIcon(this.head.kind), text);
-    const foldPosition = this.foldPosition;
-    if (this.head.fold && foldPosition !== null) {
+    const foldOffset = this.foldOffset;
+    if (this.head.fold && foldOffset !== null) {
       badge.classList.add(this.head.fold === "-" ? "is-collapsed" : "is-expanded");
       badge.title = this.head.fold === "-" ? "展开" : "收起";
       badge.append(svg("0 0 24 24", CHEVRON, "cm-otw-callout-chevron"));
     }
     badge.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      if (this.head.fold && foldPosition !== null) toggleCalloutFold(view, foldPosition);
-      else jumpToSource(view, this.sourcePosition);
+      const from = positionOf(view, badge);
+      if (this.head.fold && foldOffset !== null) toggleCalloutFold(view, from + foldOffset);
+      // 光标放到 `[!` 后面，标签露出来可以改
+      else jumpToSource(view, from + 2);
     });
-    return badge;
+    return this.settle(badge);
   }
 }
 
-/** 收起的 callout 正文的替身：一行「… 展开 N 行」。 */
-export class CalloutFoldWidget extends WidgetType {
+/**
+ * 收起的 callout 正文的替身：一行「… 展开 N 行」。它盖住的是标签行下面的正文，
+ * 折叠符在上一行（标签行）的固定列上，存列号、不存位置。
+ */
+export class CalloutFoldWidget extends OtwWidget {
   constructor(
     private readonly lineCount: number,
     private readonly kind: CalloutKind,
-    private readonly foldPosition: number,
+    /** 折叠符在标签行里的列 */
+    private readonly foldColumn: number,
   ) {
     super();
   }
@@ -551,7 +574,7 @@ export class CalloutFoldWidget extends WidgetType {
     return (
       other.lineCount === this.lineCount &&
       other.kind === this.kind &&
-      other.foldPosition === this.foldPosition
+      other.foldColumn === this.foldColumn
     );
   }
 
@@ -564,10 +587,11 @@ export class CalloutFoldWidget extends WidgetType {
     button.textContent = `… 展开 ${this.lineCount} 行`;
     button.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      toggleCalloutFold(view, this.foldPosition);
+      const head = view.state.doc.lineAt(Math.max(0, positionOf(view, block) - 1));
+      toggleCalloutFold(view, head.from + this.foldColumn);
     });
     block.append(button);
-    return block;
+    return this.settle(block);
   }
 }
 
@@ -593,23 +617,17 @@ export function footnoteReferenceAt(view: EditorView, id: string): number | null
  * 脚注徽章。引用端悬停能看到脚注内容，点一下跳到定义；定义端点一下跳回第一处引用。
  * 要改脚注本身，点徽章旁边的文字就行。
  */
-export class FootnoteWidget extends WidgetType {
+export class FootnoteWidget extends OtwWidget {
   constructor(
     private readonly id: string,
     private readonly role: "ref" | "def",
-    private readonly sourcePosition: number,
     private readonly preview = "",
   ) {
     super();
   }
 
   eq(other: FootnoteWidget) {
-    return (
-      other.id === this.id &&
-      other.role === this.role &&
-      other.sourcePosition === this.sourcePosition &&
-      other.preview === this.preview
-    );
+    return other.id === this.id && other.role === this.role && other.preview === this.preview;
   }
 
   toDOM(view: EditorView) {
@@ -629,7 +647,8 @@ export class FootnoteWidget extends WidgetType {
           ? footnoteDefinitionAt(view, this.id)
           : footnoteReferenceAt(view, this.id);
       if (target === null) {
-        jumpToSource(view, this.sourcePosition);
+        // 另一端不存在：光标放进 `[^` 后面，露出源码
+        jumpToSource(view, positionOf(view, node) + 2);
         return;
       }
       view.dispatch({
@@ -638,7 +657,7 @@ export class FootnoteWidget extends WidgetType {
       });
       view.focus();
     });
-    return node;
+    return this.settle(node);
   }
 }
 
@@ -667,7 +686,7 @@ function findHeading(view: EditorView, level: number, text: string): number | nu
   return null;
 }
 
-export class TocWidget extends WidgetType {
+export class TocWidget extends OtwWidget {
   private readonly key: string;
 
   constructor(private readonly entries: TocEntry[]) {
@@ -730,23 +749,20 @@ export class TocWidget extends WidgetType {
       nav.append(list);
     }
     block.append(nav);
-    return block;
+    return this.settle(block);
   }
 }
 
 /* ---------------- Front matter ---------------- */
 
 /** 折叠掉的 `---` 行的替身：给属性块封上下两个口。 */
-export class FrontMatterFenceWidget extends WidgetType {
-  constructor(
-    private readonly side: "open" | "close",
-    private readonly sourcePosition: number,
-  ) {
+export class FrontMatterFenceWidget extends OtwWidget {
+  constructor(private readonly side: "open" | "close") {
     super();
   }
 
   eq(other: FrontMatterFenceWidget) {
-    return other.side === this.side && other.sourcePosition === this.sourcePosition;
+    return other.side === this.side;
   }
 
   toDOM(view: EditorView) {
@@ -762,23 +778,20 @@ export class FrontMatterFenceWidget extends WidgetType {
     }
     cap.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      jumpToSource(view, this.sourcePosition);
+      // 两个口都把光标放到第一个键的行首：属性块永远从文档第一行开始，那一行就是第二行
+      jumpToSource(view, view.state.doc.line(Math.min(2, view.state.doc.lines)).from);
     });
     block.append(cap);
-    return block;
+    return this.settle(block);
   }
 }
 
 /* ---------------- HTML ---------------- */
 
 /** `<br>`：真的换一行，前面留一个极淡的 ↵ 提示这里有东西。 */
-export class LineBreakWidget extends WidgetType {
-  constructor(private readonly sourcePosition: number) {
-    super();
-  }
-
-  eq(other: LineBreakWidget) {
-    return other.sourcePosition === this.sourcePosition;
+export class LineBreakWidget extends OtwWidget {
+  eq() {
+    return true;
   }
 
   toDOM(view: EditorView) {
@@ -790,24 +803,21 @@ export class LineBreakWidget extends WidgetType {
     hint.title = "<br>";
     hint.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      jumpToSource(view, this.sourcePosition);
+      jumpToSource(view, positionOf(view, node));
     });
     node.append(hint, document.createElement("br"));
-    return node;
+    return this.settle(node);
   }
 }
 
 /** HTML 注释：藏成一个小小的「注释」标记，点一下展开源码。 */
-export class CommentWidget extends WidgetType {
-  constructor(
-    private readonly block: boolean,
-    private readonly sourcePosition: number,
-  ) {
+export class CommentWidget extends OtwWidget {
+  constructor(private readonly block: boolean) {
     super();
   }
 
   eq(other: CommentWidget) {
-    return other.block === this.block && other.sourcePosition === this.sourcePosition;
+    return other.block === this.block;
   }
 
   toDOM(view: EditorView) {
@@ -815,15 +825,15 @@ export class CommentWidget extends WidgetType {
     pill.className = "cm-otw-comment";
     pill.textContent = "注释";
     pill.title = "HTML 注释 · 点击查看";
+    const root = this.block ? document.createElement("div") : pill;
     pill.addEventListener("mousedown", (event) => {
       event.preventDefault();
-      jumpToSource(view, this.sourcePosition);
+      jumpToSource(view, positionOf(view, root));
     });
-    if (!this.block) return pill;
-    const wrapper = document.createElement("div");
-    wrapper.className = "cm-otw-comment-block";
-    wrapper.append(pill);
-    return wrapper;
+    if (!this.block) return this.settle(pill);
+    root.className = "cm-otw-comment-block";
+    root.append(pill);
+    return this.settle(root);
   }
 }
 
@@ -831,7 +841,7 @@ export class CommentWidget extends WidgetType {
  * 块级 HTML 的替身：源码经白名单净化后重建成真实节点。
  * 点空白处回到源码编辑；<details> 的开合和 <a> 的点击照常工作。
  */
-export class HtmlBlockWidget extends WidgetType {
+export class HtmlBlockWidget extends OtwWidget {
   constructor(private readonly source: string) {
     super();
   }
@@ -863,6 +873,6 @@ export class HtmlBlockWidget extends WidgetType {
       jumpToSource(view, positionOf(view, block));
     });
     block.append(host);
-    return block;
+    return this.settle(block);
   }
 }

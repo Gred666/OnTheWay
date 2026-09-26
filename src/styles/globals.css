@@ -688,7 +688,8 @@ body {
 
 /* ---------- 通用的进出场 ---------- */
 
-/* 光标离开语法范围时替身才出现：给它一个极短的淡入，别「啪」地冒出来 */
+/* 替身新出现时的极短淡入（刚打出 `:smile:`、刚打开这篇笔记）。
+   光标移开时换回来的替身不播，见下面的 .is-settled */
 @keyframes otw-fade-in {
   from {
     opacity: 0;
@@ -707,6 +708,43 @@ body {
     opacity: 1;
     transform: none;
   }
+}
+
+/* 不是新内容的替身（光标从语法里移开、滚进视口、别处改动带来的重建）直接是最终状态：
+   以前每次光标离开，圆点、徽章、表格都从透明重新淡入一遍，看着就是闪了一下。
+   哪些算新内容由装饰层判断，见 widgets.ts 的 OtwWidget。
+   根节点和它里面带入场动画的那几层都关掉；!important 是因为勾选框的弹出写在
+   .cm-otw-task.is-checked 上，特异度比这里高。代码块「已复制」的勾不在名单里，照常播。 */
+.otw-editor .is-settled,
+.otw-editor
+  .is-settled
+  :is(
+    .cm-otw-code-fence,
+    .cm-otw-frontmatter-fence,
+    .cm-otw-comment,
+    .cm-otw-table-widget,
+    .cm-otw-toc,
+    .cm-otw-html-widget,
+    .cm-otw-diagram,
+    .cm-otw-math,
+    .cm-otw-hard-break,
+    .cm-otw-task-check path
+  ) {
+  animation: none !important;
+}
+/* 图片是加载完靠 opacity 过渡淡入的，同理 */
+.otw-editor .cm-otw-image.is-settled {
+  transition: none;
+}
+
+/* 标题行里 CodeMirror 的光标占位图片（隐藏的 `## ` 两侧各一个 img.cm-widgetBuffer，
+   1em 高、text-top 对齐）会顶出标题偏紧的行高（1.225），把这一行撑高 5–7px；
+   光标一放上去 `##` 露出来、占位图片消失，这一行缩回去，下面整篇跟着往上跳。
+   贴着行顶对齐就撑不出去了。正文行高宽松（1.82），同样的占位图片撑不动，不用管。 */
+.otw-editor
+  :is(.cm-otw-h1, .cm-otw-h2, .cm-otw-h3, .cm-otw-h4, .cm-otw-h5, .cm-otw-h6)
+  .cm-widgetBuffer {
+  vertical-align: top;
 }
 
 /* Typora 式聚焦编辑：未聚焦的标记由 decoration 折叠，当前语法范围按原位展开。
@@ -1038,8 +1076,13 @@ body {
   animation: otw-fade-in 140ms var(--ease-out-quint) both;
   transition: background-color var(--duration-fast) var(--ease-out-quint);
 }
+/* 上标的位置用相对定位抬起来，不用 vertical-align: super：super 把徽章顶出行框，
+   每一行带脚注的正文都被撑高约 1.7px；光标一放上去徽章换回 `[^1]` 源码，这一行就
+   缩回去，下面的正文跟着一抖。相对定位只挪画的位置、不参与行高。
+   -1.06em 是量出来的：和原来 super 的位置差不到 0.1px。 */
 .otw-editor .cm-otw-footnote.is-ref {
-  vertical-align: super;
+  position: relative;
+  top: -1.06em;
   line-height: 1.35;
   margin: 0 0.1em;
 }

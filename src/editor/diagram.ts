@@ -1,6 +1,6 @@
-import { type EditorView, WidgetType } from "@codemirror/view";
+import type { EditorView } from "@codemirror/view";
 import type { Mermaid } from "mermaid";
-import { positionOf } from "./widgets";
+import { OtwWidget, positionOf } from "./widgets";
 
 /* ============================================================
    ```mermaid 围栏的图表替身。
@@ -61,7 +61,7 @@ function mountSvg(host: HTMLElement, svg: string): void {
   host.classList.remove("is-loading");
 }
 
-export class DiagramWidget extends WidgetType {
+export class DiagramWidget extends OtwWidget {
   constructor(private readonly code: string) {
     super();
   }
@@ -83,6 +83,7 @@ export class DiagramWidget extends WidgetType {
       view.focus();
     });
     block.append(host);
+    this.settle(block);
 
     const cached = rendered.get(this.code);
     if (cached) {

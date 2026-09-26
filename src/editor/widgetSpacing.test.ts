@@ -83,3 +83,18 @@ describe("围栏的封口和源码行同高", () => {
     }
   });
 });
+
+/**
+ * 标题行里隐藏的 `## ` 两侧，CodeMirror 各放一个光标占位图片（img.cm-widgetBuffer，
+ * 1em 高、text-top 对齐）。标题行高偏紧，它会把这一行撑高 5–7px；光标一放上去 `##`
+ * 露出来、占位图片消失，整行缩回去，下面整篇跟着跳。实测贴行顶对齐后不再跳，
+ * 这里守着别让这条规则被删掉或改回去。
+ */
+describe("标题行的光标占位图片不撑高行", () => {
+  it("aligns widget buffers to the top of heading lines", () => {
+    const rule =
+      /:is\([^)]*\.cm-otw-h1[^)]*\.cm-otw-h6[^)]*\)\s*\.cm-widgetBuffer\s*\{([^}]*)\}/.exec(CSS);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toMatch(/vertical-align:\s*top/);
+  });
+});
