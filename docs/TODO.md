@@ -74,7 +74,7 @@ cd src-tauri; cargo run --example export_bindings --features typegen --no-defaul
 ```
 （可选横幅）大标题 +（可选分段控件）
 正文 Markdown（CodeMirror 所见即所得）
-右侧目录树 + 底部状态栏 + 右下提醒卡片
+右侧目录树 + 底部状态栏
 ```
 
 五个模块不是五套 UI，是同一个 `DocumentView` 的不同数据源。新增内容类型 = 在
@@ -88,8 +88,7 @@ cd src-tauri; cargo run --example export_bindings --features typegen --no-defaul
 | 左导航 | 240px | 常驻 |
 | 中列表栏 | 300px | 笔记 / 日历 / 归档；今日TODO、GOAL、扩展 是两栏 |
 | 主内容 | flex-1，内容 max-w 860px | 常驻 |
-| 右目录树 | 180px | ≥1280px 显示（`xl:`）；专注模式下是贴右缘的浮层刻度 |
-| 提醒卡片 | 浮动右下 | 非扩展区 |
+| 右目录树 | 180px | ≥1280px 显示（`xl:`），条目多了自己滚动；专注模式下是贴右缘的浮层刻度 |
 
 **色板**（亮色取样自原型图，1:1；暗色手工配平）见技术方案 §9.1。
 
@@ -132,7 +131,6 @@ cd src-tauri; cargo run --example export_bindings --features typegen --no-defaul
 | 标题切换 | `AnimatePresence popLayout` 上下滚动替换 |
 | 标题下分隔线 | `scaleX` 从 0 展开 |
 | 目录树活动条 | `layoutId` 滑动，跟编辑器行号联动 |
-| 提醒卡片 | 延迟 620ms 弹入 + 铃铛摇一下 |
 | 主题切换按钮 | 图标旋转交叉淡入 |
 | 命令面板 | 静态 backdrop-blur + 只动 opacity/scale |
 | 专注模式 | 左侧 chrome 切 absolute 后 `x: -540` 滑出，正文画布往左多铺 540px |
