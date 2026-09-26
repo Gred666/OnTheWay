@@ -1,20 +1,23 @@
 // @vitest-environment happy-dom
 
 import { ANIMATED_EMOJI_FALLBACK, animatedEmojiText } from "@/lib/emojiText";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ANIMATED_EMOJIS,
   AUTO_PLAY_LIMIT,
   EMOJI_PART_CSS,
   EMOJI_VIEWBOX,
   EmojiPlayer,
+  LOOP_GAP,
+  animateWhileVisible,
   animatedEmojiFor,
-  autoPlay,
   inlineAnimatedEmoji,
   keyframesOf,
   motionLength,
   motionReduced,
+  resetAnimationBudget,
   resolvePoses,
+  stopAnimating,
 } from "./animatedEmoji";
 import { ANIMATED_EMOJI_DESIGNS, EMOJI_GROUPS, EMOJI_HUES } from "./animatedEmojiSet";
 
@@ -231,9 +234,15 @@ describe("播放器", () => {
     const finishers: Array<() => void> = [];
     const started: string[] = [];
     const cancelled: string[] = [];
-    const spy = vi.spyOn(Element.prototype, "animate").mockImplementation(function (this: Element) {
+    const options: Array<KeyframeAnimationOptions> = [];
+    const spy = vi.spyOn(Element.prototype, "animate").mockImplementation(function (
+      this: Element,
+      _keyframes: Keyframe[] | PropertyIndexedKeyframes | null,
+      timing?: number | KeyframeAnimationOptions,
+    ) {
       const name = (this as SVGElement).dataset?.a ?? "body";
       started.push(name);
+      options.push(typeof timing === "object" ? timing : {});
       let done!: () => void;
       let state = "running";
       const finished = new Promise<void>((resolve) => {
@@ -258,7 +267,7 @@ describe("播放器", () => {
       for (const finish of finishers.splice(0)) finish();
       await new Promise((resolve) => setTimeout(resolve, 0));
     };
-    return { spy, started, cancelled, finishAll };
+    return { spy, started, cancelled, options, finishAll };
   }
 
   const mounted = (emoji = fire) => {
@@ -288,33 +297,189 @@ describe("播放器", () => {
     expect(styles[0]!.textContent).toBe(EMOJI_PART_CSS);
   });
 
-  it("stays still when motion is reduced", async () => {
+  it("stays still when motion is reduced", () => {
     document.documentElement.dataset.reduceMotion = "true";
     expect(motionReduced()).toBe(true);
     const { spy } = fakeAnimations();
     const { player } = mounted();
-    await player.play();
+    player.loop();
     expect(spy).not.toHaveBeenCalled();
     expect(player.playing).toBe(false);
   });
 
-  it("starts one animation per part and cancels them on stop", () => {
-    const { started, cancelled } = fakeAnimations();
-    const { player } = mounted();
-    void player.play();
-    expect(player.playing).toBe(true);
-    expect([...started].sort()).toEqual(parts);
-    player.stop();
-    expect([...cancelled].sort()).toEqual(parts);
+  it("plays one round per part, rests for the gap, then goes again until stopped", () => {
+    vi.useFakeTimers();
+    try {
+      const { started, cancelled, options } = fakeAnimations();
+      const { player } = mounted();
+      player.loop();
+      expect(player.playing).toBe(true);
+      expect([...started].sort()).toEqual(parts);
+      // 一轮就是设计稿里的一轮：各部件自己的时长、延迟和重复次数
+      for (const [index, name] of started.entries()) {
+        const motion = fire.motion[name]!;
+        expect(options[index]).toMatchObject({
+          duration: motion.duration,
+          delay: motion.delay ?? 0,
+          iterations: motion.iterations ?? 1,
+          fill: "backwards",
+        });
+      }
+      const period = motionLength(fire) + LOOP_GAP;
+      vi.advanceTimersByTime(period - 1);
+      expect(started).toHaveLength(parts.length);
+      vi.advanceTimersByTime(1);
+      expect(started).toHaveLength(parts.length * 2);
+      player.stop();
+      expect(player.playing).toBe(false);
+      vi.advanceTimersByTime(period * 3);
+      expect(started).toHaveLength(parts.length * 2);
+      expect(cancelled.length).toBeGreaterThanOrEqual(parts.length);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("caps simultaneous autoplay and gives the slot back when a round ends", async () => {
-    const { finishAll } = fakeAnimations();
-    const started = Array.from({ length: AUTO_PLAY_LIMIT + 5 }, () => autoPlay(mounted().player));
-    expect(started.filter(Boolean)).toHaveLength(AUTO_PLAY_LIMIT);
-    await finishAll();
-    expect(autoPlay(mounted().player)).toBe(true);
-    await finishAll();
+  it("can wait on the still frame before the first round", () => {
+    vi.useFakeTimers();
+    try {
+      const { started } = fakeAnimations();
+      const { player } = mounted();
+      player.loop({ wait: 300 });
+      expect(player.playing).toBe(true);
+      expect(started).toEqual([]);
+      vi.advanceTimersByTime(299);
+      expect(started).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect([...started].sort()).toEqual(parts);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe("看得见才动", () => {
+    /** 可控的 IntersectionObserver：show / hide 手动报告可见性 */
+    class FakeObserver {
+      static current: FakeObserver | null = null;
+      readonly targets = new Set<Element>();
+      constructor(private readonly callback: IntersectionObserverCallback) {
+        FakeObserver.current = this;
+      }
+      observe(target: Element) {
+        this.targets.add(target);
+      }
+      unobserve(target: Element) {
+        this.targets.delete(target);
+      }
+      disconnect() {
+        this.targets.clear();
+      }
+      report(isIntersecting: boolean, targets: Element[]) {
+        this.callback(
+          targets.map((target) => ({ target, isIntersecting }) as IntersectionObserverEntry),
+          this as unknown as IntersectionObserver,
+        );
+      }
+    }
+    const show = (...targets: Element[]) => FakeObserver.current!.report(true, targets);
+    const hide = (...targets: Element[]) => FakeObserver.current!.report(false, targets);
+
+    beforeEach(() => {
+      resetAnimationBudget();
+      vi.stubGlobal("IntersectionObserver", FakeObserver);
+    });
+    afterEach(() => {
+      resetAnimationBudget();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    it("loops while visible and goes back to the still frame when scrolled away", () => {
+      fakeAnimations();
+      const { host, player } = mounted();
+      animateWhileVisible(host, player);
+      // 挂上了但还没露出来：静止
+      expect(player.playing).toBe(false);
+      show(host);
+      expect(player.playing).toBe(true);
+      hide(host);
+      expect(player.playing).toBe(false);
+      show(host);
+      expect(player.playing).toBe(true);
+      stopAnimating(host);
+      expect(player.playing).toBe(false);
+      expect(FakeObserver.current!.targets.has(host)).toBe(false);
+    });
+
+    it("treats everything as visible when there is no IntersectionObserver", () => {
+      vi.stubGlobal("IntersectionObserver", undefined);
+      fakeAnimations();
+      const { host, player } = mounted();
+      animateWhileVisible(host, player);
+      expect(player.playing).toBe(true);
+    });
+
+    it("caps how many loop at once and hands a freed slot to the next in line", () => {
+      fakeAnimations();
+      const all = Array.from({ length: AUTO_PLAY_LIMIT + 3 }, () => {
+        const { host, player } = mounted();
+        animateWhileVisible(host, player);
+        return { host, player };
+      });
+      show(...all.map(({ host }) => host));
+      expect(all.filter(({ player }) => player.playing)).toHaveLength(AUTO_PLAY_LIMIT);
+      hide(all[0]!.host);
+      expect(all[AUTO_PLAY_LIMIT]!.player.playing).toBe(true);
+      expect(all.filter(({ player }) => player.playing)).toHaveLength(AUTO_PLAY_LIMIT);
+      // 排队的滚出去了就不再排，名额留给还看得见的
+      hide(all[AUTO_PLAY_LIMIT + 1]!.host);
+      stopAnimating(all[1]!.host);
+      expect(all[AUTO_PLAY_LIMIT + 2]!.player.playing).toBe(true);
+      expect(all[AUTO_PLAY_LIMIT + 1]!.player.playing).toBe(false);
+    });
+
+    it("pops a freshly inserted emoji straight away, even over the cap", () => {
+      const { started } = fakeAnimations();
+      const crowd = Array.from({ length: AUTO_PLAY_LIMIT }, () => {
+        const { host, player } = mounted();
+        animateWhileVisible(host, player);
+        return host;
+      });
+      show(...crowd);
+      started.length = 0;
+      const { host, player } = mounted();
+      animateWhileVisible(host, player, { intro: true });
+      expect(player.playing).toBe(true);
+      expect(started).toContain("body");
+      // 观察器随后报告「看得见」：接着转，不从头再弹一次
+      const restart = vi.spyOn(player, "loop");
+      show(host);
+      expect(restart).not.toHaveBeenCalled();
+    });
+
+    it("forgets emoji that were taken out of the document", () => {
+      fakeAnimations();
+      const { host, player } = mounted();
+      animateWhileVisible(host, player);
+      show(host);
+      host.remove();
+      hide(host);
+      expect(player.playing).toBe(false);
+      expect(FakeObserver.current!.targets.has(host)).toBe(false);
+    });
+
+    it("goes still when reduced motion is switched on and resumes when it is off", async () => {
+      fakeAnimations();
+      const { host, player } = mounted();
+      animateWhileVisible(host, player);
+      show(host);
+      document.documentElement.dataset.reduceMotion = "true";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(player.playing).toBe(false);
+      delete document.documentElement.dataset.reduceMotion;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(player.playing).toBe(true);
+    });
   });
 
   it("renders a static inline copy whose text is the Unicode fallback", () => {
@@ -380,41 +545,29 @@ describe("播放器", () => {
       expect(decode(stillOf(mounted().host))).toBe(svg);
     });
 
-    it("lays the live SVG over the image only while it plays", async () => {
-      const { finishAll } = fakeAnimations();
+    it("lays the live SVG over the image only while it loops", () => {
+      fakeAnimations();
       const { host, player } = mounted();
       const still = stillOf(host);
-      void player.play();
+      player.loop();
       expect(player.liveSvg).not.toBeNull();
       expect(host.querySelector("svg.otw-ae-live")).toBe(player.liveSvg);
       expect(still.style.display).toBe("none");
       expect(still.isConnected).toBe(true);
-      await finishAll();
+      player.stop();
       expect(player.liveSvg).toBeNull();
       expect(host.querySelector("svg.otw-ae-live")).toBeNull();
       expect(still.style.display).toBe("");
     });
 
-    it("keeps the live SVG when a replay interrupts a round", async () => {
-      const { finishAll } = fakeAnimations();
+    it("keeps the same live SVG when the loop restarts", () => {
+      fakeAnimations();
       const { player } = mounted();
-      void player.play();
-      void player.play();
-      // 第一轮被 cancel 掉，它的收尾不能把第二轮的 SVG 摘掉
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(player.liveSvg).not.toBeNull();
-      await finishAll();
-      expect(player.liveSvg).toBeNull();
-    });
-
-    it("keeps the live SVG between loop rounds and drops it on stop", async () => {
-      const { finishAll } = fakeAnimations();
-      const { player } = mounted();
-      player.loop(10_000);
-      await finishAll();
-      expect(player.liveSvg).not.toBeNull();
-      player.stop();
-      expect(player.liveSvg).toBeNull();
+      player.loop();
+      const live = player.liveSvg;
+      player.loop({ intro: true });
+      expect(player.liveSvg).toBe(live);
+      expect(player.playing).toBe(true);
     });
 
     it("recolours every resting image when the theme changes", async () => {

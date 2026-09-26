@@ -2,10 +2,11 @@ import { EditorView, WidgetType } from "@codemirror/view";
 import {
   type AnimatedEmoji,
   EmojiPlayer,
-  autoPlay,
-  forgetVisibility,
+  animateWhileVisible,
+  replay,
+  stopAnimating,
   takeIntro,
-  whenVisible,
+  wake,
 } from "./animatedEmoji";
 import { type CalloutHead, type CalloutKind, calloutIcon } from "./callout";
 import { hasRenderableHtml, safeHref, sanitizeHtml } from "./html";
@@ -399,7 +400,8 @@ export function emojiPlayerOf(dom: HTMLElement): EmojiPlayer | undefined {
  *
  * 和普通 Emoji 不同，它表现得像一个字符：光标停在它旁边时不展开源码
  * （否则刚插进去看到的就是一串短码），退格整个删掉，方向键一步跨过。
- * 单击：光标落到点中的那一侧，并重播一遍；双击：展开源码可以改。
+ * 露出视口时一直循环，滚出去停回静止帧（见 animateWhileVisible）。
+ * 单击：光标落到点中的那一侧，动作从头再来；双击：展开源码可以改。
  *
  * eq 只比短码、不比位置：在它上面打字时 CodeMirror 复用 DOM，
  * 动画不会从头再来，播放器也不用重建。位置点击时再问（positionOf）。
@@ -429,14 +431,11 @@ export class AnimatedEmojiWidget extends WidgetType {
     emojiPlayers.set(node, player);
     player.mount(node);
 
-    // 刚从选择器插进来的：整个弹出来再做动作；其余的第一次露出视口时播一遍
-    // （同时自动播的有上限，见 autoPlay）
-    if (takeIntro(this.emoji)) void player.play({ intro: true });
-    else whenVisible(node, () => autoPlay(player));
+    // 看得见就一直动；刚从选择器插进来的先整个弹出来
+    animateWhileVisible(node, player, { intro: takeIntro(this.emoji) });
 
-    node.addEventListener("pointerenter", () => {
-      if (!player.playing) void player.play();
-    });
+    // 同屏太多、还在排队的，鼠标移上去就先动起来
+    node.addEventListener("pointerenter", () => wake(node));
     node.addEventListener("mousedown", (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
@@ -448,7 +447,7 @@ export class AnimatedEmojiWidget extends WidgetType {
         const box = node.getBoundingClientRect();
         const after = event.clientX >= box.left + box.width / 2;
         view.dispatch({ selection: { anchor: after ? from + this.source.length : from } });
-        void player.play();
+        replay(node);
       }
       view.focus();
     });
@@ -456,8 +455,7 @@ export class AnimatedEmojiWidget extends WidgetType {
   }
 
   destroy(dom: HTMLElement) {
-    forgetVisibility(dom);
-    emojiPlayers.get(dom)?.stop();
+    stopAnimating(dom);
     emojiPlayers.delete(dom);
   }
 }

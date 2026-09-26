@@ -64,6 +64,7 @@ import {
 import { parseDelimitedTable, parseMarkdownTable } from "./markdownTable";
 import { MathWidget } from "./math";
 import { registerEditorFlush } from "./saveBus";
+import { createSearchPanel, scrollToMatch } from "./searchPanel";
 import {
   AnimatedEmojiWidget,
   CalloutBadgeWidget,
@@ -98,20 +99,22 @@ import {
 /** 外部内容回填产生的事务，不该被当成用户输入去触发保存。 */
 const externalSync = Annotation.define<boolean>();
 
-/** 搜索面板的中文文案。@codemirror/search 的默认标签是英文的。 */
+/** 查找面板（searchPanel.ts）和跳转到行的中文文案。@codemirror/search 的默认标签是英文的。 */
 const searchPhrases = EditorState.phrases.of({
   "Go to line": "跳转到行",
   go: "跳转",
   Find: "查找",
-  Replace: "替换",
+  Replace: "替换为",
   next: "下一个",
   previous: "上一个",
-  all: "全部",
-  "match case": "区分大小写",
-  "by word": "全词匹配",
-  regexp: "正则",
+  "match case": "区分大小写 (Alt+C)",
+  "by word": "全词匹配 (Alt+W)",
+  regexp: "正则表达式 (Alt+R)",
   replace: "替换",
   "replace all": "全部替换",
+  "Toggle replace": "替换",
+  "No results": "无结果",
+  "Invalid regexp": "正则有误",
   close: "关闭",
   "current match": "当前匹配",
   "on line": "位于行",
@@ -189,7 +192,7 @@ export function MarkdownEditor({
         markdownSupport(languages),
         codeHighlight,
         history(),
-        search({ top: true }),
+        search({ top: true, createPanel: createSearchPanel, scrollToMatch }),
         searchPhrases,
         keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
         typoraDecorations,
@@ -648,8 +651,9 @@ function buildBlockDecorations(state: EditorState): TyporaBlockState {
       lineClass(state.doc.line(number).from, "cm-otw-frontmatter");
     }
     if (active) {
-      lineClass(open.from, "cm-otw-frontmatter cm-otw-frontmatter-fence-line");
-      lineClass(close.from, "cm-otw-frontmatter cm-otw-frontmatter-fence-line");
+      // 和折叠时的封口一样高（globals.css「围栏的几何」），点进来时下面的正文不跳
+      lineClass(open.from, "cm-otw-frontmatter cm-otw-frontmatter-fence-line is-open");
+      lineClass(close.from, "cm-otw-frontmatter cm-otw-frontmatter-fence-line is-close");
     } else {
       const firstKey = state.doc.line(open.number + 1).from;
       foldLine(open.from, open.to, new FrontMatterFenceWidget("open", firstKey));
@@ -664,33 +668,36 @@ function buildBlockDecorations(state: EditorState): TyporaBlockState {
       if (frontMatter && name !== "Document" && node.from < frontMatter.to) return false;
 
       if (name === "FencedCode") {
-        if (!selectionTouches(state, node.from, node.to)) {
-          const open = state.doc.lineAt(node.from);
-          const close = state.doc.lineAt(node.to);
-          // 只有真的有代码内容时才折叠；空围栏折叠后就再也点不进去了。
-          if (close.number - open.number >= 2) {
-            const info = open.text.replace(FENCE_LINE_RE, "").trim();
-            const language = fenceLanguage(info);
-            const code = state.sliceDoc(open.to + 1, Math.max(open.to + 1, close.from - 1));
-            const closed = CLOSING_FENCE_RE.test(close.text);
-            // 图表和 CSV 不是「代码」：整块换成图 / 表，点一下才回到源码
-            if (closed && language === "mermaid") {
-              foldRange(node.from, node.to, new DiagramWidget(code));
+        const open = state.doc.lineAt(node.from);
+        const close = state.doc.lineAt(node.to);
+        const opens = FENCE_LINE_RE.test(open.text);
+        const closed = close.number > open.number && CLOSING_FENCE_RE.test(close.text);
+        // 只有真的有代码内容时才折叠；空围栏折叠后就再也点不进去了。
+        if (!selectionTouches(state, node.from, node.to) && close.number - open.number >= 2) {
+          const info = open.text.replace(FENCE_LINE_RE, "").trim();
+          const language = fenceLanguage(info);
+          const code = state.sliceDoc(open.to + 1, Math.max(open.to + 1, close.from - 1));
+          // 图表和 CSV 不是「代码」：整块换成图 / 表，点一下才回到源码
+          if (closed && language === "mermaid") {
+            foldRange(node.from, node.to, new DiagramWidget(code));
+            return false;
+          }
+          if (closed && (language === "csv" || language === "tsv")) {
+            const table = parseDelimitedTable(code, language === "csv" ? "," : "\t");
+            if (table) {
+              foldRange(node.from, node.to, new TableWidget(table));
               return false;
             }
-            if (closed && (language === "csv" || language === "tsv")) {
-              const table = parseDelimitedTable(code, language === "csv" ? "," : "\t");
-              if (table) {
-                foldRange(node.from, node.to, new TableWidget(table));
-                return false;
-              }
-            }
-            if (FENCE_LINE_RE.test(open.text)) {
-              foldLine(open.from, open.to, new CodeFenceWidget("open", info, code));
-            }
-            if (closed) foldLine(close.from, close.to, new CodeFenceWidget("close", "", code));
           }
+          if (opens) foldLine(open.from, open.to, new CodeFenceWidget("open", info, code));
+          if (closed) foldLine(close.from, close.to, new CodeFenceWidget("close", "", code));
+          return false;
         }
+        // 围栏露出源码时画成和封口同样大小的框（globals.css「围栏的几何」）。
+        // 以前源码行比封口矮一截：一点进代码块，上面的围栏行缩下去，整块代码
+        // 连同刚点的那一行一起往上跳。
+        if (opens) lineClass(open.from, "cm-otw-fence-source is-open");
+        if (closed) lineClass(close.from, "cm-otw-fence-source is-close");
         return false;
       }
 
@@ -756,12 +763,13 @@ function buildBlockDecorations(state: EditorState): TyporaBlockState {
       if (widgetByNode.get(name) === "horizontal-rule") {
         const line = state.doc.lineAt(node.from);
         // 分隔线独占一行时整行替换，别让源码行留成一条空行。
-        if (
-          !selectionTouches(state, node.from, node.to) &&
-          line.from === node.from &&
-          line.to === node.to
-        ) {
-          foldLine(line.from, line.to, horizontalRuleWidget);
+        if (line.from === node.from && line.to === node.to) {
+          if (!selectionTouches(state, node.from, node.to)) {
+            foldLine(line.from, line.to, horizontalRuleWidget);
+          } else {
+            // 露出来的 `---` 和分隔线一样高，光标进出时下面的正文不跳
+            lineClass(line.from, "cm-otw-hr-source");
+          }
         }
         return false;
       }
