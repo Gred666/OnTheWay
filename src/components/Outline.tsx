@@ -4,6 +4,7 @@ import { cn } from "@/lib/cn";
 import { spring, tween } from "@/lib/motion";
 import { motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
+import { OverlayScrollbar } from "./OverlayScrollbar";
 
 /**
  * 右侧目录树。
@@ -122,7 +123,19 @@ export function Outline({
   );
 }
 
-/** 常规形态：右侧固定一栏文字目录。 */
+/** 逐条入场的错峰只排前这么多条：再往后都在首屏以下，排下去最后一条要等好几秒才出现 */
+const STAGGER_LIMIT = 14;
+
+/** 当前条目离目录可视区上下边缘不足这么多时，把它滚回中间 */
+const FOLLOW_MARGIN = 32;
+
+/**
+ * 常规形态：右侧固定一栏文字目录。
+ *
+ * 条目多了会超出一屏，所以条目放在自己的滚动区里，配和正文一样的覆盖式滚动条。
+ * 读到哪一节，目录就跟到哪一节：当前条目滚出可视区时把它带回中间，
+ * 不然长文档读到后半篇，高亮的那一条早就在目录底下看不见了。
+ */
 function RailOutline({
   items,
   activeId,
@@ -134,18 +147,40 @@ function RailOutline({
   onJump: (id: string) => void;
   hidden: boolean;
 }) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !activeId) return;
+    const item = [...scroller.querySelectorAll<HTMLElement>("[data-outline-item]")].find(
+      (node) => node.dataset.outlineItem === activeId,
+    );
+    if (!item) return;
+    // 条目的 offsetParent 是 nav，nav 贴着滚动内容的顶，所以 offsetTop 就是滚动坐标
+    const top = item.offsetTop;
+    const bottom = top + item.offsetHeight;
+    const viewTop = scroller.scrollTop;
+    const viewBottom = viewTop + scroller.clientHeight;
+    if (top >= viewTop + FOLLOW_MARGIN && bottom <= viewBottom - FOLLOW_MARGIN) return;
+    scroller.scrollTo({
+      top: top - (scroller.clientHeight - item.offsetHeight) / 2,
+      behavior: "smooth",
+    });
+  }, [activeId]);
+
   return (
     <aside
       aria-label="目录树"
       aria-hidden={hidden}
       className={cn(
-        "absolute right-0 top-0 hidden h-full w-[180px] pt-[52px] pr-6 xl:block",
+        // 右边距拆成两半：外 12px 在这里，内 12px 在滚动区上，滚动条就落在这 24px 的空白里
+        "absolute right-0 top-0 hidden h-full w-[180px] flex-col pr-3 pt-[52px] xl:flex",
         "transition-opacity duration-[200ms] ease-linear [will-change:opacity]",
         hidden ? "pointer-events-none opacity-0" : "opacity-100",
       )}
     >
       <motion.p
-        className="mb-3 pl-3 text-[10.5px] tracking-[0.08em] text-faint"
+        className="mb-3 shrink-0 pl-3 text-[10.5px] tracking-[0.08em] text-faint"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={tween.base}
@@ -153,40 +188,52 @@ function RailOutline({
         目录树
       </motion.p>
 
-      <nav className="relative flex flex-col gap-[1px]">
-        {items.map((it, i) => {
-          const active = it.id === activeId;
-          return (
-            <motion.button
-              key={it.id}
-              type="button"
-              onClick={() => onJump(it.id)}
-              initial={{ opacity: 0, x: 5 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ ...tween.base, delay: 0.06 + i * 0.035 }}
-              className={cn(
-                "relative rounded-r-sm py-[5px] pr-2 text-left text-[12px] leading-[1.5]",
-                "transition-colors duration-[160ms]",
-                it.level === 2 ? "pl-6" : "pl-3",
-                active ? "text-ink" : "text-faint hover:text-muted",
-              )}
-            >
-              {active && (
-                <motion.span
-                  layoutId="outline-indicator"
-                  className="absolute left-0 top-[5px] bottom-[5px] w-[2px] rounded-full bg-ink"
-                  transition={spring.smooth}
-                />
-              )}
-              {/* 字重不过渡：中文每个小数字重都要重新匹配字体，一帧十几毫秒（见 Sidebar）。
+      <div className="relative min-h-0 flex-1">
+        {/* layoutScroll：指示条用 layoutId 在条目间滑动，滚动过的容器里要告诉 Motion
+            把滚动偏移算进去，不然滚动后指示条会从错的位置飞过来 */}
+        <motion.div
+          ref={scrollerRef}
+          layoutScroll
+          className="scroll-none h-full overflow-y-auto pr-3"
+        >
+          <nav className="relative flex flex-col gap-[1px] pb-8">
+            {items.map((it, i) => {
+              const active = it.id === activeId;
+              return (
+                <motion.button
+                  key={it.id}
+                  type="button"
+                  data-outline-item={it.id}
+                  onClick={() => onJump(it.id)}
+                  initial={{ opacity: 0, x: 5 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ ...tween.base, delay: 0.06 + Math.min(i, STAGGER_LIMIT) * 0.035 }}
+                  className={cn(
+                    "relative rounded-r-sm py-[5px] pr-2 text-left text-[12px] leading-[1.5]",
+                    "transition-colors duration-[160ms]",
+                    it.level === 2 ? "pl-6" : "pl-3",
+                    active ? "text-ink" : "text-faint hover:text-muted",
+                  )}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="outline-indicator"
+                      className="absolute left-0 top-[5px] bottom-[5px] w-[2px] rounded-full bg-ink"
+                      transition={spring.smooth}
+                    />
+                  )}
+                  {/* 字重不过渡：中文每个小数字重都要重新匹配字体，一帧十几毫秒（见 Sidebar）。
                   这里尤其要紧 —— 滚动正文时活动标题一直在换。 */}
-              <span className={cn("block truncate", active ? "font-semibold" : "font-normal")}>
-                {it.text}
-              </span>
-            </motion.button>
-          );
-        })}
-      </nav>
+                  <span className={cn("block truncate", active ? "font-semibold" : "font-normal")}>
+                    {it.text}
+                  </span>
+                </motion.button>
+              );
+            })}
+          </nav>
+        </motion.div>
+        <OverlayScrollbar targetRef={scrollerRef} />
+      </div>
     </aside>
   );
 }
@@ -234,17 +281,25 @@ function ZenOutline({
       className={cn(
         // pointer-events-none：hover 判定只认下面刻度那一小块和展开后的面板，
         // 不能整条右边缘都算。:hover 会沿祖先链向上匹配，所以 group 放这里没问题。
-        "pointer-events-none absolute inset-y-0 right-0 z-30 grid items-center justify-items-end",
+        // grid-rows-1 是 minmax(0, 1fr)：这一行钉死在窗口高度，不被一长列刻度撑高 ——
+        // 下面刻度列的 max-h-full 才有一个确定的高度可以参照
+        "pointer-events-none absolute inset-y-0 right-0 z-30 grid grid-rows-1 items-center justify-items-end",
         "group transition-opacity duration-[200ms] ease-linear [will-change:opacity]",
         hidden ? "opacity-0" : "opacity-100",
       )}
     >
       {/* 收起态：只有刻度。
           will-change 把它单独提成合成层 —— 不提的话 opacity 动画每一帧都要
-          连着底下的正文一起重绘，全屏时那块面积是整页宽。 */}
+          连着底下的正文一起重绘，全屏时那块面积是整页宽。
+
+          每条刻度占一个 10px 的槽（2px 的线画在槽中间），间距和原来的 gap-2 一样。
+          槽可以压扁到 3px：标题一多（一百来条）整列比窗口还高，以前是从中间往上下
+          两头溢出去，两头的刻度够不着；现在整列限高，刻度等比挤紧，全都留在屏幕里。
+          顺带点击范围也从 2px 的线变成了整个槽。
+          上下各让出 80px：右上角 top 44–76 是退出全屏的按钮，整列顶满的话会压在它底下。 */}
       <div
         className={cn(
-          "flex flex-col items-end gap-2 py-6 pl-16 pr-6 [grid-area:1/1]",
+          "flex max-h-[calc(100%-160px)] flex-col items-end py-6 pl-16 pr-6 [grid-area:1/1]",
           "transition-opacity duration-[120ms] [will-change:opacity]",
           "group-hover:pointer-events-none group-hover:opacity-0 group-hover:duration-[80ms]",
           hidden ? "pointer-events-none" : "pointer-events-auto",
@@ -256,12 +311,18 @@ function ZenOutline({
             type="button"
             aria-label={it.text}
             onClick={() => onJump(it.id)}
-            className={cn(
-              "h-[2px] rounded-full transition-[background-color,width] duration-[220ms]",
-              TICK_WIDTH[it.level] ?? "w-2",
-              it.id === activeId ? "!w-6 bg-ink" : "bg-line-strong",
-            )}
-          />
+            className="flex h-2.5 min-h-[3px] shrink items-center"
+          >
+            {/* 未激活的刻度原来是 line-strong（#e7e7e1），白底上几乎看不见，
+                整列像是不存在；faint 的六成仍然很轻，但看得出来 */}
+            <span
+              className={cn(
+                "h-[2px] rounded-full transition-[background-color,width] duration-[220ms]",
+                TICK_WIDTH[it.level] ?? "w-2",
+                it.id === activeId ? "!w-6 bg-ink" : "bg-faint/60",
+              )}
+            />
+          </button>
         ))}
       </div>
 
@@ -269,8 +330,11 @@ function ZenOutline({
           底色必须是**不透明**的。原来是 bg-canvas/95，半透明面板压在正文上，
           淡入的每一帧都要把它和底下的文字重新混合一次，而且中途能透出字来，
           看着就是脏。同样提成合成层。 */}
+      {/* 条目多了会比窗口还高：和刻度列一样上下让出 80px、超出的部分自己滚，
+          不然上下两头伸到窗口外面够不着，顶上还压着退出全屏的按钮 */}
       <div
-        className="pointer-events-none mr-4 min-w-[168px] max-w-[240px] rounded-xl bg-canvas p-2
+        className="scroll-none pointer-events-none mr-4 max-h-[calc(100%-160px)] min-w-[168px]
+                   max-w-[240px] overflow-y-auto rounded-xl bg-canvas p-2
                    opacity-0 shadow-float ring-1 ring-line-strong [grid-area:1/1]
                    [will-change:opacity] transition-opacity duration-[120ms] ease-out
                    group-hover:pointer-events-auto group-hover:opacity-100
