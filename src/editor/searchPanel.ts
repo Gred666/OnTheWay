@@ -1,3 +1,4 @@
+import { isTauri } from "@/lib/tauri";
 import {
   SearchQuery,
   closeSearchPanel,
@@ -19,7 +20,7 @@ import { EditorView, type Panel, type ViewUpdate, runScopeHandlers } from "@code
    「全部」选中所有匹配项在不允许多选区的编辑器里只剩一个，匹配到的位置常常
    贴着视口边缘。这里换成自己的面板：
 
-   - 浮在正文右上角，不占文档流（外层 .cm-panels 高度为 0、sticky 贴顶），开关不推正文
+   - 固定在窗口顶上那条标题栏带里、贴着文档区右边，不占文档流，开关不推正文，也不压正文
    - 一行：输入框（带「第几个 / 共几个」）、大小写 / 全词 / 正则三个开关、上一个 / 下一个、
      展开替换、关闭；替换是折叠的第二行
    - 边打边搜（输入法组字期间不搜，组完再搜）；没有结果、正则写错了都有提示
@@ -30,6 +31,29 @@ import { EditorView, type Panel, type ViewUpdate, runScopeHandlers } from "@code
 
 /** 计数的上限：超过就显示「999+」，长文档里搜一个「的」也不会卡 */
 export const MATCH_COUNT_LIMIT = 999;
+
+/** 面板离文档区右边缘、离窗口右边缘至少留这么多 */
+const PANEL_GAP = 16;
+/** 桌面端窗口右上角三个自绘按钮（TitleBar.tsx：3 × 36px + 间距 + 右边距）再留一点空 */
+const WINDOW_CONTROLS_WIDTH = 132;
+/** 面板再窄就放不下输入框和按钮了 */
+const PANEL_MIN_WIDTH = 240;
+
+/**
+ * 面板的横向位置（`position: fixed` 的 right 和 max-width），按窗口坐标算。
+ * 右边贴着文档区（`frameRight`），但不压到窗口按钮上；左边不越过正文的左边缘。
+ */
+export function panelPlacement(
+  viewportWidth: number,
+  frameRight: number,
+  editorLeft: number,
+  windowControls: boolean,
+): { right: number; maxWidth: number } {
+  const reserve = windowControls ? WINDOW_CONTROLS_WIDTH : PANEL_GAP;
+  const right = Math.max(reserve, viewportWidth - frameRight + PANEL_GAP);
+  const maxWidth = Math.max(PANEL_MIN_WIDTH, viewportWidth - right - editorLeft);
+  return { right, maxWidth };
+}
 
 /** 所有匹配项的位置（最多 limit + 1 个，多出来的那一个只用来判断「还有更多」）。 */
 export function collectMatches(
@@ -161,6 +185,8 @@ class SearchPanel implements Panel {
   private readonly replaceRow: HTMLElement;
   private matches: Array<{ from: number; to: number }> = [];
   private recount: ReturnType<typeof setTimeout> | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  private readonly onResize = () => this.place();
 
   constructor(private readonly view: EditorView) {
     const { state } = view;
@@ -266,6 +292,13 @@ class SearchPanel implements Panel {
   }
 
   mount() {
+    this.place();
+    // 文档区宽度会变：拖窗口、进出专注模式、目录栏出现消失，都要跟着重新贴边
+    window.addEventListener("resize", this.onResize);
+    if (typeof ResizeObserver !== "undefined") {
+      this.resizeObserver = new ResizeObserver(this.onResize);
+      this.resizeObserver.observe(this.frame());
+    }
     // Chromium 里 select() 顺带会聚焦，别的引擎不一定
     this.searchField.focus({ preventScroll: true });
     this.searchField.select();
@@ -293,10 +326,37 @@ class SearchPanel implements Panel {
     } else if (update.selectionSet) {
       this.renderCount();
     }
+    if (update.geometryChanged) this.place();
   }
 
   destroy() {
     if (this.recount) clearTimeout(this.recount);
+    window.removeEventListener("resize", this.onResize);
+    this.resizeObserver?.disconnect();
+  }
+
+  /** 文档区的滚动容器（DocumentView 上的 data-doc-scroller）；单独挂的编辑器就是它自己 */
+  private frame(): HTMLElement {
+    return this.view.dom.closest<HTMLElement>("[data-doc-scroller]") ?? this.view.dom;
+  }
+
+  /**
+   * 面板固定在窗口顶上、标题栏那条带里（位置见 CSS），这里只算横向。
+   *
+   * 以前 .cm-panels 是 sticky 贴在编辑器顶上：文档还没往下滚时，sticky 元素待在
+   * 自己的原位 —— 正文第一行那里，于是一打开就压住开头几行，滚下去以后又压着
+   * 右上角那一截正文。标题栏那条带在文档顶部本来就是空的，放在那里什么都不挡。
+   */
+  private place() {
+    const viewport = this.view.dom.ownerDocument.documentElement.clientWidth;
+    const { right, maxWidth } = panelPlacement(
+      viewport,
+      this.frame().getBoundingClientRect().right,
+      this.view.dom.getBoundingClientRect().left,
+      isTauri,
+    );
+    this.dom.style.right = `${right}px`;
+    this.dom.style.maxWidth = `${maxWidth}px`;
   }
 
   private keydown(event: KeyboardEvent) {

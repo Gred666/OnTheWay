@@ -177,6 +177,8 @@ export function DocumentView({
             平时这一截压在 z-30 的 chrome 底下，看不见也摸不着。 */}
         <div
           ref={scrollRef}
+          // 查找面板（editor/searchPanel.ts）按它的右边缘贴边
+          data-doc-scroller
           className="scroll-none h-full overflow-y-auto bg-canvas"
           style={{ marginLeft: -RAIL_WIDTH, paddingLeft: RAIL_WIDTH }}
         >

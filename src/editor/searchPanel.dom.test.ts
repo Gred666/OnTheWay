@@ -16,6 +16,7 @@ import {
   createSearchPanel,
   matchIndex,
   matchLabel,
+  panelPlacement,
   scrollToMatch,
 } from "./searchPanel";
 
@@ -105,6 +106,26 @@ describe("计数", () => {
     expect(matchLabel(many, new SearchQuery({ search: "a" }), matches, 1).text).toBe(
       `1/${MATCH_COUNT_LIMIT}+`,
     );
+  });
+});
+
+describe("面板位置", () => {
+  it("hugs the right edge of the document area", () => {
+    // 1440 宽的窗口，文档区右边缘在 1260（右边是 180 的目录栏），正文从 500 起
+    expect(panelPlacement(1440, 1260, 500, true)).toEqual({ right: 196, maxWidth: 744 });
+  });
+
+  it("stays clear of the window buttons when the document area runs to the window edge", () => {
+    // 专注模式 / 没有目录栏：文档区一直铺到窗口右边，桌面端要让出三个窗口按钮
+    expect(panelPlacement(1200, 1200, 200, true).right).toBe(132);
+    // 浏览器里没有自绘标题栏，只留一点边距
+    expect(panelPlacement(1200, 1200, 200, false).right).toBe(16);
+  });
+
+  it("never reaches left past the text, but keeps a usable minimum width", () => {
+    // 窄窗口：右边让出按钮以后，面板左边不越过正文左边缘
+    expect(panelPlacement(940, 940, 516, true).maxWidth).toBe(292);
+    expect(panelPlacement(700, 700, 500, true).maxWidth).toBe(240);
   });
 });
 

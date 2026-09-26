@@ -2084,21 +2084,21 @@ body {
 
 /* ---------- 查找面板（editor/searchPanel.ts）---------- */
 
-/* 面板的容器不占文档流：高度为 0、sticky 贴住滚动区的上沿，面板浮在正文右上角。
-   CodeMirror 默认让它占一截高度 —— 一打开整篇正文往下推，关掉再弹回来。
-   底部的容器（跳转到行，Mod-Alt-G）同理贴住下沿。 */
+/* 面板的容器不占文档流：高度为 0。CodeMirror 默认让它占一截高度 ——
+   一打开整篇正文往下推，关掉再弹回来。
+   查找面板本身是 fixed 的（见 .otw-search），容器只是它在 DOM 里的落脚点；
+   底部的容器（跳转到行，Mod-Alt-G）sticky 贴住滚动区下沿。
+   z-index 要高过标题栏（TitleBar，z-40）：查找面板就放在标题栏那条带里，
+   压在它底下的话点按钮会变成拖窗口。 */
 .otw-editor .cm-panels {
-  z-index: 20;
+  z-index: 45;
   height: 0;
   overflow: visible;
   border: 0;
   background: transparent;
   color: var(--color-body);
 }
-/* 贴顶时让出窗口顶上 38px 的自绘标题栏（TitleBar.tsx，fixed、整条可拖动）：
-   贴在 top: 0 的话面板上半截压在标题栏底下，点按钮变成了拖窗口 */
 .otw-editor .cm-panels-top {
-  top: 46px;
   border-bottom: 0;
 }
 .otw-editor .cm-panels-bottom {
@@ -2117,10 +2117,12 @@ body {
   }
 }
 
+/* 固定在窗口最上面那条标题栏带里（文档顶部这一截本来就是空的），
+   横向位置由 searchPanel.ts 按文档区右边缘算好写进 right / max-width */
 .otw-editor .otw-search {
-  position: absolute;
-  top: 0;
-  right: 0;
+  position: fixed;
+  top: 4px;
+  right: 16px;
   display: flex;
   width: 400px;
   max-width: 100%;
