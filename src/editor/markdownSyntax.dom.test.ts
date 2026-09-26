@@ -136,6 +136,19 @@ describe("方括号家族", () => {
     expect(lines(parent)[0]).toBe("正文[^1] 完");
   });
 
+  it("renders back-to-back footnotes in Chinese prose as badges, not superscript", () => {
+    const { parent } = mount("正文[^1]，接着写[^long]。\n\n[^1]: 甲\n[^long]: 乙", 0);
+    const badges = [...parent.querySelectorAll(".cm-otw-footnote")];
+    expect(badges.map((n) => n.className)).toEqual([
+      "cm-otw-footnote is-ref",
+      "cm-otw-footnote is-ref",
+      "cm-otw-footnote is-def",
+      "cm-otw-footnote is-def",
+    ]);
+    expect(parent.querySelector(".cm-otw-sup")).toBeNull();
+    expect(lines(parent)).toEqual(["正文1，接着写long。", "", "1甲", "long乙"]);
+  });
+
   it("hides the link title together with the destination", () => {
     const { parent, view } = mount('[官网](https://x.dev "标题") 完', 999);
     expect(text(parent)).toBe("官网 完");

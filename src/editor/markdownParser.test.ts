@@ -71,3 +71,25 @@ describe("删除线", () => {
     expect(nodes("x^2^", /Superscript$/)).toEqual(["Superscript:^2^"]);
   });
 });
+
+describe("上标", () => {
+  it("parses ^x^ with escapes, but not across spaces", () => {
+    expect(nodes("x^2^ 和 e^i\\^π^", /Superscript$/)).toEqual([
+      "Superscript:^2^",
+      "Superscript:^i\\^π^",
+    ]);
+    expect(nodes("a ^b c^ d", /Superscript$/)).toEqual([]);
+  });
+
+  it("keeps footnote references in Chinese prose out of superscript", () => {
+    // 两个脚注之间没有空格：以前 `^1]，接着写[^` 会被整段认成上标
+    const source = "正文[^1]，接着写[^long]。\n\n[^1]: 甲\n[^long]: 乙";
+    expect(nodes(source, /Superscript$/)).toEqual([]);
+    expect(nodes(source, /^Link$/)).toEqual(["Link:[^1]", "Link:[^long]"]);
+  });
+
+  it("does not reach across brackets", () => {
+    expect(nodes("[[标题^abc]]之后x^2^", /Superscript$/)).toEqual(["Superscript:^2^"]);
+    expect(nodes("看[x^2^]", /Superscript$/)).toEqual(["Superscript:^2^"]);
+  });
+});

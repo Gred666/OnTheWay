@@ -9,7 +9,6 @@ import {
   type Line,
   type MarkdownConfig,
   type MarkdownExtension,
-  Superscript,
 } from "@lezer/markdown";
 
 /* ============================================================
@@ -22,12 +21,17 @@ import {
 
    另外加了 `$…$` / `$$…$$` 数学公式的节点：公式必须在解析阶段就被整块
    认下来，否则 `$a*b$ 和 $c*d$` 里的两个 `*` 会被当成一对强调标记。
+
+   上标 `^x^` 也是自己的：lezer 自带的那个会吞掉中文句子里的脚注，见下面。
    ============================================================ */
 
 const DOLLAR = 36;
 const TILDE = 126;
 const BACKSLASH = 92;
 const NEWLINE = 10;
+const CARET = 94;
+const OPEN_BRACKET = 91;
+const CLOSE_BRACKET = 93;
 
 const isSpace = (code: number) => code === 32 || code === 9 || code === NEWLINE;
 const isDigit = (code: number) => code >= 48 && code <= 57;
@@ -160,11 +164,50 @@ const SingleTildeStrikethrough: MarkdownConfig = {
   ],
 };
 
+/**
+ * 上标 `^x^`。节点名和 lezer 自带的 Superscript 一样，只多两条限制：
+ * - 紧跟在 `[` 后面的 `^` 不开上标 —— 那是脚注 `[^id]`；
+ * - 往后找闭合的 `^` 时，碰到 `[` / `]` 就放弃，上标不跨方括号。
+ *
+ * 自带的那个只在碰到空白时放弃。中文句子不带空格，于是
+ * 「正文[^1]，接着写[^2]」里的 `^1]，接着写[^` 整段被认成上标，
+ * 两个脚注都不见了；`[[标题^块]]` 后面再出现一个 `^` 也是同样下场。
+ */
+function parseSuperscript(cx: InlineContext, next: number, pos: number): number {
+  if (next !== CARET || cx.char(pos + 1) === CARET || cx.char(pos - 1) === OPEN_BRACKET) {
+    return -1;
+  }
+  const marks = [cx.elt("SuperscriptMark", pos, pos + 1)];
+  for (let i = pos + 1; i < cx.end; i += 1) {
+    const code = cx.char(i);
+    if (code === CARET) {
+      return cx.addElement(
+        cx.elt("Superscript", pos, i + 1, [...marks, cx.elt("SuperscriptMark", i, i + 1)]),
+      );
+    }
+    if (code === BACKSLASH) {
+      marks.push(cx.elt("Escape", i, i + 2));
+      i += 1;
+      continue;
+    }
+    if (isSpace(code) || code === OPEN_BRACKET || code === CLOSE_BRACKET) return -1;
+  }
+  return -1;
+}
+
+const SuperscriptExtension: MarkdownConfig = {
+  defineNodes: [
+    { name: "Superscript", style: t.special(t.content) },
+    { name: "SuperscriptMark", style: t.processingInstruction },
+  ],
+  parseInline: [{ name: "Superscript", parse: parseSuperscript }],
+};
+
 /** 编辑器用的全部 Markdown 解析扩展；单测直接拿它配到 commonmark 上。 */
 export const markdownExtensions: MarkdownExtension = [
   GFM,
   SingleTildeStrikethrough,
-  Superscript,
+  SuperscriptExtension,
   Emoji,
   MathExtension,
 ];
