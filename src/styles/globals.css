@@ -660,6 +660,15 @@ body {
   padding: 0;
 }
 
+/* 整个正文区的鼠标指针都是 I 形，包括替身（widget：列表符号、表格、代码块封口、
+   HTML 块、图表、目录……）和块与块之间的留白。以前替身是箭头：滚动的时候
+   内容从静止的鼠标底下滑过去，指针在 I 形和箭头之间来回跳，看着一闪一闪的。
+   真正能点的控件（勾选框、复制按钮、目录条目、折叠按钮、脚注徽章）自己写着 pointer ——
+   这条用 :where() 压到最低优先级，不去盖它们。 */
+.otw-editor :where(.cm-content, .cm-content [contenteditable="false"]) {
+  cursor: text;
+}
+
 .otw-editor .cm-selectionBackground,
 .otw-editor .cm-content ::selection {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent) !important;
@@ -1005,9 +1014,9 @@ body {
 }
 
 /* 编辑器里：比正文字形略大一点，点得中；悬停轻轻亮一下 */
+/* 它表现得像一个字：指针和旁边的字一样是 I 形（单击也是把光标放到它旁边） */
 .otw-editor .cm-otw-ae {
   margin: 0 0.04em;
-  cursor: pointer;
   animation: otw-fade-in 140ms var(--ease-out-quint) both;
 }
 
@@ -1024,6 +1033,8 @@ body {
   line-height: 1.5;
   text-align: center;
   padding: 0 0.42em;
+  /* 点一下跳到定义 / 跳回引用处 */
+  cursor: pointer;
   animation: otw-fade-in 140ms var(--ease-out-quint) both;
   transition: background-color var(--duration-fast) var(--ease-out-quint);
 }
