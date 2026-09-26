@@ -70,6 +70,15 @@ export class DiagramWidget extends OtwWidget {
     return other.code === this.code;
   }
 
+  protected override heightKey() {
+    return `diagram:${this.code}`;
+  }
+
+  /** 没画过的图表多半两三百像素高；按一行估的话，跳到它下面时整页会沉一大截 */
+  protected override guessHeight() {
+    return 300;
+  }
+
   toDOM(view: EditorView) {
     const block = document.createElement("div");
     block.className = "cm-otw-diagram-block";

@@ -141,14 +141,40 @@ describe("查找面板", () => {
     expect(panel.querySelector<HTMLElement>(".otw-search-replace")!.hidden).toBe(true);
   });
 
-  it("searches as you type and counts the matches", () => {
+  it("searches as you type, jumps straight to the first match and counts", () => {
     const { view } = mount("猫 狗 猫 鱼 猫");
     const { panel, find } = open(view);
     type(find, "猫");
-    expect(count(panel)).toBe("3");
+    expect(selected(view)).toEqual([0, 1]);
+    expect(count(panel)).toBe("1/3");
     type(find, "虎");
     expect(count(panel)).toBe("无结果");
     expect(panel.querySelector(".otw-search-box")!.classList.contains("is-empty")).toBe(true);
+  });
+
+  it("jumps to the first match after where the search started, wrapping to the top", () => {
+    const { view } = mount("猫 狗 猫 鱼 猫", 3);
+    const { panel, find } = open(view);
+    type(find, "猫");
+    expect(selected(view)).toEqual([4, 5]);
+    expect(count(panel)).toBe("2/3");
+    // 接着补字：还是从起点往后找，不会因为已经选中一个就跳到更后面
+    type(find, "鱼");
+    expect(selected(view)).toEqual([6, 7]);
+    type(find, "狗");
+    // 起点后面没有了，从头找
+    expect(selected(view)).toEqual([2, 3]);
+  });
+
+  it("keeps extending from the current match instead of restarting", () => {
+    const { view } = mount("ab abc abcd");
+    const { find } = open(view);
+    type(find, "ab");
+    expect(selected(view)).toEqual([0, 2]);
+    type(find, "abc");
+    expect(selected(view)).toEqual([3, 6]);
+    type(find, "abcd");
+    expect(selected(view)).toEqual([7, 11]);
   });
 
   it("waits for the input method to finish composing", () => {
@@ -157,23 +183,24 @@ describe("查找面板", () => {
     find.value = "mao";
     find.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
     expect(count(panel)).toBe("");
+    expect(selected(view)).toEqual([0, 0]);
     find.value = "猫";
     find.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
-    expect(count(panel)).toBe("2");
+    expect(count(panel)).toBe("1/2");
   });
 
   it("steps through matches with Enter / Shift+Enter and shows where it is", () => {
     const { view } = mount("猫 狗 猫 鱼 猫");
     const { panel, find } = open(view);
     type(find, "猫");
-    press(find, { key: "Enter" });
     expect(selected(view)).toEqual([0, 1]);
-    expect(count(panel)).toBe("1/3");
     press(find, { key: "Enter" });
     expect(selected(view)).toEqual([4, 5]);
     expect(count(panel)).toBe("2/3");
+    press(find, { key: "Enter" });
+    expect(selected(view)).toEqual([8, 9]);
     press(find, { key: "Enter", shiftKey: true });
-    expect(selected(view)).toEqual([0, 1]);
+    expect(selected(view)).toEqual([4, 5]);
     // 跳完光标还在原处，接着打字是补字而不是把整个关键词换掉
     expect([find.selectionStart, find.selectionEnd]).toEqual([1, 1]);
   });
@@ -183,26 +210,28 @@ describe("查找面板", () => {
     const { find } = open(view);
     type(find, "猫");
     press(find, { key: "Enter", isComposing: true });
-    expect(selected(view)).toEqual([0, 0]);
+    expect(selected(view)).toEqual([0, 1]);
   });
 
   it("toggles case, whole word and regexp from the buttons and with Alt+C / W / R", () => {
     const { view } = mount("Cat cat category");
     const { panel, find } = open(view);
     type(find, "cat");
-    expect(count(panel)).toBe("3");
+    expect(count(panel)).toBe("1/3");
     const toggle = (option: string) =>
       panel.querySelector<HTMLButtonElement>(`[data-option="${option}"]`)!;
     toggle("caseSensitive").click();
     expect(toggle("caseSensitive").getAttribute("aria-pressed")).toBe("true");
-    expect(count(panel)).toBe("2");
+    // 开关一换，匹配跟着换，并跳到新的第一个
+    expect(count(panel)).toBe("1/2");
+    expect(selected(view)).toEqual([4, 7]);
     press(find, { key: "w", code: "KeyW", altKey: true });
     expect(toggle("wholeWord").getAttribute("aria-pressed")).toBe("true");
-    expect(count(panel)).toBe("1");
+    expect(count(panel)).toBe("1/1");
     press(find, { key: "r", code: "KeyR", altKey: true });
     expect(toggle("regexp").getAttribute("aria-pressed")).toBe("true");
     type(find, "c.t");
-    expect(count(panel)).toBe("1");
+    expect(count(panel)).toBe("1/1");
   });
 
   it("replaces one or all from the replace row", () => {
@@ -213,9 +242,10 @@ describe("查找面板", () => {
     expect(document.activeElement).toBe(replace);
     type(find, "猫");
     type(replace, "虎");
-    press(replace, { key: "Enter" });
+    // 打字时已经选中了第一个，回车直接替换它，并跳到下一个
     press(replace, { key: "Enter" });
     expect(view.state.doc.toString()).toBe("虎 狗 猫");
+    expect(selected(view)).toEqual([4, 5]);
     press(replace, { key: "Enter", ctrlKey: true });
     expect(view.state.doc.toString()).toBe("虎 狗 虎");
   });

@@ -1,7 +1,7 @@
 import type { OutlineItem } from "@/data/types";
 import { MOD_KEY } from "@/lib/platform";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { syntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { search } from "@codemirror/search";
 import {
@@ -22,7 +22,7 @@ import {
   type WidgetType,
   keymap,
 } from "@codemirror/view";
-import type { SyntaxNode } from "@lezer/common";
+import type { SyntaxNode, Tree } from "@lezer/common";
 import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -35,6 +35,8 @@ import { DiagramWidget } from "./diagram";
 import { emojiFor } from "./emoji";
 import { decodeEntity } from "./entities";
 import { type FrontMatterRange, frontMatterRange } from "./frontMatter";
+import { glideTo } from "./glide";
+import { abbrTip, hoverCard } from "./hoverCard";
 import {
   INLINE_HTML_TAGS,
   inlineStyleOf,
@@ -66,6 +68,8 @@ import { parseDelimitedTable, parseMarkdownTable } from "./markdownTable";
 import { MathWidget } from "./math";
 import { registerEditorFlush } from "./saveBus";
 import { createSearchPanel, scrollToMatch } from "./searchPanel";
+import { smoothCaret } from "./smoothCaret";
+import { TableWidget } from "./tableWidget";
 import {
   AnimatedEmojiWidget,
   CalloutBadgeWidget,
@@ -84,7 +88,6 @@ import {
   LineBreakWidget,
   ListMarkerWidget,
   OtwWidget,
-  TableWidget,
   TaskWidget,
   type TocEntry,
   TocWidget,
@@ -198,6 +201,8 @@ export function MarkdownEditor({
         searchPhrases,
         keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
         typoraDecorations,
+        smoothCaret,
+        hoverCard,
         modKeyCursor,
         linkClickHandler((title, heading) => onWikiLinkRef.current?.(title, heading)),
         EditorView.lineWrapping,
@@ -277,11 +282,10 @@ export function MarkdownEditor({
         const item = outlineItemsRef.current.find((entry) => entry.id === id);
         if (!item) return false;
         const line = view.state.doc.line(Math.min(item.line, view.state.doc.lines));
-        view.dispatch({
-          selection: { anchor: line.from },
-          effects: EditorView.scrollIntoView(line.from, { y: "start", yMargin: 72 }),
-        });
+        view.dispatch({ selection: { anchor: line.from } });
         view.focus();
+        // 平滑地滑过去（见 glide.ts）：顺带给路上没画过的内容留出画出来的时间，停得准
+        glideTo(view, line.from, { y: "start", margin: 72 });
         for (const listener of listeners) listener(id);
         return true;
       },
@@ -586,10 +590,29 @@ const blockContainers = new Set([
   "Blockquote",
 ]);
 
+/**
+ * 块级层用的语法树：尽量是全文的。
+ *
+ * CodeMirror 建状态时只同步解析开头约 3000 个字符，剩下的交给空闲时的后台解析。
+ * 块级层以前直接拿 syntaxTree(state)，刚打开长文档时看到的是半棵树：[TOC] 只列出
+ * 开头几节的标题，后面的表格、公式、代码块都还是源码 —— 要等点一下（选区变化触发
+ * 重建）才「展开」。这里先同步把全文解析完（有时间预算，超大文档解析不完就退回
+ * 现有的那半棵，后台解析推进时 update 里会再重建）。已经解析完的树直接返回，不花时间。
+ */
+const FULL_PARSE_BUDGET_MS = 80;
+
+function blockTree(state: EditorState): Tree {
+  return ensureSyntaxTree(state, state.doc.length, FULL_PARSE_BUDGET_MS) ?? syntaxTree(state);
+}
+
 /** [TOC] 需要的标题清单。只在文档里真的有 [TOC] 时才算。 */
-function collectHeadings(state: EditorState, frontMatter: FrontMatterRange | null): TocEntry[] {
+function collectHeadings(
+  state: EditorState,
+  tree: Tree,
+  frontMatter: FrontMatterRange | null,
+): TocEntry[] {
   const entries: TocEntry[] = [];
-  syntaxTree(state).iterate({
+  tree.iterate({
     enter(node) {
       // front matter 里的 `title: x` 会被解析成 Setext 标题，不能进目录
       if (frontMatter && node.type.name !== "Document" && node.from < frontMatter.to) return false;
@@ -621,6 +644,7 @@ function buildBlockDecorations(state: EditorState, changes: ChangeSet | null): T
   const abbreviationLines = new Set<number>();
   const footnotes = new Map<string, string>();
   const frontMatter = frontMatterRange(state.doc);
+  const tree = blockTree(state);
   let headings: TocEntry[] | null = null;
 
   const foldLine = (from: number, to: number, widget?: WidgetType) => {
@@ -694,7 +718,7 @@ function buildBlockDecorations(state: EditorState, changes: ChangeSet | null): T
     }
   }
 
-  syntaxTree(state).iterate({
+  tree.iterate({
     enter(node) {
       const { name } = node.type;
       // front matter 里的 `---` 会被解析成分隔线和 Setext 标题，整段绕开。
@@ -718,7 +742,11 @@ function buildBlockDecorations(state: EditorState, changes: ChangeSet | null): T
           if (closed && (language === "csv" || language === "tsv")) {
             const table = parseDelimitedTable(code, language === "csv" ? "," : "\t");
             if (table) {
-              foldRange(node.from, node.to, new TableWidget(table));
+              foldRange(
+                node.from,
+                node.to,
+                new TableWidget(table, language, code, open.to + 1 - open.from),
+              );
               return false;
             }
           }
@@ -776,7 +804,7 @@ function buildBlockDecorations(state: EditorState, changes: ChangeSet | null): T
           if (selectionTouches(state, line.from, line.to)) {
             lineClass(line.from, "cm-otw-toc-source");
           } else {
-            headings ??= collectHeadings(state, frontMatter);
+            headings ??= collectHeadings(state, tree, frontMatter);
             foldLine(line.from, line.to, new TocWidget(headings));
           }
           return false;
@@ -787,8 +815,11 @@ function buildBlockDecorations(state: EditorState, changes: ChangeSet | null): T
 
       if (widgetByNode.get(name) === "table") {
         if (!selectionTouches(state, node.from, node.to)) {
-          const table = parseMarkdownTable(state.sliceDoc(node.from, node.to));
-          if (table) foldRange(node.from, node.to, new TableWidget(table));
+          const tableSource = state.sliceDoc(node.from, node.to);
+          const table = parseMarkdownTable(tableSource);
+          const indent = node.from - state.doc.lineAt(node.from).from;
+          if (table)
+            foldRange(node.from, node.to, new TableWidget(table, "markdown", tableSource, indent));
         }
         return false;
       }
@@ -858,9 +889,15 @@ export const typoraBlockDecorations = StateField.define<TyporaBlockState>({
   // 初次构建（刚打开这篇）没有 changes：替身全都算新出现，照常播入场动画
   create: (state) => buildBlockDecorations(state, null),
   update(value, transaction) {
-    // 折叠与否取决于光标在不在块里，所以选区变化也要重算。
-    // 文档没变时旧值里的位置依然有效，直接沿用。
-    if (transaction.docChanged || transaction.selection) {
+    // 折叠与否取决于光标在不在块里，所以选区变化也要重算；
+    // 后台解析往前推进了（语法树换了一棵）也要重算，不然解析得晚的那一段里的
+    // 表格、公式、[TOC] 的标题要等下一次点击才出来。
+    // 三样都没变时旧值里的位置依然有效，直接沿用。
+    if (
+      transaction.docChanged ||
+      transaction.selection ||
+      syntaxTree(transaction.startState) !== syntaxTree(transaction.state)
+    ) {
       return buildBlockDecorations(transaction.state, transaction.changes);
     }
     return value;
@@ -1044,7 +1081,9 @@ function buildInlineDecorations(view: EditorView, changes: ChangeSet | null): Ty
         attributes.title = `${href}\n${MOD_KEY}+点击打开`;
       }
     }
-    if (tag.name === "abbr" && tag.attrs.title) attributes.title = tag.attrs.title;
+    if (tag.name === "abbr" && tag.attrs.title) {
+      Object.assign(attributes, abbrTip(state.sliceDoc(node.to, close.from), tag.attrs.title));
+    }
     addMark(node.to, close.from, className, attributes);
     const visible = selectionTouches(state, node.from, close.to);
     addSyntaxMarker(node.from, node.to, visible);
@@ -1536,7 +1575,12 @@ function buildInlineDecorations(view: EditorView, changes: ChangeSet | null): Ty
           const line = state.doc.lineAt(from);
           if (abbreviationLines?.has(line.from) || foldedLines?.has(line.from)) continue;
           if (insideLiteral(from) || insideTable(from)) continue;
-          addMark(from, from + abbreviation.length, "cm-otw-abbr", { title: expansion });
+          addMark(
+            from,
+            from + abbreviation.length,
+            "cm-otw-abbr",
+            abbrTip(abbreviation, expansion),
+          );
         }
       }
     }
@@ -1558,8 +1602,14 @@ const typoraInlineDecorations = ViewPlugin.fromClass(
     }
 
     update(update: ViewUpdate) {
-      // 视口滚动同样要重算 —— 行内装饰只覆盖看得见的那一段。
-      if (update.docChanged || update.viewportChanged || update.selectionSet) {
+      // 视口滚动同样要重算 —— 行内装饰只覆盖看得见的那一段；
+      // 快速滚到还没解析的地方时，后台解析赶上来（语法树换了）也要重算一次。
+      if (
+        update.docChanged ||
+        update.viewportChanged ||
+        update.selectionSet ||
+        syntaxTree(update.startState) !== syntaxTree(update.state)
+      ) {
         // 只动了光标 / 视口时 changes 是空的：这时重建出来的替身不再重放入场动画
         const built = buildInlineDecorations(update.view, update.changes);
         this.decorations = built.decorations;

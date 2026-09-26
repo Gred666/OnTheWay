@@ -642,7 +642,8 @@ body {
 .otw-editor .cm-content {
   min-height: 360px;
   padding: 0 0 72px;
-  caret-color: var(--color-accent);
+  /* 系统光标藏掉，由 editor/smoothCaret.ts 画（见下面「光标」） */
+  caret-color: transparent;
 }
 
 /* 后面还跟着别的内容（日历当日安排）：不撑高、不留大段底部空白，
@@ -674,8 +675,104 @@ body {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent) !important;
 }
 
-.otw-editor .cm-cursor {
-  border-left-color: var(--color-accent);
+/* ---------- 光标（editor/smoothCaret.ts）----------
+   2px 圆头竖条。移动时 transform 滑过去（合成器上跑，不触发布局），高度跟着字号
+   一起过渡；跳得远时 JS 加 is-jumping 关掉过渡，就地「落」下来（竖向从 40% 长满）。
+   闪烁放在图层上：柔和的淡出淡入，每次移动 JS 换一个同样的动画名让它从常亮重来，
+   所以打字时光标一直是亮的。编辑器失焦时整层淡出。 */
+.otw-editor .otw-caret-layer {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms var(--ease-out-quint);
+}
+.otw-editor .cm-editor.cm-focused .otw-caret-layer {
+  opacity: 1;
+  animation: otw-caret-blink 1.1s ease-in-out 0.1s infinite;
+}
+.otw-editor .otw-caret {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: var(--color-accent);
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--color-accent) 25%, transparent);
+  pointer-events: none;
+  will-change: transform;
+  transition: transform 110ms cubic-bezier(0.2, 0.8, 0.25, 1), height 140ms
+    cubic-bezier(0.2, 0.8, 0.25, 1);
+  animation-duration: 200ms;
+  animation-timing-function: var(--ease-out-quint);
+  animation-fill-mode: both;
+}
+.otw-editor .otw-caret.is-jumping {
+  transition: none;
+}
+.otw-editor .otw-caret.is-secondary {
+  opacity: 0.55;
+}
+/* 两份一样的关键帧：换名字才能让已经放过的动画重新开始 */
+@keyframes otw-caret-blink {
+  0%,
+  48% {
+    opacity: 1;
+  }
+  62%,
+  86% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes otw-caret-blink-2 {
+  0%,
+  48% {
+    opacity: 1;
+  }
+  62%,
+  86% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+/* 落地：用独立的 scale 属性，不能动 transform —— 位置就写在 transform 上 */
+@keyframes otw-caret-land {
+  from {
+    opacity: 0;
+    scale: 1 0.4;
+  }
+}
+@keyframes otw-caret-land-2 {
+  from {
+    opacity: 0;
+    scale: 1 0.4;
+  }
+}
+/* 减少动效：不滑、不落，闪烁退回硬切（全局规则把时长压成 0.01ms，无限循环会变成
+   高频闪烁，这里把闪烁的时长、次数要回来） */
+@media (prefers-reduced-motion: reduce) {
+  .otw-editor .cm-editor.cm-focused .otw-caret-layer {
+    animation-duration: 1.1s !important;
+    animation-iteration-count: infinite !important;
+    animation-timing-function: steps(1, end) !important;
+  }
+  .otw-editor .otw-caret {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+:root[data-reduce-motion="true"] .otw-editor .cm-editor.cm-focused .otw-caret-layer {
+  animation-duration: 1.1s !important;
+  animation-iteration-count: infinite !important;
+  animation-timing-function: steps(1, end) !important;
+}
+:root[data-reduce-motion="true"] .otw-editor .otw-caret {
+  transition: none !important;
+  animation: none !important;
 }
 
 .otw-editor .cm-activeLine {
@@ -722,7 +819,7 @@ body {
     .cm-otw-code-fence,
     .cm-otw-frontmatter-fence,
     .cm-otw-comment,
-    .cm-otw-table-widget,
+    .cm-otw-table-frame,
     .cm-otw-toc,
     .cm-otw-html-widget,
     .cm-otw-diagram,
@@ -1079,12 +1176,20 @@ body {
 /* 上标的位置用相对定位抬起来，不用 vertical-align: super：super 把徽章顶出行框，
    每一行带脚注的正文都被撑高约 1.7px；光标一放上去徽章换回 `[^1]` 源码，这一行就
    缩回去，下面的正文跟着一抖。相对定位只挪画的位置、不参与行高。
-   -1.06em 是量出来的：和原来 super 的位置差不到 0.1px。 */
+
+   但也不能抬出这一行自己的行框：正文行高只有 1.4（CodeMirror 的 .cm-scroller 定的），
+   上下各只有两三像素的余量。以前抬了 1.06em（徽章 16px 高），顶出行框 7.6px，
+   正好压在上一行字的下半截上。现在徽章缩到 10.5px 字、13px 高，底边落在汉字
+   中线附近，顶边收在行框里（量过：正文 17px 时离行框顶还有 1–2px）。 */
 .otw-editor .cm-otw-footnote.is-ref {
   position: relative;
-  top: -1.06em;
-  line-height: 1.35;
-  margin: 0 0.1em;
+  top: -0.58em;
+  min-width: 1.3em;
+  margin: 0 0.12em 0 0.06em;
+  padding: 0 0.36em;
+  font-size: 0.62em;
+  line-height: 1.25;
+  letter-spacing: 0;
 }
 .otw-editor .cm-otw-footnote.is-def {
   margin-right: 0.5em;
@@ -1096,6 +1201,74 @@ body {
 .otw-editor .cm-otw-footnote-def {
   color: var(--color-muted);
   font-size: 0.92em;
+}
+
+/* ---------- 悬停卡片（editor/hoverCard.ts）：脚注预览、缩写全称 ----------
+   挂在 body 上、fixed 定位，不在 .otw-editor 里面，所以选择器不带前缀。
+   贴在目标上方（放不下才在下方），从目标那一侧轻轻浮出来。 */
+.otw-hovercard {
+  position: fixed;
+  z-index: 60;
+  box-sizing: border-box;
+  max-width: min(340px, calc(100vw - 24px));
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-canvas);
+  padding: 8px 12px 9px;
+  box-shadow: var(--shadow-float);
+  color: var(--color-body);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  user-select: none;
+  transform-origin: 50% 100%;
+  animation: otw-hovercard-in 150ms var(--ease-out-quint) both;
+}
+.otw-hovercard.is-below {
+  transform-origin: 50% 0;
+  animation-name: otw-hovercard-in-below;
+}
+.otw-hovercard.is-leaving {
+  animation: otw-hovercard-out 100ms var(--ease-in-out-sub) both;
+}
+.otw-hovercard-label {
+  color: var(--color-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+}
+.otw-hovercard-body {
+  margin-top: 1px;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.otw-hovercard-hint {
+  margin-top: 5px;
+  color: var(--color-faint);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+@keyframes otw-hovercard-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.98);
+  }
+}
+@keyframes otw-hovercard-in-below {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+}
+@keyframes otw-hovercard-out {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
 }
 
 /* ---------- 引用块：按嵌套层数叠竖线 ---------- */
@@ -1471,37 +1644,214 @@ body {
   font-size: 14px;
   padding: 0.9em 0;
 }
-.otw-editor .cm-otw-table-widget {
-  width: 100%;
-  margin: 0;
-  border-collapse: collapse;
+/* 表格的样子：一张圆角卡片，里面只有细细的横向分隔、极淡的竖向分隔；
+   表头是一条浅底上的小号灰字，不和内容抢；数字列右对齐、等宽数字。
+   圆角和边框画在 frame 上 —— border-collapse: collapse 的表格本身画不出圆角。 */
+.otw-editor .cm-otw-table-frame {
+  --table-rule: color-mix(in srgb, var(--color-line-strong) 70%, var(--color-canvas));
+  --table-head: color-mix(in srgb, var(--color-panel) 55%, var(--color-rail));
   overflow: hidden;
   border: 1px solid var(--color-line-strong);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--color-canvas);
-  font-size: 14px;
+  box-shadow: 0 1px 2px rgb(26 26 24 / 0.035);
   cursor: text;
   animation: otw-block-in var(--duration-base) var(--ease-out-quint) both;
 }
+/* 比正文宽的表格横向滑动；纵向永远不滚（overflow-x: auto 会顺带把 y 也变成 auto） */
+.otw-editor .cm-otw-table-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+.otw-editor .cm-otw-table-widget {
+  width: 100%;
+  margin: 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
 .otw-editor .cm-otw-table-widget th,
 .otw-editor .cm-otw-table-widget td {
-  min-width: 90px;
-  border: 1px solid var(--color-line-strong);
-  padding: 8px 11px;
+  min-width: 72px;
+  border-bottom: 1px solid var(--table-rule);
+  padding: 9px 14px;
   color: var(--color-body);
+  vertical-align: top;
   transition: background-color var(--duration-fast) var(--ease-out-quint);
 }
+.otw-editor .cm-otw-table-widget :is(th, td) + :is(th, td) {
+  border-left: 1px solid color-mix(in srgb, var(--table-rule) 65%, transparent);
+}
 .otw-editor .cm-otw-table-widget th {
-  background: var(--color-panel);
+  border-bottom-color: var(--color-line-strong);
+  background: var(--table-head);
+  padding-top: 8px;
+  padding-bottom: 8px;
+  color: var(--color-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1.5;
+}
+.otw-editor .cm-otw-table-widget tbody tr:last-child td {
+  border-bottom: 0;
+}
+/* 第一列多半是「这一行是什么」：字色重一档 */
+.otw-editor .cm-otw-table-widget td:first-child {
   color: var(--color-ink);
-  font-weight: 650;
 }
 .otw-editor .cm-otw-table-widget tbody tr:hover td {
   background: var(--color-accent-wash-2);
 }
+.otw-editor .cm-otw-table-widget .is-num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .otw-editor .cm-otw-table-widget .cm-otw-code {
   padding: 0 4px;
   font-size: 0.92em;
+}
+/* CSV / TSV 顶上的标签栏：和代码块封口一个做法 —— 格式名、行列数、复制 */
+.otw-editor .cm-otw-table-bar {
+  display: flex;
+  height: 30px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--color-line-strong);
+  background: var(--color-panel);
+  padding: 0 6px 0 14px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 1;
+}
+.otw-editor .cm-otw-table-format {
+  color: var(--color-muted);
+  font-weight: 650;
+  letter-spacing: 0.08em;
+}
+.otw-editor .cm-otw-table-meta {
+  color: var(--color-faint);
+  font-variant-numeric: tabular-nums;
+}
+.otw-editor .cm-otw-table-spacer {
+  flex: 1;
+}
+.otw-editor .cm-otw-table-bar:hover .cm-otw-code-copy {
+  opacity: 1;
+}
+/* ---------- 表格里直接编辑（editor/tableWidget.ts）----------
+   点进的格子露出源码：白底 + 一圈主色内描边，系统光标用主色（正文的光标是自己画的，
+   .cm-content 把 caret-color 设成了透明，这里要还回来）。 */
+.otw-editor .cm-otw-table-widget :is(td, th).is-editing {
+  background: var(--color-canvas);
+  box-shadow: inset 0 0 0 1.5px var(--color-accent);
+  color: var(--color-ink);
+  caret-color: var(--color-accent);
+  outline: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.otw-editor .cm-otw-table-widget th.is-editing {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+/* 编辑时整张表的行悬停高亮先停掉，免得和正在编辑的格子抢眼 */
+.otw-editor .cm-otw-table-block.is-editing .cm-otw-table-widget tbody tr:hover td {
+  background: transparent;
+}
+.otw-editor .cm-otw-table-block.is-editing .cm-otw-table-widget tbody tr:hover td.is-editing {
+  background: var(--color-canvas);
+}
+
+/* 编辑时浮在表格右上角的小工具栏：行｜列｜对齐｜源码，每组之间一道细竖线。
+   绝对定位，不占高度（CodeMirror 量替身高度不受影响）；压在上一行的下沿上，和 Typora 一样。
+   换格子时表格一直是 is-editing，入场动画只在第一次点进表格时放一次 */
+.otw-editor .cm-otw-table-block {
+  position: relative;
+}
+.otw-editor .cm-otw-table-tools {
+  position: absolute;
+  z-index: 5;
+  top: calc(0.9em - 36px);
+  right: 0;
+  display: none;
+  align-items: center;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 9px;
+  background: var(--color-canvas);
+  padding: 2px;
+  box-shadow: var(--shadow-float);
+  font-family: var(--font-sans);
+  cursor: default;
+}
+.otw-editor .cm-otw-table-block.is-editing .cm-otw-table-tools {
+  display: flex;
+  animation: otw-search-in var(--duration-fast) var(--ease-out-quint) both;
+}
+.otw-editor .cm-otw-table-tools-group {
+  display: flex;
+  gap: 1px;
+}
+.otw-editor .cm-otw-table-tools-group + .cm-otw-table-tools-group {
+  margin-left: 3px;
+  border-left: 1px solid var(--color-line-strong);
+  padding-left: 3px;
+}
+.otw-editor .cm-otw-table-tools button {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out-quint), color
+    var(--duration-fast) var(--ease-out-quint), transform var(--duration-instant)
+    var(--ease-out-quint);
+}
+.otw-editor .cm-otw-table-tools button svg {
+  width: 15px;
+  height: 15px;
+}
+.otw-editor .cm-otw-table-tools button:hover:not(:disabled) {
+  background: var(--color-raised);
+  color: var(--color-ink);
+}
+.otw-editor .cm-otw-table-tools button:active:not(:disabled) {
+  transform: scale(0.92);
+}
+.otw-editor .cm-otw-table-tools button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.otw-editor .cm-otw-table-tools button:is([data-action="row-delete"], [data-action="col-delete"]):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  color: var(--color-danger);
+}
+/* 当前列的对齐方式亮着 */
+.otw-editor .cm-otw-table-tools button.is-on {
+  background: var(--color-accent-wash);
+  color: var(--color-accent);
+}
+.otw-editor .cm-otw-table-tools button.is-on:hover {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+}
+/* 格子里的链接、代码在编辑态以外照常显示；非编辑态的格子是 I 形指针（点进去就能改） */
+.otw-editor .cm-otw-table-widget :is(td, th) {
+  cursor: text;
+}
+
+/* 有标签栏时表头不再另铺一层底色，两条灰带叠在一起太重 */
+.otw-editor .cm-otw-table-frame:not(.is-markdown) .cm-otw-table-widget th {
+  background: transparent;
 }
 
 /* ---------- 列表 / 任务 ---------- */
@@ -1812,12 +2162,20 @@ body {
 .otw-editor .cm-otw-big {
   font-size: 1.2em;
 }
-/* 缩写：点状下划线，悬停看全称（title） */
+/* 缩写（`*[HTML]: 全称` 定义过的词、<abbr title>）：平时和正文一模一样 ——
+   以前常驻一条点状下划线，一篇文档里满是「HTML」底下的一排小点，看着像渲染出错。
+   鼠标移上去才浮出一层浅底和点线，同时弹出全称卡片（editor/hoverCard.ts）。 */
 .otw-editor .cm-otw-abbr {
-  text-decoration: underline dotted;
-  text-decoration-color: var(--color-muted);
+  border-radius: 3px;
+  text-decoration: underline dotted transparent;
   text-underline-offset: 3px;
   cursor: help;
+  transition: background-color var(--duration-fast) var(--ease-out-quint), text-decoration-color
+    var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .cm-otw-abbr:hover {
+  background: var(--color-accent-wash);
+  text-decoration-color: var(--color-accent);
 }
 .otw-editor .cm-otw-abbr-def {
   color: var(--color-faint);
@@ -1907,22 +2265,34 @@ body {
 .otw-editor .cm-otw-html-widget ol {
   list-style: decimal;
 }
+/* HTML 表格有 rowspan / colspan，只能 border-collapse，画不出圆角；
+   配色、留白、表头和 Markdown 表格对齐 */
 .otw-editor .cm-otw-html-widget table {
   border-collapse: collapse;
   border: 1px solid var(--color-line-strong);
-  border-radius: 8px;
   background: var(--color-canvas);
   font-size: 14px;
+  line-height: 1.6;
 }
 .otw-editor .cm-otw-html-widget :is(th, td) {
   min-width: 60px;
-  border: 1px solid var(--color-line-strong);
-  padding: 7px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-line-strong) 70%, var(--color-canvas));
+  padding: 9px 14px;
+  vertical-align: top;
 }
 .otw-editor .cm-otw-html-widget th {
-  background: var(--color-panel);
-  color: var(--color-ink);
-  font-weight: 650;
+  border-bottom-color: var(--color-line-strong);
+  background: color-mix(in srgb, var(--color-panel) 55%, var(--color-rail));
+  color: var(--color-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.otw-editor .cm-otw-html-widget caption {
+  padding-bottom: 6px;
+  color: var(--color-muted);
+  font-size: 12.5px;
+  text-align: left;
 }
 .otw-editor .cm-otw-html-widget blockquote {
   margin: 0.4em 0;
@@ -1999,9 +2369,27 @@ body {
 .otw-editor .cm-otw-math-block {
   padding: 0.5em 0;
 }
+/* 不出滚动条（见 editor/math.ts 文件头）：溢出的积分号、上下限直接画在上下留白里；
+   太宽的公式由 fitToWidth 缩字号。缩到下限还放不下（is-overflowing）才允许横向
+   拖动 —— 靠触控板 / Shift+滚轮，滑块本身仍然不画；这时改成左对齐，
+   居中的内容从左边溢出去是滑不回来的。 */
 .otw-editor .cm-otw-math.is-block {
-  overflow-x: auto;
+  /* 宽度不能跟着内容走：KaTeX 的块级公式是不折行的，不隔断的话一条超长公式的
+     最小宽度会一路传上去，把整列正文撑得和公式一样宽。以前是 overflow-x: auto
+     顺带隔断了这一层，去掉它就得靠 inline-size 包含来隔断 */
+  contain: inline-size;
   text-align: center;
+}
+.otw-editor .cm-otw-math.is-block.is-overflowing {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.otw-editor .cm-otw-math.is-block.is-overflowing::-webkit-scrollbar {
+  display: none;
+}
+.otw-editor .cm-otw-math.is-overflowing .katex-display > .katex {
+  text-align: left;
 }
 .otw-editor .cm-otw-math .katex {
   font-size: 1.05em;

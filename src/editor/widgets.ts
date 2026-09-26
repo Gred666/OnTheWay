@@ -1,4 +1,4 @@
-import { EditorView, WidgetType } from "@codemirror/view";
+import { type EditorView, WidgetType } from "@codemirror/view";
 import {
   type AnimatedEmoji,
   EmojiPlayer,
@@ -9,13 +9,14 @@ import {
   wake,
 } from "./animatedEmoji";
 import { type CalloutHead, type CalloutKind, calloutIcon } from "./callout";
+import { glideTo } from "./glide";
 import { hasRenderableHtml, safeHref, sanitizeHtml } from "./html";
-import { inlinePlainText, renderInline } from "./inlineDom";
+import { inlinePlainText } from "./inlineDom";
 import { openExternal } from "./links";
-import type { MarkdownTableModel } from "./markdownTable";
 
 /* ============================================================
-   编辑器里所有的 DOM 替身。
+   编辑器里所有的 DOM 替身。（表格、公式、图表的替身各有自己的文件：
+   tableWidget.ts / math.ts / diagram.ts。）
 
    两条硬规则（都是 CodeMirror 用 getBoundingClientRect 量高度带来的）：
    1. 块级 widget 的留白只能用外层容器的 padding，绝不能用 margin ——
@@ -24,7 +25,7 @@ import type { MarkdownTableModel } from "./markdownTable";
    ============================================================ */
 
 /** 点一下把光标放回源码位置。所有「点击即编辑」的替身都用它。 */
-function jumpToSource(view: EditorView, position: number) {
+export function jumpToSource(view: EditorView, position: number) {
   view.dispatch({ selection: { anchor: position } });
   view.focus();
 }
@@ -52,16 +53,74 @@ export function positionOf(view: EditorView, dom: HTMLElement): number {
  * 改动带来的重建，直接以最终状态出现（加 is-settled，CSS 里关掉入场动画）。
  *
  * fresh 不进 eq：同一个替身不会因为这个开关不同就被重建。
+ *
+ * 另一件事是估高。CodeMirror 只画视口附近的内容，没画过的块级替身一律按「一行」
+ * 估高度 —— 一张 mermaid 图 300px、一张表几百 px，都被当成 24px。跳到远处
+ * （Ctrl+F、目录）时先按估计的高度滚过去，上面的替身画出来一量，整页往下一沉，
+ * 刚找到的地方就被挤出视口。所以块级替身报一个估计值（guessHeight），画过一次的
+ * 按内容（heightKey）记住量到的真实高度，下次（切走再切回这篇）直接用。
  */
 export abstract class OtwWidget extends WidgetType {
   fresh = true;
 
-  /** toDOM 返回根节点前过一下：不是新内容就标成 is-settled */
+  /** 块级替身按内容给一个键，量到的真实高度记在它名下；行内替身不用 */
+  protected heightKey(): string | null {
+    return null;
+  }
+
+  /** 没量过时的估计（px，按编辑器 17px 正文算）；-1 表示不知道，CodeMirror 按一行算 */
+  protected guessHeight(): number {
+    return -1;
+  }
+
+  override get estimatedHeight(): number {
+    const key = this.heightKey();
+    return (key !== null && measuredHeights.get(key)) || this.guessHeight();
+  }
+
+  /** toDOM 返回根节点前过一下：不是新内容就标成 is-settled；块级替身开始记高度 */
   protected settle<T extends Element>(dom: T): T {
     if (!this.fresh) dom.classList.add("is-settled");
+    this.trackHeight(dom);
     return dom;
   }
+
+  /** updateDOM 复用旧 DOM 时内容变了，高度也改记到新的键下 */
+  protected trackHeight(dom: Element) {
+    const key = this.heightKey();
+    if (key === null || !heightObserver) return;
+    trackedHeights.set(dom, key);
+    heightObserver.observe(dom);
+  }
+
+  override destroy(dom: HTMLElement) {
+    if (!trackedHeights.has(dom)) return;
+    heightObserver?.unobserve(dom);
+    trackedHeights.delete(dom);
+  }
 }
+
+/** 量到过的块级替身高度，按内容记；上限 400 条，满了丢最早的 */
+const measuredHeights = new Map<string, number>();
+const MEASURED_HEIGHT_LIMIT = 400;
+const trackedHeights = new WeakMap<Element, string>();
+const heightObserver =
+  typeof ResizeObserver === "undefined"
+    ? null
+    : new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const key = trackedHeights.get(entry.target);
+          const height =
+            entry.borderBoxSize?.[0]?.blockSize ?? entry.target.getBoundingClientRect().height;
+          if (!key || !(height > 0)) continue;
+          measuredHeights.delete(key);
+          if (measuredHeights.size >= MEASURED_HEIGHT_LIMIT) {
+            const oldest = measuredHeights.keys().next().value;
+            if (oldest !== undefined) measuredHeights.delete(oldest);
+          }
+          measuredHeights.set(key, height);
+        }
+      });
 
 function svg(viewBox: string, d: string, className: string): SVGSVGElement {
   const node = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -185,6 +244,11 @@ export class CodeFenceWidget extends OtwWidget {
     return other.side === this.side && other.language === this.language && other.code === this.code;
   }
 
+  /** 开头封口 8 + 28，结尾封口 14 + 8（globals.css「围栏的几何」） */
+  protected override guessHeight() {
+    return this.side === "open" ? 36 : 22;
+  }
+
   toDOM(view: EditorView) {
     // 外层只负责留白（padding，见文件头）。
     const block = document.createElement("div");
@@ -198,43 +262,44 @@ export class CodeFenceWidget extends OtwWidget {
         label.textContent = this.language;
         cap.append(label);
       }
-      cap.append(this.copyButton(view));
+      cap.append(copyButton(view, () => this.code, "复制代码"));
     }
     block.append(cap);
     return this.settle(block);
   }
+}
 
-  private copyButton(view: EditorView): HTMLButtonElement {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "cm-otw-code-copy";
-    button.setAttribute("aria-label", "复制代码");
-    button.title = "复制代码";
-    const icon = svg("0 0 20 20", COPY_ICON, "cm-otw-code-copy-icon");
-    const text = document.createElement("span");
-    text.textContent = "复制";
-    button.append(icon, text);
+/** 代码块封口和 CSV 标签栏上的「复制」按钮。复制成功后对勾描出来，1.4 秒后复原。 */
+export function copyButton(view: EditorView, text: () => string, what: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "cm-otw-code-copy";
+  button.setAttribute("aria-label", what);
+  button.title = what;
+  const icon = svg("0 0 20 20", COPY_ICON, "cm-otw-code-copy-icon");
+  const label = document.createElement("span");
+  label.textContent = "复制";
+  button.append(icon, label);
 
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    // mousedown 要拦掉：否则点按钮的同时光标会被 CodeMirror 放进代码块，
-    // 块一激活封口就消失了，按钮在手指底下不见。
-    button.addEventListener("mousedown", (event) => event.preventDefault());
-    button.addEventListener("click", () => {
-      void copyText(this.code, view).then((copied) => {
-        if (!copied) return;
-        button.classList.add("is-done");
-        icon.firstElementChild?.setAttribute("d", DONE_ICON);
-        text.textContent = "已复制";
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-          button.classList.remove("is-done");
-          icon.firstElementChild?.setAttribute("d", COPY_ICON);
-          text.textContent = "复制";
-        }, 1400);
-      });
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  // mousedown 要拦掉：否则点按钮的同时光标会被 CodeMirror 放进代码块，
+  // 块一激活封口就消失了，按钮在手指底下不见。
+  button.addEventListener("mousedown", (event) => event.preventDefault());
+  button.addEventListener("click", () => {
+    void copyText(text(), view).then((copied) => {
+      if (!copied) return;
+      button.classList.add("is-done");
+      icon.firstElementChild?.setAttribute("d", DONE_ICON);
+      label.textContent = "已复制";
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        button.classList.remove("is-done");
+        icon.firstElementChild?.setAttribute("d", COPY_ICON);
+        label.textContent = "复制";
+      }, 1400);
     });
-    return button;
-  }
+  });
+  return button;
 }
 
 /**
@@ -272,6 +337,11 @@ async function copyText(text: string, view: EditorView): Promise<boolean> {
 export class HorizontalRuleWidget extends OtwWidget {
   eq() {
     return true;
+  }
+
+  /** 1px 线 + 上下各 0.9em */
+  protected override guessHeight() {
+    return 32;
   }
 
   toDOM() {
@@ -325,52 +395,6 @@ export class ImageWidget extends OtwWidget {
     image.src = this.image.source;
     if (image.complete && image.naturalWidth > 0) settle("is-loaded");
     return this.settle(image);
-  }
-}
-
-/* ---------------- 表格 ---------------- */
-
-export class TableWidget extends OtwWidget {
-  private readonly key: string;
-
-  constructor(private readonly table: MarkdownTableModel) {
-    super();
-    this.key = JSON.stringify(table);
-  }
-
-  eq(other: TableWidget) {
-    return other.key === this.key;
-  }
-
-  toDOM(view: EditorView) {
-    // 外层只负责留白，理由同 CodeFenceWidget：margin 不计入 CodeMirror 的高度图。
-    const block = document.createElement("div");
-    block.className = "cm-otw-table-block";
-    const table = document.createElement("table");
-    table.className = "cm-otw-table-widget";
-    table.title = "点击编辑表格";
-    table.addEventListener("mousedown", (event) => {
-      event.preventDefault();
-      jumpToSource(view, positionOf(view, block));
-    });
-    const head = table.createTHead().insertRow();
-    this.table.header.forEach((value, index) => {
-      const cell = document.createElement("th");
-      cell.append(...renderInline(value));
-      cell.style.textAlign = this.table.alignments[index] ?? "left";
-      head.append(cell);
-    });
-    const body = table.createTBody();
-    for (const row of this.table.rows) {
-      const tr = body.insertRow();
-      row.forEach((value, index) => {
-        const cell = tr.insertCell();
-        cell.append(...renderInline(value));
-        cell.style.textAlign = this.table.alignments[index] ?? "left";
-      });
-    }
-    block.append(table);
-    return this.settle(block);
   }
 }
 
@@ -634,12 +658,15 @@ export class FootnoteWidget extends OtwWidget {
     const node = document.createElement(this.role === "ref" ? "sup" : "span");
     node.className = `cm-otw-footnote is-${this.role}`;
     node.textContent = this.id;
-    node.title =
-      this.role === "ref"
-        ? this.preview
-          ? `${this.preview}\n\n点击跳到脚注`
-          : `脚注 ${this.id}（还没有写定义）`
-        : `脚注 ${this.id} · 点击回到引用处`;
+    // 悬停卡片（hoverCard.ts），不用原生 title：那个就压在鼠标底下，把正在读的字盖住
+    node.dataset.otwTipLabel = `脚注 ${this.id}`;
+    if (this.role === "ref") {
+      node.dataset.otwTip = this.preview || "还没有写这条脚注的内容";
+      node.dataset.otwTipHint = this.preview ? "点击跳到脚注" : "点击编辑";
+    } else {
+      node.dataset.otwTip = "";
+      node.dataset.otwTipHint = "点击回到正文引用处";
+    }
     node.addEventListener("mousedown", (event) => {
       event.preventDefault();
       const target =
@@ -651,11 +678,9 @@ export class FootnoteWidget extends OtwWidget {
         jumpToSource(view, positionOf(view, node) + 2);
         return;
       }
-      view.dispatch({
-        selection: { anchor: target },
-        effects: EditorView.scrollIntoView(target, { y: "center" }),
-      });
+      view.dispatch({ selection: { anchor: target } });
       view.focus();
+      glideTo(view, target, { y: "center", nearest: true });
     });
     return this.settle(node);
   }
@@ -699,6 +724,15 @@ export class TocWidget extends OtwWidget {
     return other.key === this.key;
   }
 
+  protected override heightKey() {
+    return `toc:${this.key}`;
+  }
+
+  /** 留白、边框、「目录」小标题约 66px，每条 31px */
+  protected override guessHeight() {
+    return 66 + Math.max(1, this.entries.length) * 31;
+  }
+
   toDOM(view: EditorView) {
     const block = document.createElement("div");
     block.className = "cm-otw-toc-block";
@@ -737,11 +771,9 @@ export class TocWidget extends OtwWidget {
         button.addEventListener("click", () => {
           // 条目里存的位置可能已经过时（上方编辑过），按文字重新找一遍
           const target = findHeading(view, entry.level, entry.text) ?? entry.from;
-          view.dispatch({
-            selection: { anchor: target },
-            effects: EditorView.scrollIntoView(target, { y: "start", yMargin: 72 }),
-          });
+          view.dispatch({ selection: { anchor: target } });
           view.focus();
+          glideTo(view, target, { y: "start", margin: 72 });
         });
         item.append(button);
         list.append(item);
@@ -763,6 +795,11 @@ export class FrontMatterFenceWidget extends OtwWidget {
 
   eq(other: FrontMatterFenceWidget) {
     return other.side === this.side;
+  }
+
+  /** 开头封口 26，结尾封口 14 + 14 留白 */
+  protected override guessHeight() {
+    return this.side === "open" ? 26 : 28;
   }
 
   toDOM(view: EditorView) {
@@ -848,6 +885,15 @@ export class HtmlBlockWidget extends OtwWidget {
 
   eq(other: HtmlBlockWidget) {
     return other.source === this.source;
+  }
+
+  protected override heightKey() {
+    return `html:${this.source}`;
+  }
+
+  /** 没量过：大致按源码行数算，一行 24px */
+  protected override guessHeight() {
+    return 12 + this.source.split("\n").length * 24;
   }
 
   toDOM(view: EditorView) {

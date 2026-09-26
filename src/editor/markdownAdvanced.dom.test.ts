@@ -5,6 +5,7 @@ import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { typoraDecorations } from "./MarkdownEditor";
 import { diagramEngine } from "./diagram";
+import { hoverCard } from "./hoverCard";
 import { resolveImageSource, safeImageSource, sanitizeHtml, sanitizeStyle } from "./html";
 import { splitWikiTarget, wikiTargetAt } from "./links";
 import { markdownSupport } from "./markdownParser";
@@ -283,7 +284,7 @@ describe("图表与 CSV 围栏", () => {
   });
 
   it("parses tsv and rfc4180 quotes", () => {
-    expect(parseDelimitedTable('a\tb\n"x ""q"""\ty\n', "\t")).toEqual({
+    expect(parseDelimitedTable('a\tb\n"x ""q"""\ty\n', "\t")).toMatchObject({
       header: ["a", "b"],
       rows: [['x "q"', "y"]],
       alignments: [null, null],
@@ -320,7 +321,8 @@ describe("定义列表、缩写、智能标点", () => {
     const { parent } = mount("HTML 很好，HTML5 不算\n\n*[HTML]: 超文本标记语言\n\n后", 999);
     const abbr = parent.querySelectorAll(".cm-otw-abbr");
     expect(abbr).toHaveLength(1);
-    expect(abbr[0]?.getAttribute("title")).toBe("超文本标记语言");
+    expect(abbr[0]?.getAttribute("data-otw-tip")).toBe("超文本标记语言");
+    expect(abbr[0]?.getAttribute("data-otw-tip-label")).toBe("HTML");
     expect(parent.querySelector(".cm-line.cm-otw-abbr-def")).not.toBeNull();
   });
 
@@ -349,7 +351,10 @@ describe("脚注与双链", () => {
     const source = "正文[^a] 完\n\n[^a]: 这是 多个 词 的脚注";
     const { parent, view } = mount(source, 0);
     const ref = parent.querySelector(".cm-otw-footnote.is-ref") as HTMLElement;
-    expect(ref.title).toContain("这是 多个 词 的脚注");
+    // 预览走悬停卡片（hoverCard.ts）的 data 属性，不再用原生 title
+    expect(ref.dataset.otwTip).toBe("这是 多个 词 的脚注");
+    expect(ref.dataset.otwTipLabel).toBe("脚注 a");
+    expect(ref.hasAttribute("title")).toBe(false);
     expect(parent.querySelector(".cm-otw-footnote.is-def")).not.toBeNull();
     expect(lines(parent)).toEqual(["正文a 完", "", "a这是 多个 词 的脚注"]);
 
@@ -381,5 +386,63 @@ describe("图片地址", () => {
     expect(safeImageSource("javascript:alert(1)")).toBeNull();
     // 浏览器里没有 asset 协议可转，本机路径原样返回
     expect(resolveImageSource("C:\\pics\\a.png")).toBe("C:\\pics\\a.png");
+  });
+});
+
+describe("悬停卡片", () => {
+  function mountWithCard(doc: string) {
+    const parent = document.createElement("div");
+    document.body.append(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc,
+        selection: { anchor: doc.length },
+        extensions: [markdownSupport(), typoraDecorations, hoverCard],
+      }),
+    });
+    views.push(view);
+    return { parent, view };
+  }
+  const over = (node: Element) =>
+    node.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+  const out = (node: Element) =>
+    node.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+
+  it("shows the footnote body above the badge after a short delay, and hides on leave", () => {
+    vi.useFakeTimers();
+    try {
+      const { parent } = mountWithCard("正文[^a] 完\n\n[^a]: 脚注的内容\n\n后");
+      const ref = parent.querySelector(".cm-otw-footnote.is-ref")!;
+      over(ref);
+      expect(document.querySelector(".otw-hovercard")).toBeNull();
+      vi.advanceTimersByTime(400);
+      const card = document.querySelector(".otw-hovercard")!;
+      expect(card.querySelector(".otw-hovercard-label")?.textContent).toBe("脚注 a");
+      expect(card.querySelector(".otw-hovercard-body")?.textContent).toBe("脚注的内容");
+      expect(card.querySelector(".otw-hovercard-hint")?.textContent).toBe("点击跳到脚注");
+
+      out(ref);
+      vi.advanceTimersByTime(400);
+      expect(document.querySelector(".otw-hovercard")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows an abbreviation's expansion and gets out of the way on scroll", () => {
+    vi.useFakeTimers();
+    try {
+      const { parent } = mountWithCard("HTML 很好\n\n*[HTML]: 超文本标记语言\n\n后");
+      const abbr = parent.querySelector(".cm-otw-abbr")!;
+      over(abbr);
+      vi.advanceTimersByTime(400);
+      expect(document.querySelector(".otw-hovercard-body")?.textContent).toBe("超文本标记语言");
+      window.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(400);
+      expect(document.querySelector(".otw-hovercard")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

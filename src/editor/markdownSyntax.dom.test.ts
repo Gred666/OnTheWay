@@ -3,9 +3,10 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveImage, typoraDecorations } from "./MarkdownEditor";
+import { resolveImage, typoraBlockDecorations, typoraDecorations } from "./MarkdownEditor";
 import { linkTargetAt, wikiTargetAt } from "./links";
 import { markdownSupport } from "./markdownParser";
+import { TableWidget } from "./tableWidget";
 
 const views: EditorView[] = [];
 
@@ -235,6 +236,37 @@ describe("块级构造", () => {
     view.dispatch({ selection: { anchor: 0 } });
     expect(parent.querySelector(".cm-otw-toc")).toBeNull();
     expect(lines(parent)[0]).toBe("[TOC]");
+  });
+
+  // CodeMirror 建状态时只同步解析开头约 3000 个字符。以前块级层就拿这半棵树：
+  // 目录只列出开头几节，后面的表格还是源码，要点一下才「展开」。
+  it("sees the whole document on open: full [TOC] and far-away tables without a click", () => {
+    const filler = Array.from({ length: 400 }, (_, i) => `第 ${i} 段，用来把文档撑长。`).join(
+      "\n\n",
+    );
+    const source = `[TOC]\n\n# 开头\n\n${filler}\n\n## 远处的标题\n\n| a | b |\n| :-: | --: |\n| 1 | 2 |\n\n后`;
+    expect(source.length).toBeGreaterThan(6000);
+    const { parent, view } = mount(source, source.length);
+    const items = [...parent.querySelectorAll(".cm-otw-toc-item button")].map((n) => n.textContent);
+    expect(items).toEqual(["开头", "远处的标题"]);
+    const widgets: unknown[] = [];
+    view.state.field(typoraBlockDecorations).decorations.between(0, source.length, (_f, _t, d) => {
+      widgets.push(d.spec.widget);
+    });
+    expect(widgets.some((widget) => widget instanceof TableWidget)).toBe(true);
+  });
+
+  it("gives csv tables a format bar and right-aligns numeric columns", () => {
+    const source = "```csv\n名字,数量,备注\n苹果,3,红的\n梨,12,\n```\n\n后";
+    const { parent } = mount(source, source.length);
+    expect(parent.querySelector(".cm-otw-table-format")?.textContent).toBe("CSV");
+    expect(parent.querySelector(".cm-otw-table-meta")?.textContent).toBe("2 行 · 3 列");
+    const cells = [
+      ...parent.querySelectorAll<HTMLTableRowElement>(".cm-otw-table-widget tbody tr"),
+    ][0]!.cells;
+    expect([...cells].map((cell) => cell.style.textAlign)).toEqual(["left", "right", "left"]);
+    expect(cells[1]!.classList.contains("is-num")).toBe(true);
+    expect(parent.querySelector(".cm-otw-table-bar .cm-otw-code-copy")).not.toBeNull();
   });
 
   it("renders inline formatting inside table cells", () => {

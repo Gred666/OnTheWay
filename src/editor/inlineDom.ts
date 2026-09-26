@@ -108,7 +108,10 @@ function renderHtmlTag(whole: string, tagName: string, attrs: string, inner: str
       node.title = href;
     }
   }
-  if (name === "abbr" && tag.attrs.title) node.title = tag.attrs.title;
+  if (name === "abbr" && tag.attrs.title) {
+    node.dataset.otwTipLabel = node.textContent?.trim() ?? "";
+    node.dataset.otwTip = tag.attrs.title;
+  }
   return node;
 }
 

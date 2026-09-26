@@ -9,8 +9,14 @@ import {
   replaceNext,
   setSearchQuery,
 } from "@codemirror/search";
-import type { EditorState, SelectionRange } from "@codemirror/state";
+import {
+  EditorSelection,
+  type EditorState,
+  type SelectionRange,
+  StateEffect,
+} from "@codemirror/state";
 import { EditorView, type Panel, type ViewUpdate, runScopeHandlers } from "@codemirror/view";
+import { cancelGlide, glideTo, scrollParent } from "./glide";
 
 /* ============================================================
    查找 / 替换面板（Mod-F）。
@@ -23,11 +29,31 @@ import { EditorView, type Panel, type ViewUpdate, runScopeHandlers } from "@code
    - 固定在窗口顶上那条标题栏带里、贴着文档区右边，不占文档流，开关不推正文，也不压正文
    - 一行：输入框（带「第几个 / 共几个」）、大小写 / 全词 / 正则三个开关、上一个 / 下一个、
      展开替换、关闭；替换是折叠的第二行
-   - 边打边搜（输入法组字期间不搜，组完再搜）；没有结果、正则写错了都有提示
+   - 边打边搜（输入法组字期间不搜，组完再搜），并且直接跳到打开面板时光标之后的
+     第一个匹配（后面没有就从头找）；没有结果、正则写错了都有提示
    - 回车下一个、Shift+回车上一个；替换框里回车替换一个、Mod+回车全部替换；
      Alt+C / Alt+W / Alt+R 切换三个开关（和 VS Code 一样）；Esc 关闭并回到正文
    - 匹配项已经在视口里就不滚；不在的话滚到视口中间，不会再贴着边、也不会被面板挡住
+   - 不在视口里的匹配平滑地滑过去（glide.ts：每一帧重新量目标位置，路上画出来的内容
+     变高了终点跟着挪），到了之后再把匹配项「钉」在屏幕上那个位置（见 SearchPanel.hold）：
+     上面还没画过的表格、图表、公式、图片画出来会变高，以前刚找到就被挤出视口
    ============================================================ */
+
+/** 钉住多久：图表、公式是异步画的，网络图片可能要一两秒才加载完 */
+const HOLD_MS = 4000;
+
+/** 找到的匹配项该待在的竖向区间（窗口坐标）：面板下面、窗口底边上面 */
+function comfortBand(view: EditorView): { top: number; bottom: number } {
+  const panel = view.dom.querySelector(".otw-search");
+  const top = Math.max(0, panel?.getBoundingClientRect().bottom ?? 0) + 8;
+  const bottom = view.dom.ownerDocument.documentElement.clientHeight - 24;
+  return { top, bottom };
+}
+
+/** 挂着我们这个面板的编辑器：找到匹配后的滚动由面板自己来（平滑滑过去 + 钉住） */
+const panelViews = new WeakSet<EditorView>();
+/** 面板接管滚动时，给 CodeMirror 的「滚过去」换成一个什么都不做的效果 */
+const panelScrolls = StateEffect.define<null>();
 
 /** 计数的上限：超过就显示「999+」，长文档里搜一个「的」也不会卡 */
 export const MATCH_COUNT_LIMIT = 999;
@@ -105,14 +131,30 @@ export function matchLabel(
 /**
  * 找到匹配项时怎么滚：已经在视口里（且不在面板底下）就不动，否则滚到正中。
  * 编辑器自己不滚（外层的文档视图在滚），所以这里按窗口量。
+ *
+ * 面板开着的时候不在这里滚，由面板平滑地滑过去（SearchPanel.reveal）；
+ * 面板关着直接按 F3 找下一个，还是照旧一步到位。
  */
 export function scrollToMatch(range: SelectionRange, view: EditorView) {
+  if (panelViews.has(view)) return panelScrolls.of(null);
   const coords = view.coordsAtPos(range.from);
-  const panel = view.dom.querySelector(".otw-search");
-  const top = Math.max(0, panel?.getBoundingClientRect().bottom ?? 0) + 8;
-  const bottom = view.dom.ownerDocument.documentElement.clientHeight - 24;
+  const { top, bottom } = comfortBand(view);
   const visible = !!coords && coords.top >= top && coords.bottom <= bottom;
   return EditorView.scrollIntoView(range.from, { y: visible ? "nearest" : "center" });
+}
+
+/** 从 from 往后第一个匹配；后面没有就从文档开头找（和「下一个」一样绕回去） */
+export function firstMatchFrom(
+  state: EditorState,
+  query: SearchQuery,
+  from: number,
+): { from: number; to: number } | null {
+  if (!query.valid || !query.search) return null;
+  const first = (start: number) => {
+    const step = query.getCursor(state, start).next();
+    return step.done ? null : { from: step.value.from, to: step.value.to };
+  };
+  return first(Math.min(from, state.doc.length)) ?? (from > 0 ? first(0) : null);
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -187,10 +229,56 @@ class SearchPanel implements Panel {
   private recount: ReturnType<typeof setTimeout> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private readonly onResize = () => this.place();
+  /** 边打边搜从哪里往后找：打开面板时的光标，之后是「上一个 / 下一个」停下的地方 */
+  private anchor: number;
+  /**
+   * 钉住的匹配项：pos 要一直待在窗口坐标 y 上（y 在第一次量到它落进可视区时定下）。
+   * 用户自己滚动、点别处、时间到了就松开。
+   */
+  private pin: { pos: number; y: number | null; until: number } | null = null;
+  private readonly pinRequest = {
+    key: "otw-search-pin",
+    read: (view: EditorView) => {
+      const pin = this.pin;
+      if (!pin) return null;
+      if (Date.now() > pin.until) {
+        this.pin = null;
+        return null;
+      }
+      const coords = view.coordsAtPos(pin.pos, 1);
+      return coords ? { top: coords.top, band: comfortBand(view) } : null;
+    },
+    write: (measured: { top: number; band: { top: number; bottom: number } } | null) => {
+      const pin = this.pin;
+      if (!pin || !measured) return;
+      const { top, band } = measured;
+      // 第一次量到：已经落在可视区里就钉在那里；还在外面（CodeMirror 还没滚过去，
+      // 或者滚过去之后又被上面的内容挤走了）就钉在可视区中间
+      pin.y ??=
+        top >= band.top && top <= band.bottom - 20 ? top : (band.top + band.bottom) / 2 - 12;
+      const drift = top - pin.y;
+      if (Math.abs(drift) < 1) return;
+      const scroller = scrollParent(this.view);
+      if (scroller) scroller.scrollTop += drift;
+      else this.view.dom.ownerDocument.defaultView?.scrollBy(0, drift);
+    },
+  };
+  /** 用户自己动了（滚轮、触摸、在面板外点击或按键）：松开，不再跟他抢 */
+  private readonly release = (event: Event) => {
+    if (!this.pin) return;
+    if (
+      (event.type === "keydown" || event.type === "pointerdown") &&
+      this.dom.contains(event.target as Node)
+    ) {
+      return;
+    }
+    this.pin = null;
+  };
 
   constructor(private readonly view: EditorView) {
     const { state } = view;
     this.query = getSearchQuery(state);
+    this.anchor = state.selection.main.from;
 
     this.searchField = field(state.phrase("Find"), this.query.search);
     // openSearchPanel / Mod-F 找的是带 main-field 的输入框：聚焦并全选
@@ -272,7 +360,7 @@ class SearchPanel implements Panel {
     this.replaceRow.append(
       replaceBox,
       button("otw-search-text", `${state.phrase("replace")} (Enter)`, state.phrase("replace"), () =>
-        replaceNext(view),
+        this.go(replaceNext),
       ),
       button("otw-search-text", state.phrase("replace all"), state.phrase("replace all"), () =>
         replaceAll(view),
@@ -302,6 +390,11 @@ class SearchPanel implements Panel {
     // Chromium 里 select() 顺带会聚焦，别的引擎不一定
     this.searchField.focus({ preventScroll: true });
     this.searchField.select();
+    const win = this.view.dom.ownerDocument.defaultView;
+    for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) {
+      win?.addEventListener(type, this.release, { capture: true, passive: true });
+    }
+    panelViews.add(this.view);
   }
 
   update(update: ViewUpdate) {
@@ -314,7 +407,35 @@ class SearchPanel implements Panel {
         }
       }
     }
+    // 「上一个 / 下一个」、边打边搜、替换之后选中了新的匹配：滑过去。
+    // 更新过程中不能量布局，等这一轮更新完再开始
+    if (
+      update.selectionSet &&
+      update.transactions.some(
+        (transaction) =>
+          transaction.isUserEvent("select.search") || transaction.isUserEvent("input.replace"),
+      )
+    ) {
+      queueMicrotask(() => this.reveal());
+    }
+    if (update.docChanged) {
+      this.anchor = update.changes.mapPos(this.anchor);
+      if (this.pin) this.pin.pos = update.changes.mapPos(this.pin.pos);
+    }
+    // 钉着的时候，任何会让高度、视口变化的更新之后都量一次，漂了就滚回来
+    if (
+      this.pin &&
+      (update.heightChanged ||
+        update.geometryChanged ||
+        update.viewportChanged ||
+        update.docChanged ||
+        update.selectionSet)
+    ) {
+      this.view.requestMeasure(this.pinRequest);
+    }
     if (queryChanged) {
+      // 别处换了关键词（面板开着时又按一次 Mod-F，带着新选中的词）：从那里重新开始
+      this.anchor = update.state.selection.main.from;
       this.refresh();
     } else if (update.docChanged) {
       // 在正文里边改边看：数一遍要扫全文，打字时攒一攒再数
@@ -333,6 +454,56 @@ class SearchPanel implements Panel {
     if (this.recount) clearTimeout(this.recount);
     window.removeEventListener("resize", this.onResize);
     this.resizeObserver?.disconnect();
+    const win = this.view.dom.ownerDocument.defaultView;
+    for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) {
+      win?.removeEventListener(type, this.release, { capture: true });
+    }
+    this.pin = null;
+    panelViews.delete(this.view);
+    cancelGlide(this.view);
+  }
+
+  /**
+   * 把选中的匹配项平滑地滑到可视区中间（已经看得见就不动），到了之后钉住。
+   * 滑动的每一帧都重新量目标的位置，上面的内容边画边变高也能准确停下。
+   */
+  private reveal() {
+    if (!panelViews.has(this.view)) return;
+    const { main } = this.view.state.selection;
+    if (main.empty) return;
+    this.pin = null;
+    glideTo(this.view, main.from, {
+      y: "center",
+      nearest: true,
+      band: () => comfortBand(this.view),
+      keep: this.dom,
+      onArrive: (y) => this.hold(y),
+    });
+  }
+
+  /** 把当前选中的匹配项钉在窗口坐标 y 上，直到用户自己动手或者 HOLD_MS 过去 */
+  private hold(y: number | null) {
+    const { main } = this.view.state.selection;
+    if (main.empty) return;
+    this.pin = { pos: main.from, y, until: Date.now() + HOLD_MS };
+    this.view.requestMeasure(this.pinRequest);
+  }
+
+  /** 边打边搜：跳到起点之后的第一个匹配（已经选中的就是它，只是钉住） */
+  private jumpFromAnchor() {
+    const { state } = this.view;
+    const match = firstMatchFrom(state, this.query, this.anchor);
+    if (!match) return;
+    const { main } = state.selection;
+    // 选中之后由 update 接着滑过去；已经选中的就是它，直接确认它看得见
+    if (main.from !== match.from || main.to !== match.to) {
+      this.view.dispatch({
+        selection: EditorSelection.range(match.from, match.to),
+        userEvent: "select.search",
+      });
+    } else {
+      this.reveal();
+    }
   }
 
   /** 文档区的滚动容器（DocumentView 上的 data-doc-scroller）；单独挂的编辑器就是它自己 */
@@ -372,7 +543,8 @@ class SearchPanel implements Panel {
         this.go(event.shiftKey ? findPrevious : findNext);
       } else if (event.target === this.replaceField) {
         event.preventDefault();
-        (event.ctrlKey || event.metaKey ? replaceAll : replaceNext)(this.view);
+        if (event.ctrlKey || event.metaKey) replaceAll(this.view);
+        else this.go(replaceNext);
       }
       return;
     }
@@ -396,6 +568,8 @@ class SearchPanel implements Panel {
   private go(command: (view: EditorView) => boolean) {
     const { selectionStart, selectionEnd, selectionDirection } = this.searchField;
     command(this.view);
+    // 接着往下打字时，从这一个开始找
+    this.anchor = this.view.state.selection.main.from;
     if (this.searchField.ownerDocument.activeElement === this.searchField) {
       this.searchField.setSelectionRange(
         selectionStart,
@@ -411,6 +585,7 @@ class SearchPanel implements Panel {
     this.syncOptions();
     this.view.dispatch({ effects: setSearchQuery.of(next) });
     this.refresh();
+    this.jumpFromAnchor();
   }
 
   private spec() {
@@ -426,9 +601,12 @@ class SearchPanel implements Panel {
   private commit() {
     const query = new SearchQuery(this.spec());
     if (query.eq(this.query)) return;
+    // 只改了替换框：不用跳
+    const searchChanged = query.search !== this.query.search;
     this.query = query;
     this.view.dispatch({ effects: setSearchQuery.of(query) });
     this.refresh();
+    if (searchChanged) this.jumpFromAnchor();
   }
 
   private setQuery(query: SearchQuery) {
