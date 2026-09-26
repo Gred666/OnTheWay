@@ -2,7 +2,6 @@ import { LIST_WIDTH, RAIL_WIDTH, hasListColumn, startTodayTicker, useApp } from 
 import { CommandPalette } from "@/components/CommandPalette";
 import { DocumentView } from "@/components/DocumentView";
 import { ErrorToast } from "@/components/ErrorToast";
-import { ReminderCard } from "@/components/ReminderCard";
 import { Sidebar } from "@/components/Sidebar";
 import { TitleBar } from "@/components/TitleBar";
 import { UndoToast } from "@/components/UndoToast";
@@ -50,7 +49,7 @@ export function Shell() {
   const saveDocument = useData((s) => s.saveDocument);
   const saveTitle = useData((s) => s.saveTitle);
 
-  const { doc, reminder } = useCurrentDocument();
+  const doc = useCurrentDocument();
   const showList = hasListColumn(workspace);
 
   // 零点翻页
@@ -230,8 +229,6 @@ export function Shell() {
               )}
             </motion.main>
           </AnimatePresence>
-
-          {workspace !== "extensions" && <ReminderCard reminder={reminder} />}
         </div>
 
         {/* 底部居中的提示条：错误在上、撤销在下。容器不接收指针，只有提示条本身接收。

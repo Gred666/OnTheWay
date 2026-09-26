@@ -169,17 +169,6 @@ export interface SearchResult {
   tokens: string[];
 }
 
-/* ---------------- 提醒 ---------------- */
-
-export interface Reminder {
-  /** 卡片左上角标签：「提醒」「回顾提醒」 */
-  label: string;
-  /** 主行：「今天 16:30」「周日 20:00」 */
-  when: string;
-  /** 副行：「回看行动项」「更新下一周目标」 */
-  what: string;
-}
-
 /* ---------------- 目录树 ---------------- */
 
 export interface OutlineItem {

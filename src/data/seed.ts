@@ -1,4 +1,4 @@
-import type { DayDoc, Goal, Note, Reminder, Task } from "./types";
+import type { DayDoc, Goal, Note, Task } from "./types";
 
 type NullableTaskField = "meta" | "dueDate" | "timeLabel" | "category" | "goalId" | "completedAt";
 type SeedTask = Omit<Task, NullableTaskField> & Partial<Pick<Task, NullableTaskField>>;
@@ -535,13 +535,6 @@ export const seedMarkedDates = new Set<string>([
   "2026-08-21",
   "2026-08-29",
 ]);
-
-/* ---------------- 提醒 ---------------- */
-
-export const seedReminders: Record<string, Reminder> = {
-  default: { label: "提醒", when: "今天 16:30", what: "回看行动项" },
-  goal: { label: "回顾提醒", when: "周日 20:00", what: "更新下一周目标" },
-};
 
 const normalizeTask = (task: SeedTask): Task => ({
   ...task,

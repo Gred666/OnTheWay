@@ -11,7 +11,6 @@ import {
   periodStartOf,
   toISODate,
 } from "@/lib/date";
-import { seedReminders } from "./seed";
 import { NEW_NOTE_TITLE, saveKeyOf, useData } from "./store";
 import {
   type DayDoc,
@@ -19,7 +18,6 @@ import {
   type DocumentSaveTarget,
   type Goal,
   type GoalHorizon,
-  type Reminder,
   goalKey,
 } from "./types";
 
@@ -37,7 +35,7 @@ import {
      周·月·年 看选中日期所在的周期；没写过就是空白。
    ============================================================ */
 
-export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder } {
+export function useCurrentDocument(): DocumentModel {
   const workspace = useApp((s) => s.workspace);
   const selectedNoteId = useApp((s) => s.selectedNoteId);
   const selectedArchiveId = useApp((s) => s.selectedArchiveId);
@@ -59,56 +57,43 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
     /* ---------------- 笔记 ---------------- */
     case "notes": {
       const note = notes.find((n) => n.id === selectedNoteId) ?? notes[0];
-      if (!note)
-        return {
-          doc: emptyDoc("还没有笔记", "从左侧新建一篇。"),
-          reminder: seedReminders.default!,
-        };
+      if (!note) return emptyDoc("还没有笔记", "从左侧新建一篇。");
 
       return {
-        doc: {
-          key: `note-${note.id}`,
-          title: note.title,
-          bodyMd: draftOr({ kind: "note", id: note.id }, note.contentMd),
-          statusParts: [
-            `${note.wordCount} 字`,
-            `创建时间 ${formatTimestampFull(note.createdAt)}`,
-            `上次更新 ${formatRelativeTime(note.updatedAt)}`,
-          ],
-          deletable: true,
-          editor: { target: { kind: "note", id: note.id }, titleEditable: true },
-        },
-        reminder: seedReminders.default!,
+        key: `note-${note.id}`,
+        title: note.title,
+        bodyMd: draftOr({ kind: "note", id: note.id }, note.contentMd),
+        statusParts: [
+          `${note.wordCount} 字`,
+          `创建时间 ${formatTimestampFull(note.createdAt)}`,
+          `上次更新 ${formatRelativeTime(note.updatedAt)}`,
+        ],
+        deletable: true,
+        editor: { target: { kind: "note", id: note.id }, titleEditable: true },
       };
     }
 
     /* ---------------- 今日 TODO：就是今天这一天 ---------------- */
     case "today": {
       const day = dayDocs.find((d) => d.date === todayDate);
-      return {
-        doc: dayDocument(todayDate, day, todayDate, undefined, draftOr),
-        reminder: seedReminders.default!,
-      };
+      return dayDocument(todayDate, day, todayDate, undefined, draftOr);
     }
 
     /* ---------------- /GOAL：今天所在的周期 ---------------- */
     case "goal": {
       const periodStart = periodStartOf(goalHorizon, todayDate);
       const goal = goals[goalKey(goalHorizon, periodStart)];
-      return {
-        doc: goalDocument(
-          goalHorizon,
-          periodStart,
-          goal,
-          {
-            group: "goal",
-            options: ["周", "月", "年"],
-            active: horizonLabel(goalHorizon),
-          },
-          draftOr,
-        ),
-        reminder: seedReminders.goal!,
-      };
+      return goalDocument(
+        goalHorizon,
+        periodStart,
+        goal,
+        {
+          group: "goal",
+          options: ["周", "月", "年"],
+          active: horizonLabel(goalHorizon),
+        },
+        draftOr,
+      );
     }
 
     /* ---------------- 日历 ---------------- */
@@ -123,53 +108,38 @@ export function useCurrentDocument(): { doc: DocumentModel; reminder: Reminder }
       if (calendarScope !== "day") {
         const periodStart = periodStartOf(calendarScope, selectedDate);
         const goal = goals[goalKey(calendarScope, periodStart)];
-        return {
-          doc: goalDocument(calendarScope, periodStart, goal, segments, draftOr),
-          reminder: seedReminders.goal!,
-        };
+        return goalDocument(calendarScope, periodStart, goal, segments, draftOr);
       }
 
       const day = dayDocs.find((d) => d.date === selectedDate);
-      return {
-        doc: dayDocument(selectedDate, day, todayDate, segments, draftOr),
-        reminder: seedReminders.goal!,
-      };
+      return dayDocument(selectedDate, day, todayDate, segments, draftOr);
     }
 
     /* ---------------- 归档 ---------------- */
     case "archive": {
       const note = archived.find((n) => n.id === selectedArchiveId) ?? archived[0];
       if (!note) {
-        return {
-          doc: emptyDoc("归档是空的", "归档的内容会保留在这里，不出现在日常列表中。"),
-          reminder: seedReminders.default!,
-        };
+        return emptyDoc("归档是空的", "归档的内容会保留在这里，不出现在日常列表中。");
       }
       return {
-        doc: {
-          key: `archive-${note.id}`,
-          title: note.title,
-          banner: {
-            icon: "archive",
-            text: `已归档 · ${formatFullCN(toISODate(new Date(note.archivedAt ?? note.updatedAt)))}`,
-          },
-          bodyMd: draftOr({ kind: "note", id: note.id }, note.contentMd),
-          statusParts: [
-            `${note.wordCount} 字`,
-            `创建时间 ${formatTimestampFull(note.createdAt)}`,
-            `最后编辑于 ${formatRelativeTime(note.updatedAt)}`,
-          ],
-          editor: { target: { kind: "note", id: note.id }, titleEditable: true },
+        key: `archive-${note.id}`,
+        title: note.title,
+        banner: {
+          icon: "archive",
+          text: `已归档 · ${formatFullCN(toISODate(new Date(note.archivedAt ?? note.updatedAt)))}`,
         },
-        reminder: seedReminders.default!,
+        bodyMd: draftOr({ kind: "note", id: note.id }, note.contentMd),
+        statusParts: [
+          `${note.wordCount} 字`,
+          `创建时间 ${formatTimestampFull(note.createdAt)}`,
+          `最后编辑于 ${formatRelativeTime(note.updatedAt)}`,
+        ],
+        editor: { target: { kind: "note", id: note.id }, titleEditable: true },
       };
     }
 
     case "extensions":
-      return {
-        doc: emptyDoc("扩展", ""),
-        reminder: seedReminders.default!,
-      };
+      return emptyDoc("扩展", "");
   }
 }
 
