@@ -2071,83 +2071,312 @@ body {
   color: var(--callout);
 }
 
-/* ---------- 搜索面板 ---------- */
+/* ---------- 查找面板（editor/searchPanel.ts）---------- */
 
-/* CodeMirror 的搜索面板默认是一块没有样式的灰盒子，
-   飘在正文中间还全是英文。这里让它贴住顶部并跟界面对齐。 */
+/* 面板的容器不占文档流：高度为 0、sticky 贴住滚动区的上沿，面板浮在正文右上角。
+   CodeMirror 默认让它占一截高度 —— 一打开整篇正文往下推，关掉再弹回来。
+   底部的容器（跳转到行，Mod-Alt-G）同理贴住下沿。 */
 .otw-editor .cm-panels {
+  z-index: 20;
+  height: 0;
+  overflow: visible;
   border: 0;
   background: transparent;
   color: var(--color-body);
 }
+/* 贴顶时让出窗口顶上 38px 的自绘标题栏（TitleBar.tsx，fixed、整条可拖动）：
+   贴在 top: 0 的话面板上半截压在标题栏底下，点按钮变成了拖窗口 */
 .otw-editor .cm-panels-top {
-  position: sticky;
-  z-index: 5;
-  top: 0;
+  top: 46px;
   border-bottom: 0;
 }
-.otw-editor .cm-panel.cm-search {
+.otw-editor .cm-panels-bottom {
+  bottom: 0;
+  border-top: 0;
+}
+
+@keyframes otw-search-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.otw-editor .otw-search {
+  position: absolute;
+  top: 0;
+  right: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  width: 400px;
+  max-width: 100%;
+  flex-direction: column;
   gap: 6px;
+  box-sizing: border-box;
   border: 1px solid var(--color-line-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--color-canvas);
-  padding: 8px 10px;
-  box-shadow: var(--shadow-card, 0 6px 20px rgb(0 0 0 / 8%));
+  padding: 6px;
+  box-shadow: var(--shadow-float);
   font-family: var(--font-sans);
   font-size: 12.5px;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  cursor: default;
+  animation: otw-search-in var(--duration-fast) var(--ease-out-quint) both;
 }
-.otw-editor .cm-panel.cm-search label {
-  display: inline-flex;
+.otw-editor .otw-search-row {
+  display: flex;
   align-items: center;
+  gap: 2px;
+}
+.otw-editor .otw-search-row[hidden],
+.otw-editor .otw-search [hidden] {
+  display: none;
+}
+/* 替换这一行和输入框左边对齐：让出展开按钮那一格 */
+.otw-editor .otw-search-replace {
   gap: 4px;
-  color: var(--color-muted);
-  font-size: 11.5px;
+  padding-left: 26px;
 }
-.otw-editor .cm-panel.cm-search .cm-textfield {
-  min-width: 140px;
-  border: 1px solid var(--color-line-strong);
-  border-radius: 6px;
+
+/* 输入框：一格浅底，里面是放大镜、输入、计数和三个开关 */
+.otw-editor .otw-search-box {
+  display: flex;
+  min-width: 0;
+  height: 28px;
+  flex: 1;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   background: var(--color-panel);
-  padding: 4px 8px;
-  color: var(--color-ink);
-  font-family: inherit;
-  font-size: 12.5px;
+  padding: 0 3px 0 8px;
+  transition: border-color var(--duration-fast) var(--ease-out-quint), background-color
+    var(--duration-fast) var(--ease-out-quint);
 }
-.otw-editor .cm-panel.cm-search .cm-textfield:focus {
-  border-color: var(--color-accent);
+.otw-editor .otw-search-box:focus-within {
+  border-color: var(--color-line-strong);
+  background: var(--color-canvas);
+}
+/* 没有结果 / 正则写错：计数变红，框线也带一点红 */
+.otw-editor .otw-search-box.is-empty {
+  border-color: color-mix(in srgb, var(--color-danger) 45%, transparent);
+}
+.otw-editor .otw-search-box.is-empty .otw-search-count {
+  color: var(--color-danger);
+}
+.otw-editor .otw-search-lens {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  margin-right: 4px;
+  color: var(--color-faint);
+}
+.otw-editor .otw-search-input {
+  min-width: 0;
+  height: 100%;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-ink);
+  font: inherit;
   outline: none;
 }
-.otw-editor .cm-panel.cm-search .cm-button {
-  border: 1px solid var(--color-line-strong);
-  border-radius: 6px;
-  background: var(--color-panel);
-  padding: 4px 9px;
-  color: var(--color-body);
-  font-family: inherit;
-  font-size: 12px;
-  background-image: none;
+.otw-editor .otw-search-input::placeholder {
+  color: var(--color-faint);
 }
-.otw-editor .cm-panel.cm-search .cm-button:hover {
+.otw-editor .otw-search-input::selection {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+.otw-editor .otw-search-count {
+  flex: none;
+  padding: 0 4px;
+  color: var(--color-faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 图标按钮：上一个 / 下一个 / 展开替换 / 关闭，以及框里的三个开关 */
+.otw-editor .otw-search-icon,
+.otw-editor .otw-search-toggle {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 0;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out-quint), color
+    var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .otw-search-icon {
+  width: 26px;
+  height: 26px;
+}
+.otw-editor .otw-search-icon svg {
+  width: 15px;
+  height: 15px;
+}
+.otw-editor .otw-search-icon:hover,
+.otw-editor .otw-search-toggle:hover {
+  background: var(--color-raised);
+  color: var(--color-ink);
+}
+.otw-editor .otw-search-icon:active,
+.otw-editor .otw-search-toggle:active {
+  transform: scale(0.94);
+}
+.otw-editor .otw-search-expand svg {
+  width: 13px;
+  height: 13px;
+  transition: transform var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .otw-search-expand.is-open svg {
+  transform: rotate(90deg);
+}
+.otw-editor .otw-search-toggle {
+  width: 22px;
+  height: 20px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+/* 「全词」：ab 下面一道横线，一眼看出是整词 */
+.otw-editor .otw-search-toggle[data-option="wholeWord"] {
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+}
+.otw-editor .otw-search-toggle.is-on {
+  background: var(--color-accent-wash);
+  color: var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-accent-line);
+}
+.otw-editor .otw-search-toggle.is-on:hover {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+}
+
+/* 替换那一行的两个文字按钮 */
+.otw-editor .otw-search-text {
+  height: 28px;
+  flex: none;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  padding: 0 10px;
+  color: var(--color-body);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out-quint), border-color
+    var(--duration-fast) var(--ease-out-quint), color var(--duration-fast) var(--ease-out-quint);
+}
+.otw-editor .otw-search-text:hover {
   border-color: var(--color-accent-line);
   background: var(--color-accent-wash);
   color: var(--color-accent);
 }
-.otw-editor .cm-panel.cm-search [name="close"] {
-  position: static;
-  margin-left: auto;
-  border: 0;
-  background: transparent;
-  padding: 2px 6px;
+.otw-editor .otw-search-text:active {
+  transform: scale(0.97);
+}
+
+/* 跳转到行（Mod-Alt-G）：CodeMirror 自带的小对话框，套一样的浮层样式 */
+.otw-editor .cm-dialog {
+  position: absolute;
+  right: 0;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-canvas);
+  padding: 6px 34px 6px 12px;
+  box-shadow: var(--shadow-float);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.4;
+  animation: otw-search-in var(--duration-fast) var(--ease-out-quint) both;
+}
+.otw-editor .cm-dialog form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.otw-editor .cm-dialog label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+.otw-editor .cm-dialog .cm-textfield {
+  width: 88px;
+  height: 28px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-panel);
+  padding: 0 8px;
+  color: var(--color-ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+.otw-editor .cm-dialog .cm-textfield:focus {
+  background: var(--color-canvas);
+}
+.otw-editor .cm-dialog .cm-button {
+  height: 28px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  background-image: none;
+  padding: 0 10px;
+  color: var(--color-body);
+  font: inherit;
+  cursor: pointer;
+}
+.otw-editor .cm-dialog .cm-button:hover {
+  border-color: var(--color-accent-line);
+  background: var(--color-accent-wash);
+  color: var(--color-accent);
+}
+.otw-editor .cm-dialog-close {
+  top: 50%;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
   color: var(--color-faint);
   font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transform: translateY(-50%);
 }
+.otw-editor .cm-dialog-close:hover {
+  background: var(--color-raised);
+  color: var(--color-ink);
+}
+
 .otw-editor .cm-searchMatch {
   border-radius: 3px;
   background: color-mix(in srgb, var(--color-accent) 22%, transparent);
 }
+/* 当前那个再描一圈：焦点在查找框里时正文的选区不显示，只靠它认出「现在在哪」 */
 .otw-editor .cm-searchMatch-selected {
   background: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 70%, transparent);
 }

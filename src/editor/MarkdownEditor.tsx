@@ -64,6 +64,7 @@ import {
 import { parseDelimitedTable, parseMarkdownTable } from "./markdownTable";
 import { MathWidget } from "./math";
 import { registerEditorFlush } from "./saveBus";
+import { createSearchPanel, scrollToMatch } from "./searchPanel";
 import {
   AnimatedEmojiWidget,
   CalloutBadgeWidget,
@@ -98,20 +99,22 @@ import {
 /** 外部内容回填产生的事务，不该被当成用户输入去触发保存。 */
 const externalSync = Annotation.define<boolean>();
 
-/** 搜索面板的中文文案。@codemirror/search 的默认标签是英文的。 */
+/** 查找面板（searchPanel.ts）和跳转到行的中文文案。@codemirror/search 的默认标签是英文的。 */
 const searchPhrases = EditorState.phrases.of({
   "Go to line": "跳转到行",
   go: "跳转",
   Find: "查找",
-  Replace: "替换",
+  Replace: "替换为",
   next: "下一个",
   previous: "上一个",
-  all: "全部",
-  "match case": "区分大小写",
-  "by word": "全词匹配",
-  regexp: "正则",
+  "match case": "区分大小写 (Alt+C)",
+  "by word": "全词匹配 (Alt+W)",
+  regexp: "正则表达式 (Alt+R)",
   replace: "替换",
   "replace all": "全部替换",
+  "Toggle replace": "替换",
+  "No results": "无结果",
+  "Invalid regexp": "正则有误",
   close: "关闭",
   "current match": "当前匹配",
   "on line": "位于行",
@@ -189,7 +192,7 @@ export function MarkdownEditor({
         markdownSupport(languages),
         codeHighlight,
         history(),
-        search({ top: true }),
+        search({ top: true, createPanel: createSearchPanel, scrollToMatch }),
         searchPhrases,
         keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
         typoraDecorations,
