@@ -3,14 +3,14 @@ import { MOD_KEY } from "@/lib/platform";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
-import { search } from "@codemirror/search";
+import { closeSearchPanel, search, searchPanelOpen } from "@codemirror/search";
 import {
   Annotation,
   type ChangeSet,
+  Compartment,
   EditorSelection,
   EditorState,
   type Extension,
-  StateEffect,
   StateField,
 } from "@codemirror/state";
 import {
@@ -104,6 +104,45 @@ import {
 /** 外部内容回填产生的事务，不该被当成用户输入去触发保存。 */
 const externalSync = Annotation.define<boolean>();
 
+/* ---------------- 按文档缓存编辑器状态 ----------------
+   建一个编辑器最贵的是 EditorState.create：同步解析全文的语法树（ensureSyntaxTree）
+   再算一遍块级装饰。66KB 的「语法全览」生产包里要 110ms，切换笔记就卡这一下。
+
+   EditorState 是不可变的值，里面有解析好的语法树、装饰、撤销历史。切走时把它存起来，
+   切回来时直接拿它建视图：不用再解析，撤销历史也还在。
+
+   状态里有一截配置握着上一个编辑器实例的闭包（保存器、React 的 setState）——
+   那一截放在 session 这个 compartment 里，复用时换成新实例的。其余扩展是整个
+   状态的一部分，原样沿用。 */
+
+const session = new Compartment();
+/** 最近切走的这么多篇留着。大文档一篇的状态有几 MB，不能无限留 */
+const STATE_CACHE_LIMIT = 12;
+const stateCache = new Map<string, EditorState>();
+
+function rememberState(key: string, state: EditorState) {
+  stateCache.delete(key);
+  stateCache.set(key, state);
+  while (stateCache.size > STATE_CACHE_LIMIT) {
+    const oldest = stateCache.keys().next().value;
+    if (oldest === undefined) break;
+    stateCache.delete(oldest);
+  }
+}
+
+/** 拿出这篇的缓存。正文和现在要显示的不一样（切走期间被外部改过、保存失败换成了草稿）就不用了 */
+function takeState(key: string, markdown: string): EditorState | null {
+  const cached = stateCache.get(key);
+  stateCache.delete(key);
+  if (!cached || cached.doc.length !== markdown.length) return null;
+  return cached.doc.toString() === markdown ? cached : null;
+}
+
+/** 测试用：清空缓存 */
+export function clearEditorStateCache() {
+  stateCache.clear();
+}
+
 /** 查找面板（searchPanel.ts）和跳转到行的中文文案。@codemirror/search 的默认标签是英文的。 */
 const searchPhrases = EditorState.phrases.of({
   "Go to line": "跳转到行",
@@ -133,6 +172,9 @@ export function MarkdownEditor({
   onDocumentChange,
   onWikiLink,
   fill = true,
+  cacheKey,
+  externalRevision = 0,
+  onExternalConflict,
 }: {
   initialMarkdown: string;
   onSave: (markdown: string) => Promise<void>;
@@ -149,6 +191,18 @@ export function MarkdownEditor({
    * 一大截，看起来像两个不相干的区域。
    */
   fill?: boolean;
+  /**
+   * 这篇文档的键（store 的 saveKeyOf）。给了就在卸载时缓存编辑器状态，
+   * 下次同一篇挂上来直接复用，不再重新解析全文。
+   */
+  cacheKey?: string;
+  /**
+   * 这篇文档被外部改动（别的程序改了文件）刷新过几次。initialMarkdown 变了而它没变，
+   * 是自己的保存回来了；它也变了，才是外部改动。
+   */
+  externalRevision?: number;
+  /** 外部改动到的时候编辑器里正有没存的修改（编辑器里的留着，上层负责别丢了外部那一版） */
+  onExternalConflict?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -156,6 +210,10 @@ export function MarkdownEditor({
   const onSaveRef = useRef(onSave);
   const onDocumentChangeRef = useRef(onDocumentChange);
   const onWikiLinkRef = useRef(onWikiLink);
+  const onExternalConflictRef = useRef(onExternalConflict);
+  onExternalConflictRef.current = onExternalConflict;
+  const externalRevisionRef = useRef(externalRevision);
+  const cacheKeyRef = useRef(cacheKey);
   const initialMarkdownRef = useRef(initialMarkdown);
   /** 最近一次与外部（store）达成一致的正文，用来判断本地有没有未同步的编辑。 */
   const syncedMarkdownRef = useRef(initialMarkdown);
@@ -190,91 +248,111 @@ export function MarkdownEditor({
       }, 250);
     };
 
-    const state = EditorState.create({
-      doc: initialMarkdownRef.current,
-      extensions: [
-        // 围栏代码按语言名懒加载对应的解析器，配合 codeHighlight 上色
-        markdownSupport(languages),
-        codeHighlight,
-        history(),
-        search({ top: true, createPanel: createSearchPanel, scrollToMatch }),
-        searchPhrases,
-        keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
-        typoraDecorations,
-        smoothCaret,
-        hoverCard,
-        modKeyCursor,
-        linkClickHandler((title, heading) => onWikiLinkRef.current?.(title, heading)),
-        EditorView.lineWrapping,
-        EditorView.contentAttributes.of({
-          "aria-label": "Markdown 正文编辑器",
-          // 中文正文在 WebView2 里会被拼写检查画满红波浪线，得关掉。
-          spellcheck: "false",
-        }),
-        EditorView.updateListener.of((update) => {
-          if (!update.docChanged) {
-            if (update.focusChanged && !update.view.hasFocus) saver.flushQuietly();
-            return;
-          }
-          const markdown = update.state.doc.toString();
-          notifyDocumentChange(markdown);
-          // 外部回填不是用户输入，不能反过来触发一次保存。
-          if (update.transactions.some((transaction) => transaction.annotation(externalSync))) {
-            syncedMarkdownRef.current = markdown;
-            return;
-          }
-          saver.schedule(markdown);
-          if (update.focusChanged && !update.view.hasFocus) saver.flushQuietly();
-        }),
-        keymap.of([
-          {
-            key: "Mod-s",
-            preventDefault: true,
-            run: (view) => {
-              saver.schedule(view.state.doc.toString());
-              saver.flushQuietly();
-              return true;
-            },
-          },
-          {
-            key: "Mod-e",
-            preventDefault: true,
-            run: (view) => {
-              // 光标带着折行方向（assoc，按 End 或点在折行处会有）时，编辑器一失焦
-              // CodeMirror 就会在下一次测量里 enforceCursorAssoc：改写 DOM 选区，
-              // 顺手把焦点抢回正文 —— 选择器的输入框刚聚焦就丢了。先把方向清掉，
-              // Esc 关闭时再还原。
-              const main = view.state.selection.main;
-              savedSelectionRef.current = null;
-              if (main.empty && main.assoc) {
-                savedSelectionRef.current = view.state.selection;
-                view.dispatch({ selection: EditorSelection.cursor(main.head) });
-              }
-              // 光标坐标在 CodeMirror 的测量周期里量，也让已经排下的测量先跑完
-              view.requestMeasure({
-                read: caretAnchor,
-                write: (anchor) => {
-                  setEmojiSession((session) => session + 1);
-                  setEmojiAnchor(anchor);
-                },
-              });
-              return true;
-            },
-          },
-        ]),
-      ],
-    });
-
-    const view = new EditorView({ state, parent: host });
-    viewRef.current = view;
     const listeners = new Set<(id: string) => void>();
-    const notifyActive = () => {
-      const line = view.state.doc.lineAt(view.state.selection.main.head).number;
+    const notifyActive = (state: EditorState) => {
+      const line = state.doc.lineAt(state.selection.main.head).number;
       const active =
         [...outlineItemsRef.current].filter((item) => item.line <= line).at(-1) ??
         outlineItemsRef.current[0];
       if (active) for (const listener of listeners) listener(active.id);
     };
+
+    // 这个编辑器实例自己的那一截：闭包里握着这次的保存器和 React 状态。
+    // 复用缓存的状态时，换掉的就是这一截（见文件开头的说明）。
+    const sessionExtensions: Extension[] = [
+      linkClickHandler((title, heading) => onWikiLinkRef.current?.(title, heading)),
+      EditorView.updateListener.of((update) => {
+        if (!update.docChanged) {
+          if (update.focusChanged && !update.view.hasFocus) saver.flushQuietly();
+          return;
+        }
+        const markdown = update.state.doc.toString();
+        notifyDocumentChange(markdown);
+        // 外部回填不是用户输入，不能反过来触发一次保存。
+        if (update.transactions.some((transaction) => transaction.annotation(externalSync))) {
+          syncedMarkdownRef.current = markdown;
+          return;
+        }
+        saver.schedule(markdown);
+        if (update.focusChanged && !update.view.hasFocus) saver.flushQuietly();
+      }),
+      EditorView.updateListener.of((update) => {
+        if (update.selectionSet) notifyActive(update.state);
+      }),
+      keymap.of([
+        {
+          key: "Mod-s",
+          preventDefault: true,
+          run: (view) => {
+            saver.schedule(view.state.doc.toString());
+            saver.flushQuietly();
+            return true;
+          },
+        },
+        {
+          key: "Mod-e",
+          preventDefault: true,
+          run: (view) => {
+            // 光标带着折行方向（assoc，按 End 或点在折行处会有）时，编辑器一失焦
+            // CodeMirror 就会在下一次测量里 enforceCursorAssoc：改写 DOM 选区，
+            // 顺手把焦点抢回正文 —— 选择器的输入框刚聚焦就丢了。先把方向清掉，
+            // Esc 关闭时再还原。
+            const main = view.state.selection.main;
+            savedSelectionRef.current = null;
+            if (main.empty && main.assoc) {
+              savedSelectionRef.current = view.state.selection;
+              view.dispatch({ selection: EditorSelection.cursor(main.head) });
+            }
+            // 光标坐标在 CodeMirror 的测量周期里量，也让已经排下的测量先跑完
+            view.requestMeasure({
+              read: caretAnchor,
+              write: (anchor) => {
+                setEmojiSession((session) => session + 1);
+                setEmojiAnchor(anchor);
+              },
+            });
+            return true;
+          },
+        },
+      ]),
+    ];
+
+    const key = cacheKeyRef.current;
+    const cached = key ? takeState(key, initialMarkdownRef.current) : null;
+    const state = cached
+      ? // 解析好的语法树、装饰、撤销历史原样沿用；光标回到开头（切换文档时正文滚回顶部）
+        cached.update({
+          effects: session.reconfigure(sessionExtensions),
+          selection: EditorSelection.cursor(0),
+        }).state
+      : EditorState.create({
+          doc: initialMarkdownRef.current,
+          extensions: [
+            // 围栏代码按语言名懒加载对应的解析器，配合 codeHighlight 上色
+            markdownSupport(languages),
+            codeHighlight,
+            history(),
+            search({ top: true, createPanel: createSearchPanel, scrollToMatch }),
+            searchPhrases,
+            keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
+            typoraDecorations,
+            smoothCaret,
+            hoverCard,
+            modKeyCursor,
+            EditorView.lineWrapping,
+            EditorView.contentAttributes.of({
+              "aria-label": "Markdown 正文编辑器",
+              // 中文正文在 WebView2 里会被拼写检查画满红波浪线，得关掉。
+              spellcheck: "false",
+            }),
+            session.of(sessionExtensions),
+          ],
+        });
+
+    const view = new EditorView({ state, parent: host });
+    viewRef.current = view;
+    // 切走时开着查找面板：回来时不该还开着（和以前每次新建编辑器一样）
+    if (searchPanelOpen(view.state)) closeSearchPanel(view);
     const handle: EditorOutlineHandle = {
       scrollTo(id) {
         // 编辑器已经卸载（切换文档的那一帧上层还握着旧句柄）就当没这回事
@@ -291,14 +369,10 @@ export function MarkdownEditor({
       },
       subscribe(listener) {
         listeners.add(listener);
-        notifyActive();
+        notifyActive(view.state);
         return () => listeners.delete(listener);
       },
     };
-    const selectionListener = EditorView.updateListener.of((update) => {
-      if (update.selectionSet) notifyActive();
-    });
-    view.dispatch({ effects: StateEffect.appendConfig.of(selectionListener) });
     onOutlineHandle(handle);
     host.dataset.editorReady = "true";
 
@@ -311,6 +385,7 @@ export function MarkdownEditor({
       viewRef.current = null;
       onOutlineHandle(null);
       delete host.dataset.editorReady;
+      if (key) rememberState(key, view.state);
       view.destroy();
     };
   }, [onOutlineHandle]);
@@ -321,21 +396,29 @@ export function MarkdownEditor({
   // 数据晚一步才到。以前 initialMarkdown 只在挂载时读一次，于是界面上是空的、
   // 用户一输入就把当天原有的备注整篇覆盖掉了。
   // 只有在本地没有未同步编辑时才回填，用户已经动过的内容永远优先。
+  //
+  // 本地有没同步的编辑、而这次变化又是外部改动（别的程序改了文件）：两边都改了。
+  // 编辑器里的留着，告诉上层 —— 它负责在下次保存前把外部那一版另存一份。
   useEffect(() => {
     const view = viewRef.current;
+    const external = externalRevision !== externalRevisionRef.current;
+    externalRevisionRef.current = externalRevision;
     if (!view) return;
     const current = view.state.doc.toString();
     if (initialMarkdown === current) {
       syncedMarkdownRef.current = initialMarkdown;
       return;
     }
-    if (current !== syncedMarkdownRef.current) return;
+    if (current !== syncedMarkdownRef.current) {
+      if (external) onExternalConflictRef.current?.();
+      return;
+    }
     syncedMarkdownRef.current = initialMarkdown;
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: initialMarkdown },
       annotations: externalSync.of(true),
     });
-  }, [initialMarkdown]);
+  }, [initialMarkdown, externalRevision]);
 
   const closeEmojiPicker = useCallback((refocus: boolean) => {
     setEmojiAnchor(null);

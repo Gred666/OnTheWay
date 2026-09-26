@@ -1,3 +1,11 @@
+// 不带 Tauri 运行时的纯逻辑单测（cargo test --no-default-features --lib）里，
+// 只给命令层用的函数和类型没人调用，别让它们刷一屏警告
+#![cfg_attr(
+    not(any(feature = "desktop-runtime", feature = "typegen")),
+    allow(dead_code)
+)]
+
+mod boot;
 #[cfg(any(feature = "desktop-runtime", feature = "typegen"))]
 mod commands;
 mod db;
@@ -5,11 +13,14 @@ mod domain;
 mod error;
 #[cfg(any(feature = "desktop-runtime", feature = "typegen"))]
 mod state;
+mod vault;
 
+#[cfg(feature = "desktop-runtime")]
+use std::sync::{Arc, Mutex};
 #[cfg(feature = "desktop-runtime")]
 use tauri::{Manager, WebviewWindow};
 #[cfg(any(feature = "desktop-runtime", feature = "typegen"))]
-use tauri_specta::{collect_commands, Builder};
+use tauri_specta::{collect_commands, collect_events, Builder};
 
 #[cfg(any(feature = "desktop-runtime", feature = "typegen"))]
 use state::AppState;
@@ -90,7 +101,6 @@ fn command_builder() -> Builder<tauri::Wry> {
         win_force_close,
         win_is_maximized,
         win_start_dragging,
-        commands::note_list,
         commands::note_list_full,
         commands::note_get,
         commands::note_upsert,
@@ -106,8 +116,13 @@ fn command_builder() -> Builder<tauri::Wry> {
         commands::calendar_day,
         commands::calendar_day_save,
         commands::calendar_marked,
-        commands::db_stats,
+        commands::vault_info,
+        commands::vault_reveal,
+        commands::vault_open_folder,
+        commands::vault_keep_conflict_copy,
+        commands::vault_change_root::<tauri::Wry>,
     ])
+    .events(collect_events![commands::VaultChanged])
 }
 
 /// 独立导出命令与领域类型，供 `cargo run --example export_bindings` 和
@@ -118,7 +133,6 @@ pub fn export_typescript_bindings(path: impl AsRef<std::path::Path>) {
     let builder = command_builder();
     #[cfg(all(feature = "typegen", not(feature = "desktop-runtime")))]
     let builder = Builder::<tauri::test::MockRuntime>::new().commands(collect_commands![
-        commands::note_list,
         commands::note_list_full,
         commands::note_get,
         commands::note_upsert,
@@ -134,8 +148,13 @@ pub fn export_typescript_bindings(path: impl AsRef<std::path::Path>) {
         commands::calendar_day,
         commands::calendar_day_save,
         commands::calendar_marked,
-        commands::db_stats,
-    ]);
+        commands::vault_info,
+        commands::vault_reveal,
+        commands::vault_open_folder,
+        commands::vault_keep_conflict_copy,
+        commands::vault_change_root::<tauri::test::MockRuntime>,
+    ])
+    .events(collect_events![commands::VaultChanged]);
 
     builder
         .export(
@@ -176,33 +195,49 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(specta_builder.invoke_handler())
         .setup(move |app| {
             specta_builder.mount_events(app);
 
-            let db_path = app
-                .path()
-                .app_data_dir()
-                .expect("拿不到 app data 目录")
-                .join("ontheway.db");
+            let data_dir = boot::data_dir(app.path().app_data_dir().expect("拿不到应用数据目录"));
+            let mut config = boot::Config::load(&data_dir);
+            let root = boot::vault_root(&config, app.path().document_dir().ok(), &data_dir);
 
-            let pool = db::open(&db_path).expect("打开数据库失败");
-
-            {
-                let mut conn = pool.get().expect("拿连接失败");
-                domain::seed::ensure(&mut conn).expect("写入示例内容失败");
-                // 摘要算法改过之后把已有笔记的摘要 / 字数重算一遍。失败不影响使用，
-                // 只是列表里的摘要还是旧的，下次保存那篇时自然会更新。
-                if let Err(error) = domain::note::refresh_derived_columns(&mut conn) {
-                    eprintln!("重算笔记摘要失败: {error}");
-                }
+            // 第一次启动：旧库有东西就搬进文件夹，否则放示例内容。搬家失败时不能带着
+            // 一个空仓库启动 —— 用户会以为笔记全没了，还可能在空仓库里接着写。
+            match boot::prepare(&root, &data_dir, &mut config, true) {
+                Ok(boot::Prepared::Imported(report)) => eprintln!("旧数据已搬进 {}: {report:?}", root.display()),
+                Ok(_) => {}
+                Err(error) => panic!("准备笔记文件夹 {} 失败: {error}", root.display()),
+            }
+            if std::env::var_os("ONTHEWAY_VAULT").is_none() {
+                config.vault_root = Some(root.clone());
+            }
+            if let Err(error) = config.save(&data_dir) {
+                eprintln!("保存配置失败: {error}");
             }
 
-            app.manage(AppState { pool, db_path });
+            let mut vault = vault::Vault::open(&root, &boot::index_path(&data_dir, &root))
+                .expect("打开笔记文件夹失败");
+            vault.set_announcer(commands::announcer(app.handle().clone()));
+            let vault = Arc::new(Mutex::new(vault));
+            let watcher = match vault::watch::start(vault.clone()) {
+                Ok(watcher) => Some(watcher),
+                Err(error) => {
+                    // 监听不上只是外部改动不能实时同步，重启时的扫描还会补上
+                    eprintln!("{error}");
+                    None
+                }
+            };
+            app.manage(AppState {
+                vault,
+                watcher: Mutex::new(watcher),
+                data_dir,
+            });
 
-            // jieba 首次初始化约 50ms。放后台预热，
-            // 别等用户第一次敲搜索框才付这个代价。
+            // jieba 首次初始化约 50ms。仓库是空的时候打开仓库不会用到它，放后台预热
             std::thread::spawn(domain::search::warm_up);
 
             Ok(())

@@ -1,11 +1,11 @@
 import type { Task } from "@/data/types";
 import { cn } from "@/lib/cn";
 import { spring, tween } from "@/lib/motion";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 
 /* ============================================================
-   行动项 —— 原型里的「下阶段行动」「检查项」「本周重点」「日TODO」
-   都是这个组件。
+   日历「当日安排」里的一条任务 —— 别的文档里写着这一天的 `- [ ] … @日期`。
+   勾选改的是原文件里的那一行（技术方案 §5.4）。
 
    勾选动画分三层同时发生（总时长 ~380ms）：
    1. 圆环：一圈 stroke 快速收拢（scale 脉冲）
@@ -125,78 +125,17 @@ function Checkbox({ done, reduce }: { done: boolean; reduce: boolean }) {
   );
 }
 
-/* ---------------- 分组容器 ---------------- */
+/* ---------------- 当日安排 ---------------- */
 
-export function ActionGroup({
-  title,
-  tasks,
-  counterMode = "progress",
-  hideHeader = false,
-  onToggle,
-}: {
-  title: string;
-  tasks: Task[];
-  /** progress → 「2 / 3」；count → 「4 项」 */
-  counterMode?: "progress" | "count";
-  /** 隐藏标题行，任务直接列出（日历的当日安排） */
-  hideHeader?: boolean;
-  onToggle: (id: string) => void;
-}) {
-  const doneCount = tasks.filter((t) => t.status === "done").length;
-
+/** 列在某一天正文后面，没有小标题 */
+export function DayTasks({ tasks, onToggle }: { tasks: Task[]; onToggle: (id: string) => void }) {
   return (
-    <section
-      className={hideHeader ? "mt-7" : "mt-9"}
-      id="action-group"
-      data-outline-id="action-group"
-    >
-      {!hideHeader && (
-        <header className="mb-1 flex items-baseline justify-between gap-4">
-          <h2 className="text-[21px] font-[650] leading-[1.45] tracking-[-0.005em] text-ink">
-            {title}
-          </h2>
-          <Counter
-            value={counterMode === "progress" ? doneCount : tasks.length}
-            suffix={counterMode === "progress" ? ` / ${tasks.length}` : " 项"}
-          />
-        </header>
-      )}
-
+    <section className="mt-7">
       <ul className="border-t border-line">
         {tasks.map((t, i) => (
           <ActionItem key={t.id} task={t} index={i} onToggle={onToggle} />
         ))}
       </ul>
     </section>
-  );
-}
-
-/** 数字变化时向上滚动替换，而不是直接跳变 */
-function Counter({ value, suffix }: { value: number; suffix: string }) {
-  return (
-    <span
-      className="flex shrink-0 items-center gap-px font-mono text-[11.5px] leading-none
-                 text-faint tabular-nums"
-    >
-      {/* 用 ch 单位定宽，位数变化（9→10）时不会挤到后面的文字 */}
-      <span
-        className="relative inline-block h-[13px] overflow-hidden text-right"
-        style={{ width: `${String(value).length}ch` }}
-      >
-        <AnimatePresence initial={false} mode="popLayout">
-          <motion.span
-            key={value}
-            className="absolute inset-0 block leading-[13px]"
-            initial={{ y: 13, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: -13, opacity: 0 }}
-            transition={spring.snappy}
-          >
-            {value}
-          </motion.span>
-        </AnimatePresence>
-      </span>
-      <span className="whitespace-pre">{suffix}</span>
-    </span>
   );
 }

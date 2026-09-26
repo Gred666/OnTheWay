@@ -38,14 +38,6 @@ async winIsMaximized() : Promise<boolean> {
 async winStartDragging() : Promise<boolean> {
     return await TAURI_INVOKE("win_start_dragging");
 },
-async noteList(archived: boolean) : Promise<Result<NoteSummary[], AppError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("note_list", { archived }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async noteListFull(archived: boolean) : Promise<Result<Note[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("note_list_full", { archived }) };
@@ -62,6 +54,9 @@ async noteGet(id: string) : Promise<Result<Note, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * id 为 null 是新建（返回新 id）；否则改标题和正文，标题变了文件跟着改名
+ */
 async noteUpsert(input: NoteInput) : Promise<Result<string, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("note_upsert", { input }) };
@@ -94,6 +89,9 @@ async noteRestore(id: string) : Promise<Result<null, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 删除 = 挪进仓库的回收站（.ontheway/trash/，30 天后清掉）
+ */
 async noteDelete(id: string) : Promise<Result<null, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("note_delete", { id }) };
@@ -118,6 +116,9 @@ async searchNotes(query: string, limit: number) : Promise<Result<SearchResult, A
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 勾选日历里的一条任务：改的是它所在文件里的那一行
+ */
 async taskToggle(id: string) : Promise<Result<Task, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("task_toggle", { id }) };
@@ -128,7 +129,7 @@ async taskToggle(id: string) : Promise<Result<Task, AppError>> {
 },
 /**
  * 某个周期的目标。period_start 由前端按 horizon 算好（周一 / 1 号 / 1 月 1 日），
- * domain 层会校验它确实是周期起点。没写过的周期返回空文档。
+ * 这里校验它确实是周期起点。没写过的周期返回空文档。
  */
 async goalGet(horizon: string, periodStart: string) : Promise<Result<Goal, AppError>> {
     try {
@@ -173,9 +174,56 @@ async calendarMarked(from: string, to: string) : Promise<Result<string[], AppErr
     else return { status: "error", error: e  as any };
 }
 },
-async dbStats() : Promise<Result<DbStats, AppError>> {
+async vaultInfo() : Promise<Result<VaultInfo, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("db_stats") };
+    return { status: "ok", data: await TAURI_INVOKE("vault_info") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 在系统的文件管理器里定位这篇文档的文件（选中它）。还没写过的某一天 /
+ * 某个周期没有文件，打开它将来所在的文件夹。
+ */
+async vaultReveal(target: DocTarget) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("vault_reveal", { target }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 打开整个笔记文件夹
+ */
+async vaultOpenFolder() : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("vault_open_folder") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 编辑器里有没存的改动时，磁盘上又来了外部改动：先把磁盘上那一版另存一份
+ * 「(冲突 …)」，前端随后照常保存自己的。返回冲突副本的标题。
+ */
+async vaultKeepConflictCopy(target: DocTarget) : Promise<Result<string | null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("vault_keep_conflict_copy", { target }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 换一个文件夹当仓库。弹系统的选择文件夹对话框；新文件夹是空的就问要不要把
+ * 现在的笔记一起复制过去（原来的不动）。取消了返回 null。前端拿到结果后整页重载。
+ */
+async vaultChangeRoot() : Promise<Result<VaultInfo | null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("vault_change_root") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -186,6 +234,11 @@ async dbStats() : Promise<Result<DbStats, AppError>> {
 /** user-defined events **/
 
 
+export const events = __makeEvents__<{
+vaultChanged: VaultChanged
+}>({
+vaultChanged: "vault-changed"
+})
 
 /** user-defined constants **/
 
@@ -193,21 +246,27 @@ async dbStats() : Promise<Result<DbStats, AppError>> {
 
 /** user-defined types **/
 
-export type ActionGroup = { title: string; tasks: Task[] }
 /**
  * 跨 IPC 的错误类型。
  * 
  * 用 `#[serde(tag = "kind")]` 让前端能按类型分支处理，
  * 而不是去解析错误字符串。
  */
-export type AppError = { kind: "Db"; message: string } | { kind: "NotFound"; message: string } | { kind: "Invalid"; message: string } | { kind: "BadRrule"; message: string } | { kind: "DbTooNew"; message: { found: number; supported: number } } | { kind: "Io"; message: string } | { kind: "Internal"; message: string }
+export type AppError = { kind: "Db"; message: string } | { kind: "NotFound"; message: string } | { kind: "Invalid"; message: string } | { kind: "DbTooNew"; message: { found: number; supported: number } } | { kind: "Io"; message: string } | { kind: "Internal"; message: string }
 export type DayDoc = { date: string; title: string; tasks: Task[]; noteMd: string; updatedAt: number; 
 /**
  * 这一天还没写过、内容是从之前最近一天延续来的：那一天的日期。
  * 只有请求「今天」时才会延续；用户一编辑，就以这一天自己的身份落库。
  */
 carriedFrom: string | null }
-export type DbStats = { notes: number; archived: number; tasks: number; goals: number; activities: number; dbBytes: number; dbPath: string }
+/**
+ * 指向一篇文档：和前端的 DocumentSaveTarget 同形
+ */
+export type DocTarget = { kind: "note"; id: string } | 
+/**
+ * id 是日期 YYYY-MM-DD
+ */
+{ kind: "day"; id: string } | { kind: "goal"; horizon: string; periodStart: string }
 /**
  * 某个周期（某一周 / 某个月 / 某一年）的目标。
  * 一个周期一篇；还没写过的周期返回空文档（id 为空、updated_at 为 0），
@@ -225,23 +284,14 @@ horizon: string; title: string;
 /**
  * 周期起点：周一 / 1 号 / 1 月 1 日
  */
-periodStart: string; contentMd: string; actionGroup: ActionGroup | null; createdAt: number; updatedAt: number }
-export type Note = { id: string; title: string; contentMd: string; excerpt: string; icon: string; wordCount: number; isPinned: boolean; isArchived: boolean; archiveCategory: string | null; archivedAt: number | null; createdAt: number; updatedAt: number; 
-/**
- * 挂在这篇笔记下的行动项分组（通过 link 表关联）
- */
-actionGroup: ActionGroup | null }
+periodStart: string; contentMd: string; createdAt: number; updatedAt: number }
+export type Note = { id: string; title: string; contentMd: string; excerpt: string; wordCount: number; isPinned: boolean; isArchived: boolean; archiveCategory: string | null; archivedAt: number | null; createdAt: number; updatedAt: number }
 /**
  * 新建 / 更新笔记的入参。
  * id 为 None 表示新建。
  */
-export type NoteInput = { id: string | null; title: string; contentMd: string; icon: string | null }
-/**
- * 列表用的轻量结构：不含 content_md。
- * 一个 300px 宽的列表没必要把每篇全文都传过来。
- */
-export type NoteSummary = { id: string; title: string; excerpt: string; icon: string; isPinned: boolean; archiveCategory: string | null; archivedAt: number | null; createdAt: number; updatedAt: number }
-export type SearchHit = { id: string; title: string; excerpt: string; icon: string; isArchived: boolean; updatedAt: number; 
+export type NoteInput = { id: string | null; title: string; contentMd: string }
+export type SearchHit = { id: string; title: string; excerpt: string; isArchived: boolean; updatedAt: number; 
 /**
  * bm25 分数，越小越相关
  */
@@ -251,11 +301,56 @@ export type SearchResult = { hits: SearchHit[];
  * 前端拿它在原始正文上做高亮（不能用 SQLite 的 snippet，见 search.rs）
  */
 tokens: string[] }
-export type Task = { id: string; title: string; 
 /**
- * todo | doing | done | cancelled
+ * 日历「当日安排」里的一条：某篇文档正文里带日期的 `- [ ]`（见 vault/tasks.rs）
  */
-status: string; meta: string | null; priority: number; dueDate: string | null; timeLabel: string | null; category: string | null; goalId: string | null; sortKey: string; completedAt: number | null; createdAt: number; updatedAt: number }
+export type Task = { 
+/**
+ * 所在文档的 id # 行号。只在勾选的那一下用，文档改过之后就不作数了
+ */
+id: string; title: string; 
+/**
+ * todo | done
+ */
+status: string; 
+/**
+ * 灰色小字：分类 · 时间 · 出处
+ */
+meta: string | null; dueDate: string | null; timeLabel: string | null; category: string | null }
+/**
+ * 仓库里别处发生的变化：文件被外部程序改了，或者一次操作连带改了别的文档
+ * （在日历里勾任务，改的是任务所在的那篇）。前端据此刷新缓存。
+ */
+export type VaultChange = { 
+/**
+ * 变了（或没了）的笔记 id
+ */
+notes: string[]; 
+/**
+ * 变了的某一天（YYYY-MM-DD）
+ */
+days: string[]; 
+/**
+ * 变了的目标，`week:2026-09-21`，和前端 goalKey 一样
+ */
+goals: string[]; 
+/**
+ * 带日期的任务有变化：日历的当日安排和小圆点要刷新
+ */
+tasks: boolean; 
+/**
+ * 这次产生的冲突副本的标题
+ */
+conflicts: string[] }
+/**
+ * 仓库里别处发生的变化（外部程序改了文件、勾任务改了别的文档），前端据此刷新
+ */
+export type VaultChanged = VaultChange
+export type VaultInfo = { 
+/**
+ * 仓库文件夹的绝对路径
+ */
+root: string; notes: number; archived: number; days: number; goals: number; tasks: number }
 
 /** tauri-specta globals **/
 

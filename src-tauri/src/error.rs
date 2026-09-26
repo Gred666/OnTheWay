@@ -16,10 +16,7 @@ pub enum AppError {
     #[error("参数无效: {0}")]
     Invalid(String),
 
-    #[error("重复规则无效: {0}")]
-    BadRrule(String),
-
-    #[error("数据库版本过新（文件 v{found}，本程序支持到 v{supported}）")]
+    #[error("旧数据库的版本比本程序新（文件 v{found}，本程序支持到 v{supported}）")]
     DbTooNew { found: i64, supported: i64 },
 
     #[error("IO 错误: {0}")]
@@ -37,12 +34,6 @@ impl From<rusqlite::Error> for AppError {
             rusqlite::Error::QueryReturnedNoRows => AppError::NotFound("查询无结果".into()),
             other => AppError::Db(other.to_string()),
         }
-    }
-}
-
-impl From<r2d2::Error> for AppError {
-    fn from(e: r2d2::Error) -> Self {
-        AppError::Db(format!("连接池: {e}"))
     }
 }
 

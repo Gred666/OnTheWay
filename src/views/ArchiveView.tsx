@@ -121,10 +121,9 @@ function ArchiveCard({
         )}
 
         <span className="relative z-10 flex items-start gap-2">
-          {/* 同 NotesView：note.icon 是写死的，删掉。归档项真正的分类信息是
-              下面那行 archiveCategory，那个才是有内容的。 */}
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-[13.5px] font-semibold leading-[1.45] text-ink/90">
+            {/* 同 NotesView：长标题最多折两行 */}
+            <span className="line-clamp-2 break-words text-[13.5px] font-semibold leading-[1.45] text-ink/90">
               {note.title}
             </span>
             <span className="mt-[3px] block truncate text-[11.5px] leading-[1.45] text-muted">

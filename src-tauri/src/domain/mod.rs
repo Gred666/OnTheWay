@@ -1,11 +1,8 @@
-pub mod activity;
-pub mod event;
-pub mod goal;
+//! 跨 IPC 的类型（model）、中文分词与摘要（search）、参数校验。
+//! 文档的读写都在 vault/：文件是真相，这里不碰存储。
+
 pub mod model;
-pub mod note;
 pub mod search;
-pub mod seed;
-pub mod task;
 
 use crate::error::{AppError, Result};
 

@@ -498,6 +498,26 @@ body {
   }
 }
 
+/* 换文档时旧内容的静态快照（components/SwapFade.tsx），盖在新内容上淡出。
+   克隆出来的 DOM 会把 CSS 入场动画从头再播一遍（替身淡入、光标闪烁），这里全部冻住；
+   光标、查找面板这些跟着编辑器活的东西不带过去。 */
+.otw-swap-ghost {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+}
+.otw-swap-ghost *,
+.otw-swap-ghost *::before,
+.otw-swap-ghost *::after {
+  animation: none !important;
+  transition: none !important;
+}
+.otw-swap-ghost :is(.otw-caret, .cm-cursorLayer, .cm-panels) {
+  display: none !important;
+}
+
 /* 减少动效：系统偏好 + 应用内开关都走这里 */
 @media (prefers-reduced-motion: reduce) {
   *,

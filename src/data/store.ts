@@ -1,4 +1,4 @@
-import type { ISODate } from "@/lib/date";
+import { type ISODate, today } from "@/lib/date";
 import { create } from "zustand";
 import { backend } from "./backend";
 import {
@@ -9,6 +9,7 @@ import {
   type Note,
   type SearchResult,
   type Task,
+  type VaultChange,
   goalKey,
 } from "./types";
 
@@ -29,6 +30,27 @@ interface DataState {
   /** 保存以外的操作（加载、置顶、归档、勾选…）失败的原因，由 ErrorToast 显示。 */
   error: string | null;
   clearError: () => void;
+  /** 不是失败、但得让人知道的事（外部改动撞上没存的修改，另存了一份冲突副本）。 */
+  notice: string | null;
+  clearNotice: () => void;
+  /**
+   * 每篇文档被外部改动刷新过几次，键同 saveKeyOf。编辑器据此分辨「store 里的正文变了」
+   * 是自己的保存回来了，还是别的程序改了文件（见 MarkdownEditor 的 externalRevision）。
+   */
+  externalRevisions: Record<string, number>;
+  /**
+   * 外部改动到的时候编辑器里正有没存的修改：这几篇下一次保存前，先让后端把磁盘上
+   * 那一版另存成冲突副本 —— 编辑器里的照常存，两边都不丢。键同 saveKeyOf。
+   */
+  conflicts: Set<string>;
+  markConflict: (target: DocumentSaveTarget) => void;
+  /** 仓库里别处发生的变化（文件监听、勾任务改了别的文档）：刷新受影响的缓存 */
+  applyVaultChange: (change: VaultChange) => Promise<void>;
+  /** 在系统的文件管理器里定位这篇文档的文件 */
+  revealDocument: (target: DocumentSaveTarget) => Promise<void>;
+  openVaultFolder: () => Promise<void>;
+  /** 换一个文件夹当仓库。先把编辑器里的都存掉；换成功就整页重载 */
+  changeVaultRoot: () => Promise<void>;
   /** 正在保存的文档，键为 `kind:id`。界面据此显示「保存中」。 */
   savingDocs: Set<string>;
   /**
@@ -107,15 +129,6 @@ export const NEW_NOTE_TITLE = "无标题笔记";
 const noteOrder = (a: Note, b: Note) =>
   a.isPinned === b.isPinned ? b.updatedAt - a.updatedAt : a.isPinned ? -1 : 1;
 
-function taskMapFrom(notes: Note[], goals: Goal[], days: DayDoc[]): Record<string, Task> {
-  const all = [
-    ...notes.flatMap((note) => note.actionGroup?.tasks ?? []),
-    ...goals.flatMap((goal) => goal.actionGroup?.tasks ?? []),
-    ...days.flatMap((day) => day.tasks),
-  ];
-  return Object.fromEntries(all.map((task) => [task.id, task]));
-}
-
 const withGoal = (goals: Record<string, Goal>, goal: Goal): Record<string, Goal> => ({
   ...goals,
   [goalKey(goal.horizon, goal.periodStart)]: goal,
@@ -133,26 +146,10 @@ const withDay = (days: DayDoc[], day: DayDoc): DayDoc[] => [
   day,
 ];
 
+/** 任务只出现在某一天的「当日安排」里 */
 function patchTask(state: DataState, id: string, task: Task): Partial<DataState> {
-  const inGroup = (group: Note["actionGroup"]): Note["actionGroup"] =>
-    group ? { ...group, tasks: group.tasks.map((item) => (item.id === id ? task : item)) } : null;
   return {
     tasks: { ...state.tasks, [id]: task },
-    notes: state.notes.map((note) => ({ ...note, actionGroup: inGroup(note.actionGroup) })),
-    goals: Object.fromEntries(
-      Object.entries(state.goals).map(([key, goal]) => [
-        key,
-        {
-          ...goal,
-          actionGroup: goal.actionGroup
-            ? {
-                ...goal.actionGroup,
-                tasks: goal.actionGroup.tasks.map((item) => (item.id === id ? task : item)),
-              }
-            : null,
-        },
-      ]),
-    ),
     dayDocs: state.dayDocs.map((day) => ({
       ...day,
       tasks: day.tasks.map((item) => (item.id === id ? task : item)),
@@ -161,6 +158,16 @@ function patchTask(state: DataState, id: string, task: Task): Partial<DataState>
 }
 
 let initializePromise: Promise<void> | null = null;
+/** 仓库变化的订阅只装一次（initialize 失败重试时不重复装） */
+let vaultSubscription: Promise<() => void> | null = null;
+
+const isNotFound = (error: unknown) =>
+  !!error && typeof error === "object" && (error as { kind?: unknown }).kind === "NotFound";
+
+const bumped = (revisions: Record<string, number>, key: string) => ({
+  ...revisions,
+  [key]: (revisions[key] ?? 0) + 1,
+});
 
 /**
  * 同一篇文档的写入排队。标题和正文是两条路保存的，但写的都是整篇
@@ -192,6 +199,143 @@ export const useData = create<DataState>((set, get) => ({
   loading: false,
   error: null,
   clearError: () => set({ error: null }),
+  notice: null,
+  clearNotice: () => set({ notice: null }),
+  externalRevisions: {},
+  conflicts: new Set(),
+  markConflict: (target) =>
+    set((state) => ({ conflicts: new Set(state.conflicts).add(saveKeyOf(target)) })),
+
+  applyVaultChange: async (change) => {
+    const api = await backend();
+    if (change.conflicts.length > 0) {
+      set({
+        notice: `别处改动了正在编辑的文档，那一版另存为「${change.conflicts.join("」「")}」`,
+      });
+    }
+
+    for (const id of change.notes) {
+      try {
+        const fresh = await api.noteGet(id);
+        set((state) => {
+          const previous =
+            state.notes.find((note) => note.id === id) ??
+            state.archived.find((note) => note.id === id);
+          const place = (list: Note[], belongs: boolean) => {
+            if (!belongs) return list.filter((note) => note.id !== id);
+            return list.some((note) => note.id === id)
+              ? list.map((note) => (note.id === id ? fresh : note))
+              : [fresh, ...list];
+          };
+          return {
+            notes: place(state.notes, !fresh.isArchived).sort(noteOrder),
+            archived: place(state.archived, fresh.isArchived),
+            externalRevisions:
+              previous && previous.contentMd !== fresh.contentMd
+                ? bumped(state.externalRevisions, `note:${id}`)
+                : state.externalRevisions,
+          };
+        });
+      } catch (error) {
+        if (!isNotFound(error)) {
+          set({ error: messageOf(error) });
+          continue;
+        }
+        // 文件被删了 / 挪出了仓库
+        set((state) => ({
+          notes: state.notes.filter((note) => note.id !== id),
+          archived: state.archived.filter((note) => note.id !== id),
+        }));
+      }
+    }
+
+    const todayDate = today();
+    // 只刷新缓存里有的：没打开过的那一天 / 周期，下次切过去时自然会取
+    const days = new Set(change.days.filter((date) => get().dayDocs.some((d) => d.date === date)));
+    if (change.tasks) for (const day of get().dayDocs) days.add(day.date);
+    for (const date of days) {
+      try {
+        const fresh = await api.calendarDay(date, date === todayDate);
+        const contentChanged = change.days.includes(date);
+        set((state) => {
+          const previous = state.dayDocs.find((day) => day.date === date);
+          if (!previous) return {};
+          // 只是任务变了：正文不动（编辑器那边可能正有没存的修改）
+          const next = contentChanged ? fresh : { ...previous, tasks: fresh.tasks };
+          return {
+            dayDocs: withDay(state.dayDocs, next),
+            tasks: {
+              ...state.tasks,
+              ...Object.fromEntries(fresh.tasks.map((task) => [task.id, task])),
+            },
+            externalRevisions:
+              contentChanged && previous.noteMd !== fresh.noteMd
+                ? bumped(state.externalRevisions, `day:${date}`)
+                : state.externalRevisions,
+          };
+        });
+      } catch (error) {
+        set({ error: messageOf(error) });
+      }
+    }
+
+    for (const key of change.goals) {
+      if (!get().goals[key]) continue;
+      const [horizon, periodStart] = key.split(":") as [GoalHorizon, ISODate];
+      try {
+        const fresh = await api.goalGet(horizon, periodStart);
+        set((state) => ({
+          goals: withGoal(state.goals, fresh),
+          externalRevisions:
+            state.goals[key]?.contentMd !== fresh.contentMd
+              ? bumped(state.externalRevisions, `goal:${key}`)
+              : state.externalRevisions,
+        }));
+      } catch (error) {
+        set({ error: messageOf(error) });
+      }
+    }
+
+    if (change.tasks) {
+      try {
+        const marked = await api.calendarMarked("2000-01-01", "2100-12-31");
+        set({ markedDates: new Set(marked) });
+      } catch (error) {
+        set({ error: messageOf(error) });
+      }
+    }
+  },
+
+  revealDocument: async (target) => {
+    try {
+      await (await backend()).vaultReveal(target);
+    } catch (error) {
+      set({ error: messageOf(error) });
+    }
+  },
+
+  openVaultFolder: async () => {
+    try {
+      await (await backend()).vaultOpenFolder();
+    } catch (error) {
+      set({ error: messageOf(error) });
+    }
+  },
+
+  changeVaultRoot: async () => {
+    try {
+      // 先把编辑器里没存的都落进现在的仓库，换过去之后就回不来了。
+      // 动态引入：saveBus 自己引用了这个 store，静态引入会成环
+      const { flushAllEditors } = await import("@/editor/saveBus");
+      await flushAllEditors();
+      await get().flushDrafts();
+      const info = await (await backend()).vaultChangeRoot();
+      if (info) window.location.reload();
+    } catch (error) {
+      set({ error: messageOf(error) });
+    }
+  },
+
   savingDocs: new Set(),
   saveError: null,
   clearSaveError: () => set({ saveError: null }),
@@ -219,11 +363,15 @@ export const useData = create<DataState>((set, get) => ({
           api.calendarMarked("2000-01-01", "2100-12-31"),
         ]);
 
+        // 别的程序改了仓库里的文件、或者一次操作连带改了别的文档：刷新受影响的缓存
+        vaultSubscription ??= api.onVaultChanged((change) => {
+          void get().applyVaultChange(change);
+        });
+
         // 目标和某天的文档都按需取：切到哪个周期 / 哪一天再 loadGoal / loadDay
         set({
           notes: notes.sort(noteOrder),
           archived,
-          tasks: taskMapFrom(notes, [], []),
           markedDates: new Set(marked),
           initialized: true,
           loading: false,
@@ -257,13 +405,7 @@ export const useData = create<DataState>((set, get) => ({
     if (get().goals[goalKey(horizon, periodStart)]) return;
     try {
       const goal = await (await backend()).goalGet(horizon, periodStart);
-      set((state) => ({
-        goals: withGoal(state.goals, goal),
-        tasks: {
-          ...state.tasks,
-          ...Object.fromEntries((goal.actionGroup?.tasks ?? []).map((task) => [task.id, task])),
-        },
-      }));
+      set((state) => ({ goals: withGoal(state.goals, goal) }));
     } catch (error) {
       set({ error: messageOf(error) });
     }
@@ -326,7 +468,7 @@ export const useData = create<DataState>((set, get) => ({
       if (source.contentMd === contentMd) return true;
 
       const api = await backend();
-      await api.noteUpsert({ id, title: source.title, contentMd, icon: source.icon });
+      await api.noteUpsert({ id, title: source.title, contentMd });
       const updated = await api.noteGet(id);
       set((state) => ({
         // 刻意不重排：自动保存每 400ms 刷新一次 updatedAt，
@@ -334,17 +476,24 @@ export const useData = create<DataState>((set, get) => ({
         // 顺序在下次加载 / 置顶 / 归档时自然会更新。
         notes: state.notes.map((note) => (note.id === id ? updated : note)),
         archived: state.archived.map((note) => (note.id === id ? updated : note)),
-        tasks: {
-          ...state.tasks,
-          ...Object.fromEntries((updated.actionGroup?.tasks ?? []).map((task) => [task.id, task])),
-        },
       }));
       return true;
     };
 
     set((state) => ({ savingDocs: new Set(state.savingDocs).add(key) }));
     try {
-      const stored = await serialized(key, write);
+      const stored = await serialized(key, async () => {
+        // 外部改动撞上了没存的修改：先把磁盘上那一版另存一份，再写编辑器里的
+        if (get().conflicts.has(key)) {
+          await (await backend()).vaultKeepConflictCopy(target);
+          set((state) => {
+            const conflicts = new Set(state.conflicts);
+            conflicts.delete(key);
+            return { conflicts };
+          });
+        }
+        return write();
+      });
       set((state) => ({
         ...(clearsSaveError(state, key) ? { saveError: null } : {}),
         // 编辑器发来的总是整篇的最新内容，存进去了，之前失败的那一版就作废了
@@ -375,7 +524,6 @@ export const useData = create<DataState>((set, get) => ({
         id: null,
         title: NEW_NOTE_TITLE,
         contentMd: "",
-        icon: null,
       });
       const created = await api.noteGet(id);
       set((state) => ({ notes: [created, ...state.notes].sort(noteOrder), error: null }));
@@ -416,7 +564,6 @@ export const useData = create<DataState>((set, get) => ({
         id,
         title: cleanTitle,
         contentMd: source.contentMd,
-        icon: source.icon,
       });
       const updated = await api.noteGet(id);
       set((state) => ({
@@ -439,12 +586,7 @@ export const useData = create<DataState>((set, get) => ({
     const current = get().tasks[id];
     if (!current) return;
     const done = current.status === "done";
-    const optimistic: Task = {
-      ...current,
-      status: done ? "todo" : "done",
-      completedAt: done ? null : Date.now(),
-      updatedAt: Date.now(),
-    };
+    const optimistic: Task = { ...current, status: done ? "todo" : "done" };
     set((state) => patchTask(state, id, optimistic));
     try {
       const saved = await (await backend()).taskToggle(id);

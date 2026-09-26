@@ -59,6 +59,12 @@ Rust 测试（`--no-default-features` 下 `main.rs` 编不过，必须加 `--lib
 cd src-tauri; cargo test --no-default-features --lib
 ```
 
+不碰真实笔记跑桌面端（换一个应用数据目录和仓库文件夹；想试搬家就先把 `ontheway.db` 拷一份进这个数据目录）：
+
+```powershell
+$env:ONTHEWAY_DATA_DIR="D:\tmp\otw-data"; $env:ONTHEWAY_VAULT="D:\tmp\otw-vault"; pnpm tauri dev
+```
+
 不起 app 重新生成 `src/lib/bindings.ts`（debug 启动也会自动生成）。注意这条命令导出的文件里没有 `ready` / `win_*` 这几个窗口命令（它们只在 desktop-runtime 下注册），提交前以 debug 启动生成的为准：
 
 ```bash
@@ -128,8 +134,8 @@ cd src-tauri; cargo run --example export_bindings --features typegen --no-defaul
 | 导航项入场 | stagger |
 | 中列表栏出现/消失 | 整块 `x: -300 → 0` 从导航栏底下抽出，**220ms tween**；布局只在挂载那一帧变一次（见坑记录） |
 | 主内容切换 | `popLayout` 冻结退场屏交叉淡出，退场方向感知横移；**进场纯 opacity**（编辑器才能第一帧挂上） |
-| 标题切换 | `AnimatePresence popLayout` 上下滚动替换 |
-| 标题下分隔线 | `scaleX` 从 0 展开 |
+| 切换文档（笔记 / 日历某天 / GOAL 周期） | `SwapFade`：旧内容的静态快照原地淡出上飘 4px（140ms），新内容纯 opacity 淡入（220ms）；标题、正文、状态栏、目录树整块一起换 |
+| 标题下分隔线 | `scaleX` 从 0 展开（进工作区时一次，换篇不重播） |
 | 目录树活动条 | `layoutId` 滑动，跟编辑器行号联动 |
 | 主题切换按钮 | 图标旋转交叉淡入 |
 | 命令面板 | 静态 backdrop-blur + 只动 opacity/scale |
@@ -233,18 +239,27 @@ Milkdown 在实机上接入后被整个换掉：AST ↔ Markdown 互转导致输
 - [x] Ctrl+F 边打边跳到第一个匹配，跳过去后把匹配项钉在屏幕上；块级替身报估计高度并记住真实高度（远处跳转不再整页下沉）
 - [x] 表格加列 / 删列 / 改对齐（工具栏；GFM 插删列时整表按显示宽度重新排版）；换格时工具栏不再闪
 - [x] 查找、目录树、[TOC]、脚注的跳转改成平滑滑过去（`glide.ts`）
+- [x] 切换笔记不再「闪一下」：以前正文硬切、标题先消失再弹上来、分隔线缩回再展开、目录逐条错峰，各块到场时间不一；现在 `SwapFade` 整块交叉淡化（见技术方案 §10.3）
+- [x] 长标题折行：正文大标题从 `input` 换成随内容长高的 `textarea`（`field-sizing: content`，不支持的内核 JS 量高），笔记 / 归档列表的标题最多两行
+- [x] 按文档缓存编辑器状态：切回来不再解析全文，撤销历史也在。生产包里 66KB 的「语法全览」切回来 160–220ms → 约 58ms（第一次打开仍约 124ms，见技术方案 §11.6）
+- [x] **文件是真相**：每篇文档是仓库文件夹（默认「文档/OnTheWay」）里的一个 .md，SQLite 只做可重建的索引；旧库第一次启动时自动搬进来（旧库原样留着）；文件监听 + 冲突副本；日历当日安排改成来自正文里带日期的 `- [ ]`；行菜单 / 状态栏 / 命令面板「在文件夹中显示」；命令面板可以更换笔记文件夹（见技术方案 §5）
+- [ ] 反向链接面板；改标题时顺手改别处的 `[[旧标题]]`
+- [ ] 识别网盘生成的冲突副本（「xxx (1).md」），目前当普通笔记
+- [ ] 附件：粘贴 / 拖进图片时存进「附件/」并写相对路径
 - [ ] 暗色模式全量走查（五个视图 × 各种选中态；已过笔记页）
 - [ ] 独立的设置界面（目前偏好只能从命令面板改；`db_stats` 命令等着有地方展示）
 - [ ] 空状态插画
 - [ ] 性能回归脚本
 - [ ] 打包与签名、自动更新
-- [ ] 清理未用依赖：`@dnd-kit/*`、`fractional-indexing`、`marked`、Radix dialog / popover / tooltip
-- [ ] 决定「建了没用」的表（event / review / key_result / tag）的去留
+- [x] 清理旧代码：没用的依赖（`@dnd-kit/*`、`fractional-indexing`、`marked`、Radix dialog / popover / tooltip，Rust 的 `r2d2`、`rrule`、`chrono-tz`）；旧数据模型留下的字段（笔记的 `icon`、恒为空的 `actionGroup`、任务的 `priority` / `goalId` / `sortKey` / `completedAt`）、没人调的 `note_list`、用不上的 `NoteIcon` 组件；日历当日安排从 `ActionGroup` 简化成 `DayTasks`
 
 ---
 
 ## 决策记录
 
+- **文件是真相，SQLite 只是索引**（2026-09-27）：v2.0 的 SQLite 为真相让「一切皆文档」只在界面上成立 —— 数据锁在库里，没法在文件夹里找到一篇笔记、没法用别的编辑器打开、没法放进网盘。现在每篇文档是仓库里的一个 .md；索引存在应用数据目录（不在仓库里：网盘来回拷一个正在写的 SQLite 迟早出冲突），表结构改了升版本号、清空重建，不写迁移。event / review / key_result / tag 这些建了没用的表连同 rrule 一起删掉了（git 历史里有）。
+- **任务只有 Markdown 一个来源**：日历「当日安排」来自任何文档里带日期的 `- [ ] … @2026-09-30`，勾选改原文件那一行。独立的 task 表没了。
+- **外部改动不静默覆盖**：保存前发现磁盘比索引新、或者外部改动撞上编辑器里没存的修改，都先把磁盘那一版另存成「(冲突 时间)」副本。
 - **数据层抽象**：`data/backend.ts`（`Backend` 接口，Tauri IPC / 浏览器 mock 二选一）→ `data/store.ts`（缓存 + 乐观更新）→ `data/adapter.ts`（映射成 `DocumentModel`）。视图只认 adapter 的产物。
 - **不用 TanStack Query / Router**：没有路由（五个工作区共用一个视图），乐观更新和失效范围都很小，直接写在 Zustand 里更直白。
 - **编辑器换成 CodeMirror 6**：Milkdown 的 AST 互转在真机上表现为输入跳行、内容漂移。CodeMirror 文档就是源文，装饰层只负责「看起来像渲染过」。
@@ -254,13 +269,13 @@ Milkdown 在实机上接入后被整个换掉：AST ↔ Markdown 互转导致输
 - **GOAL 一个周期一篇**，键是 `(horizon, period_start)`，由前端算周期起点、后端校验。「本周目标」是今天所在那一周，不是最新一条。
 - **笔记列表只按标题筛**：全文匹配的结果和标题栏对不上，异步回填还会闪一次。全文搜索留给专门的入口。
 - **自动保存不重排列表**：每 400ms 刷新 `updatedAt`，按它排序会让正在编辑的笔记当着用户的面往上跳。「按更新时间」排序直接用 store 的顺序，不在 `NotesView` 里再按 `updatedAt` 排。
-- **删除 = 软删除 + 6 秒撤销**：不弹确认框（多数删除是有意的），删完底部给「撤销」，走 `note_undelete` 清掉 `deleted_at`。没有回收站界面。
+- **删除 = 挪进回收站 + 6 秒撤销**：不弹确认框（多数删除是有意的），删完底部给「撤销」，走 `note_undelete` 从 `.ontheway/trash/` 挪回原来的位置。回收站 30 天后清掉，没有回收站界面。
 - **保存失败的正文留作草稿**：`drafts` 按 `saveKeyOf` 的键存，切走再切回来还在（adapter 优先用它），下一次保存成功就清掉，关窗时编辑器 flush 之后再试一次（`flushDrafts`）。状态栏只显示这一篇自己的保存失败。
 - **其它操作失败走 ErrorToast**：置顶 / 归档 / 恢复 / 删除 / 勾选 / 新建 / 加载失败写进 `error`，底部提示条显示；启动加载失败时常驻并带「重试」。保存失败不走这里。
 - **同一篇文档的写入排队**（store 里的 `serialized`）：标题和正文两条路保存、各自写整篇，并发时后到的会把另一半覆盖回旧值。
 - **迁移期间关外键**：`migrate::run` 事务外关、每次迁移后 `foreign_key_check` 只拦新增的悬空引用，结束再恢复。重建表时开着外键，DROP TABLE 会级联删掉引用它的行。
 - **启动一次取全文**：`note_list_full` 每个列表一次往返，不再「摘要列表 + 逐篇 `note_get`」。
-- **摘要 / 字数的算法改了要升 `note_derived_vN`**：启动时 `refresh_derived_columns` 按这个版本号把已有笔记整体重算一遍（不动 `updated_at`）。
+- **摘要 / 字数的算法改了要升索引的 `VERSION`**（`vault/index.rs`）：索引整个重建，摘要字数跟着重算。
 - **Logo 改成手写 SVG**：九段笔画按书写顺序 `stroke-dashoffset` 描出再收回，`pathLength="1"` 归一化、`currentColor` 跟主题走。原来的 `Brand.png` 是 53760×11528 的巨图，缩到 22px 发糊，已删。减少动效时停在「写完」态。
 - **目录树首项固定为「概览」**，五个视图统一；callout 标签进目录树。
 - **日历不用 FullCalendar**，自己用 CSS Grid 画；每周自成一个 grid 行，整行高亮用 `inset-0`。
@@ -314,7 +329,13 @@ Milkdown 在实机上接入后被整个换掉：AST ↔ Markdown 互转导致输
 **数据**
 
 - 某天 / 某周期的文档是异步加载的，编辑器往往先以空文档挂载。`saveDocument` 在 `source` 还没回来时**必须直接返回**，否则用户一输入就把原有内容整篇覆盖。adapter 在数据没到时干脆不给 `editor`。
-- `foreign_keys` 是连接级 PRAGMA，只在建库时设一次没用，r2d2 的 `with_init` 每个连接都要跑。
+- `foreign_keys` 是连接级 PRAGMA，只在建库时设一次没用（旧库的事，搬家只读拷贝，不用管）。
+- 文件改名 / 挪位置后按新路径写入前，索引里得先改路径**并清掉指纹**：标题来自文件名、归档与否来自位置，内容一模一样也得重新解析；不改路径的话旧路径那一行占着同一个 id，新文件会被当成一篇重复的笔记。
+- 应用自己写的文件会触发文件监听：靠「写完立刻把修改时间、大小、指纹记进索引」识别，扫描时对得上就不算外部改动、不发通知。
+- 外部程序用 CRLF 存过的文件：读进来统一成 `\n`，否则编辑器一打开就当成改过了。
+- 编辑器分辨不了「store 里的正文变了」是外部改动还是自己的保存回来了（边打字边保存时两者都是 `当前 ≠ 已同步`）：store 只在外部改动真的改了正文时给 `externalRevisions` 加一，编辑器看这个数有没有变。
+- `saveBus` 引用了数据 store，store 要 flush 编辑器时只能动态 `import("@/editor/saveBus")`，静态引入会成环。
+- 这台机器的 Git 开了 `core.autocrlf`，工作区里的文件是 CRLF，Biome 按 LF 检查会报格式错；改过的文件存成 LF 即可（提交时本来就是 LF）。
 - FTS5 的 `snippet()` / `highlight()` 作用在分词串上，中文会显示成「今天 开会 讨论」；高亮在前端用 `tokens` 做。
 - jieba 会把标点单独切出来，进了 FTS5 查询就是 `""""*`，要先过滤掉不含字母数字汉字的 token。
 - 延续来的「今天」不落库；跨过零点后缓存里的延续文档要丢掉，否则翻回昨天会把它当成昨天写的。

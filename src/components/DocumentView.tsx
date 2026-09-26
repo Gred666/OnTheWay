@@ -6,13 +6,14 @@ import { cn } from "@/lib/cn";
 import { buildOutline, renderMarkdown } from "@/lib/markdown";
 import { spring, tween } from "@/lib/motion";
 import { MOD_KEY } from "@/lib/platform";
-import { AlertTriangle, Archive, Maximize2, Minimize2, Trash2 } from "lucide-react";
+import { AlertTriangle, Archive, FolderOpen, Maximize2, Minimize2, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActionGroup } from "./ActionItem";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { DayTasks } from "./ActionItem";
 import { Outline } from "./Outline";
 import { OverlayScrollbar } from "./OverlayScrollbar";
 import { Segmented } from "./Segmented";
+import { SwapFade } from "./SwapFade";
 
 /** 目录树的指纹：标题文字或行号变了才需要重新渲染文档视图。 */
 const outlineKeyOf = (markdown: string) =>
@@ -108,11 +109,7 @@ export function DocumentView({
   }, []);
 
   const outlineSource = liveMarkdown ?? doc.bodyMd;
-  const outline = useMemo(
-    () =>
-      buildOutline(outlineSource, doc.actionGroup?.hideHeader ? undefined : doc.actionGroup?.title),
-    [outlineSource, doc.actionGroup?.title, doc.actionGroup?.hideHeader],
-  );
+  const outline = useMemo(() => buildOutline(outlineSource), [outlineSource]);
 
   // 双链带的小节：目标笔记的目录一算出来就滚过去。旧编辑器的句柄会拒绝（返回 false），
   // 那就等下一次 —— 新编辑器挂上后 editorOutline 会换掉，effect 会再跑。
@@ -139,14 +136,26 @@ export function DocumentView({
 
   // 切换文档时滚回顶部。用 instant 而不是 smooth ——
   // 换了一篇文档还看到旧位置平滑滚动，是错误的心智模型。
+  // layout effect：新一篇的第一帧就得在顶上。放在 useEffect 里的话，不是点击触发的
+  // 切换（比如命令面板）可能先按旧的滚动位置画出一帧，再跳回顶部。
   // biome-ignore lint/correctness/useExhaustiveDependencies: 只应在 doc.key 变化时触发
-  useEffect(() => {
+  useLayoutEffect(() => {
     scrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
     setLiveMarkdown(null);
     outlineKeyRef.current = null;
   }, [doc.key]);
 
   const canEdit = !!doc.editor && !!onSaveDocument && editorEnabled;
+
+  // 别的程序改了这篇的文件：编辑器据此分辨「正文变了」是外部改动还是自己的保存回来了
+  const externalRevision = useData((state) =>
+    doc.editor ? (state.externalRevisions[saveKey(doc)] ?? 0) : 0,
+  );
+  const target = doc.editor?.target;
+  const handleExternalConflict = useCallback(() => {
+    if (target) useData.getState().markConflict(target);
+  }, [target]);
+  const handleReveal = target ? () => void useData.getState().revealDocument(target) : undefined;
 
   // 正常路径下 bootstrap 已经预载完，这里首帧就拿到组件。
   // 兜底：万一没走 bootstrap（比如单测直接渲染本组件），照旧异步加载后再补上。
@@ -168,7 +177,9 @@ export function DocumentView({
       {/* 定位基准必须是滚动容器自己这一层。挂到外面那行上的话，
           absolute right-0 贴的是「正文 + 大纲栏」的右边 ——
           滑块会跑到大纲栏外侧去，离它真正在滚的那块内容隔着一整栏。 */}
-      <div className="relative min-w-0 flex-1">
+      {/* data-swap-host：切换文档时旧内容的快照放在这一层（见 SwapFade）——
+          它不滚动、就是正文的可视区，快照按它裁切。 */}
+      <div className="relative min-w-0 flex-1" data-swap-host>
         {/* 画布往左 chrome 底下多铺 RAIL_WIDTH：负外边距把盒子拉过去，等宽的
             内边距把内容留在原位，所以排版一点没变，只是底色和裁切边界往左
             延到了窗口边缘。退出专注模式时 chrome 滑回来的那段时间，正文能
@@ -192,113 +203,98 @@ export function DocumentView({
             transition={{ duration: 0.46, ease: [0.22, 1, 0.36, 1] }}
             className="mx-auto flex min-h-full w-full max-w-[860px] flex-col px-14 pb-6 pt-[52px]"
           >
-            {/* ---------- 归档横幅 ----------
-                key 固定：在两篇归档笔记之间切换时横幅本身不动，只有文字淡入换掉。
-                原来按文字做 key，日期不同的两篇一切，旧条往上退、新条从上落，
-                两条叠在一起错开几像素 —— 看起来就是在抖。 */}
-            <AnimatePresence mode="popLayout" initial={false}>
-              {doc.banner && (
-                <motion.div
-                  key="banner"
-                  initial={{ opacity: 0, y: -6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  transition={tween.base}
-                  className="mb-7 flex items-center gap-2 rounded-lg bg-danger/10 px-3.5 py-2.5"
-                >
-                  <Archive size={12.5} strokeWidth={1.9} className="shrink-0 text-danger" />
-                  <motion.span
-                    key={doc.banner.text}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={tween.fast}
-                    className="text-[12px] text-danger"
+            {/* 换文档时整块交叉淡化：旧的一份快照原地淡出，新的一份淡入（见 SwapFade）。
+                标题、分隔线、正文、状态栏都在里面，一起换，不再各播各的入场动画。 */}
+            <SwapFade swapKey={doc.key} exitLift={4} className="flex flex-1 flex-col">
+              {/* ---------- 归档横幅 ----------
+                  key 固定：在两篇归档笔记之间切换时横幅本身不动，文字跟着整块一起淡换。
+                  原来按文字做 key，日期不同的两篇一切，旧条往上退、新条从上落，
+                  两条叠在一起错开几像素 —— 看起来就是在抖。 */}
+              <AnimatePresence mode="popLayout" initial={false}>
+                {doc.banner && (
+                  <motion.div
+                    key="banner"
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    transition={tween.base}
+                    className="mb-7 flex items-center gap-2 rounded-lg bg-danger/10 px-3.5 py-2.5"
                   >
-                    {doc.banner.text}
-                  </motion.span>
-                </motion.div>
-              )}
-            </AnimatePresence>
+                    <Archive size={12.5} strokeWidth={1.9} className="shrink-0 text-danger" />
+                    <span className="text-[12px] text-danger">{doc.banner.text}</span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
-            {/* ---------- 标题行 ---------- */}
-            <header id="doc-top" data-outline-id="doc-top">
-              {/* 标题上方那一行：左边是小字（日历某天的日期），右边是分段控件。
-                  分段控件原来和标题并排在同一行、分掉一截宽度，日历某天的标题
-                  稍长就被它截掉。挪上来之后标题独占整行；这一行的高度钉在小字
-                  的一行高，控件比它高出来的部分往上溢进顶部留白里（负外边距），
-                  标题的位置不受影响，切「日TODO ↔ 周/GOAL」时控件也不挪窝。 */}
-              {(doc.eyebrow || (doc.segments && onSegmentChange)) && (
-                <div className="mb-2 flex min-h-[20px] items-end justify-between gap-8">
-                  {doc.eyebrow && (
-                    <motion.p
-                      key={`${doc.key}-eyebrow`}
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={tween.base}
-                      className="min-w-0 truncate text-[12px] font-medium leading-[20px]
-                                 tracking-[0.02em] text-muted"
-                    >
-                      {doc.eyebrow}
-                    </motion.p>
-                  )}
-                  {doc.segments && onSegmentChange && (
-                    <div className="-mt-2.5 ml-auto shrink-0">
-                      <Segmented
-                        group={doc.segments.group}
-                        options={doc.segments.options.map((o) => ({ value: o, label: o }))}
-                        value={doc.segments.active}
-                        onChange={onSegmentChange}
-                        size={doc.segments.options.length > 3 ? "sm" : "md"}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
+              {/* ---------- 标题行 ---------- */}
+              <header id="doc-top" data-outline-id="doc-top">
+                {/* 标题上方那一行：左边是小字（日历某天的日期），右边是分段控件。
+                    分段控件原来和标题并排在同一行、分掉一截宽度，日历某天的标题
+                    稍长就被它截掉。挪上来之后标题独占整行；这一行的高度钉在小字
+                    的一行高，控件比它高出来的部分往上溢进顶部留白里（负外边距），
+                    标题的位置不受影响，切「日TODO ↔ 周/GOAL」时控件也不挪窝。 */}
+                {(doc.eyebrow || (doc.segments && onSegmentChange)) && (
+                  <div className="mb-2 flex min-h-[20px] items-end justify-between gap-8">
+                    {doc.eyebrow && (
+                      <p
+                        className="min-w-0 truncate text-[12px] font-medium leading-[20px]
+                                   tracking-[0.02em] text-muted"
+                      >
+                        {doc.eyebrow}
+                      </p>
+                    )}
+                    {doc.segments && onSegmentChange && (
+                      <div className="-mt-2.5 ml-auto shrink-0">
+                        <Segmented
+                          group={doc.segments.group}
+                          options={doc.segments.options.map((o) => ({ value: o, label: o }))}
+                          value={doc.segments.active}
+                          onChange={onSegmentChange}
+                          size={doc.segments.options.length > 3 ? "sm" : "md"}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
 
-              <div className="min-w-0 overflow-hidden">
-                <AnimatePresence mode="popLayout" initial={false}>
-                  {doc.editor?.titleEditable && onSaveTitle ? (
-                    <EditableDocumentTitle
-                      key={doc.key}
-                      title={doc.title}
-                      // 占位标题（无标题笔记）不是真标题：输入框里留空，让用户直接起名
-                      placeholder={doc.title === NEW_NOTE_TITLE}
-                      onSave={(title) => onSaveTitle(doc.editor!.target, title)}
-                    />
-                  ) : (
-                    <motion.h1
-                      key={doc.key}
-                      initial={{ opacity: 0, y: 16 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -14 }}
-                      transition={spring.smooth}
-                      className="selectable text-[38px] font-bold leading-[1.25] tracking-[-0.02em]
-                               text-ink"
-                    >
-                      {doc.title}
-                    </motion.h1>
-                  )}
-                </AnimatePresence>
-              </div>
-            </header>
+                {/* 标题按文档 key 重挂（可编辑标题的本地状态跟着换篇重置），
+                    但不再单独播入场：以前旧标题直接消失、新标题从下面 16px 弹上来，
+                    中间空着一拍，正文却已经换好了。 */}
+                {doc.editor?.titleEditable && onSaveTitle ? (
+                  <EditableDocumentTitle
+                    key={doc.key}
+                    title={doc.title}
+                    // 占位标题（无标题笔记）不是真标题：输入框里留空，让用户直接起名
+                    placeholder={doc.title === NEW_NOTE_TITLE}
+                    onSave={(title) => onSaveTitle(doc.editor!.target, title)}
+                  />
+                ) : (
+                  <h1
+                    key={doc.key}
+                    className="selectable break-words text-[38px] font-bold leading-[1.25]
+                               tracking-[-0.02em] text-ink"
+                  >
+                    {doc.title}
+                  </h1>
+                )}
+              </header>
 
-            {/* 标题下的细分隔线：宽度从 0 展开，是「文档打开了」的一个小信号 */}
-            <motion.div
-              key={`${doc.key}-rule`}
-              className="mt-6 h-px origin-left bg-line"
-              initial={{ scaleX: 0, opacity: 0 }}
-              animate={{ scaleX: 1, opacity: 1 }}
-              transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1], delay: 0.05 }}
-            />
+              {/* 标题下的细分隔线：宽度从 0 展开，是「文档打开了」的一个小信号。
+                  只在进这个工作区时播一次；换篇时它留在原地，跟着整块一起淡换 */}
+              <motion.div
+                className="mt-6 h-px origin-left bg-line"
+                initial={{ scaleX: 0, opacity: 0 }}
+                animate={{ scaleX: 1, opacity: 1 }}
+                transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1], delay: 0.05 }}
+              />
 
-            {/* ---------- 正文 ---------- */}
-            {doc.editor ? (
-              // 编辑器稳定岛：这里以及编辑器自身都没有 Motion layout/transform。
-              // Shell 那边的工作区进场也是纯 opacity、不带 transform，所以编辑器
-              // 可以在新一屏的第一帧就挂上，不需要先拿 DocumentPreview 顶一段。
-              // 这一点很重要：预览和编辑器的排版并不一致（正文 15px vs 17px/1.82，
-              // h2 21px vs 29.75px），中途替换会让整篇重排一次，看着像卡顿。
-              // editorEnabled 仍然保留给需要强制只读的调用方。
+              {/* ---------- 正文 ----------
+                  编辑器稳定岛：这里以及编辑器自身都没有 Motion layout/transform
+                  （SwapFade 只动 opacity）。Shell 那边的工作区进场也是纯 opacity，
+                  所以编辑器可以在新一屏的第一帧就挂上，不需要先拿 DocumentPreview
+                  顶一段。这一点很重要：预览和编辑器的排版并不一致（正文 15px vs
+                  17px/1.82，h2 21px vs 29.75px），中途替换会让整篇重排一次，看着像卡顿。
+                  数据还没到（没有 doc.editor）或 editorEnabled 强制只读时才是预览。 */}
               <div className="flex-1">
                 {canEdit && Editor ? (
                   <Editor
@@ -310,54 +306,30 @@ export function DocumentView({
                     onDocumentChange={handleDocumentChange}
                     onWikiLink={handleWikiLink}
                     // 日历当日安排跟在正文后面：编辑器别再撑 360px 把任务推到底下
-                    fill={!doc.actionGroup?.tasks.length}
+                    fill={!doc.dayTasks?.length}
+                    // 切走时缓存编辑器状态，切回来不用再解析全文
+                    cacheKey={saveKey(doc)}
+                    externalRevision={externalRevision}
+                    onExternalConflict={handleExternalConflict}
                   />
                 ) : (
                   <DocumentPreview markdown={doc.bodyMd} />
                 )}
 
-                {doc.actionGroup && doc.actionGroup.tasks.length > 0 && (
-                  <ActionGroup
-                    title={doc.actionGroup.title}
-                    tasks={doc.actionGroup.tasks}
-                    counterMode={doc.actionGroup.title === "本周重点" ? "count" : "progress"}
-                    hideHeader={doc.actionGroup.hideHeader}
-                    onToggle={onToggleTask}
-                  />
+                {doc.dayTasks && doc.dayTasks.length > 0 && (
+                  <DayTasks tasks={doc.dayTasks} onToggle={onToggleTask} />
                 )}
               </div>
-            ) : (
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.div
-                  key={doc.key}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -6 }}
-                  transition={{ ...tween.base, delay: 0.04 }}
-                  className="flex-1"
-                >
-                  <DocumentPreview markdown={doc.bodyMd} />
 
-                  {doc.actionGroup && doc.actionGroup.tasks.length > 0 && (
-                    <ActionGroup
-                      title={doc.actionGroup.title}
-                      tasks={doc.actionGroup.tasks}
-                      counterMode={doc.actionGroup.title === "本周重点" ? "count" : "progress"}
-                      hideHeader={doc.actionGroup.hideHeader}
-                      onToggle={onToggleTask}
-                    />
-                  )}
-                </motion.div>
-              </AnimatePresence>
-            )}
-
-            {/* ---------- 底部状态栏 ---------- */}
-            <StatusBar
-              parts={doc.statusParts}
-              onDelete={doc.deletable ? onDelete : undefined}
-              saving={saving}
-              saveError={saveError}
-            />
+              {/* ---------- 底部状态栏 ---------- */}
+              <StatusBar
+                parts={doc.statusParts}
+                onDelete={doc.deletable ? onDelete : undefined}
+                onReveal={handleReveal}
+                saving={saving}
+                saveError={saveError}
+              />
+            </SwapFade>
           </motion.div>
         </div>
         <OverlayScrollbar targetRef={scrollRef} />
@@ -435,6 +407,45 @@ function saveKey(doc: DocumentModel): string {
   return doc.editor ? saveKeyOf(doc.editor.target) : "";
 }
 
+/**
+ * 标题按内容自动长高、超出一行就折行。WebView2（Chromium）认 `field-sizing: content`，
+ * 文本框自己随内容长高；不认的内核拿 JS 量 scrollHeight，宽度变了（窗口缩放、
+ * 进出专注模式）再量一次。
+ */
+const FIELD_SIZING = typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content");
+
+function useFitHeight(ref: React.RefObject<HTMLTextAreaElement | null>, value: string) {
+  const fit = useCallback(() => {
+    const field = ref.current;
+    if (!field || FIELD_SIZING) return;
+    field.style.height = "auto";
+    field.style.height = `${field.scrollHeight}px`;
+  }, [ref]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 内容变了就要重新量
+  useLayoutEffect(fit, [fit, value]);
+
+  useEffect(() => {
+    const field = ref.current;
+    if (!field || FIELD_SIZING || typeof ResizeObserver === "undefined") return;
+    let width = field.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (field.clientWidth === width) return;
+      width = field.clientWidth;
+      fit();
+    });
+    observer.observe(field);
+    return () => observer.disconnect();
+  }, [ref, fit]);
+}
+
+/**
+ * 可编辑的大标题。
+ *
+ * 是 textarea 不是 input：input 只有一行，标题一长就在框里横着往后滚，
+ * 开头那半截被推出去看不见。textarea 按宽度折行、跟着内容长高；
+ * 标题本身仍然是一行文字 —— 回车是「写完了」，粘贴进来的换行直接去掉。
+ */
 function EditableDocumentTitle({
   title,
   placeholder,
@@ -448,6 +459,8 @@ function EditableDocumentTitle({
   const shown = placeholder ? "" : title;
   const [value, setValue] = useState(shown);
   const [saving, setSaving] = useState(false);
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  useFitHeight(fieldRef, value);
 
   const commit = async () => {
     const clean = value.trim();
@@ -468,25 +481,34 @@ function EditableDocumentTitle({
   };
 
   return (
-    <motion.input
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: saving ? 0.65 : 1, y: 0 }}
-      transition={spring.smooth}
+    <textarea
+      ref={fieldRef}
+      rows={1}
       value={value}
       disabled={saving}
       aria-label="笔记标题"
       placeholder={placeholder ? title : undefined}
+      spellCheck={false}
       onChange={(event) => setValue(event.target.value.replace(/[\r\n]/g, ""))}
       onBlur={() => void commit()}
       onKeyDown={(event) => {
-        if (event.key === "Enter") event.currentTarget.blur();
+        // 输入法选字时的回车是在上屏，不是写完了
+        if (event.nativeEvent.isComposing) return;
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+        }
         if (event.key === "Escape") {
           setValue(shown);
           event.currentTarget.blur();
         }
       }}
-      className="w-full min-w-0 border-0 bg-transparent p-0 text-[38px] font-bold leading-[1.25]
-                 tracking-[-0.02em] text-ink outline-none placeholder:text-faint"
+      className={cn(
+        "block w-full min-w-0 resize-none overflow-hidden border-0 bg-transparent p-0",
+        "text-[38px] font-bold leading-[1.25] tracking-[-0.02em] text-ink outline-none",
+        "transition-opacity duration-[160ms] [field-sizing:content] placeholder:text-faint",
+        saving && "opacity-65",
+      )}
     />
   );
 }
@@ -494,11 +516,14 @@ function EditableDocumentTitle({
 function StatusBar({
   parts,
   onDelete,
+  onReveal,
   saving,
   saveError,
 }: {
   parts: string[];
   onDelete?: () => void;
+  /** 在文件夹中显示这篇文档的文件（每篇都是仓库里的一个 .md） */
+  onReveal?: () => void;
   saving?: boolean;
   saveError?: string | null;
 }) {
@@ -535,6 +560,19 @@ function StatusBar({
           )
         )}
       </motion.div>
+
+      {onReveal && (
+        <button
+          type="button"
+          onClick={onReveal}
+          aria-label="在文件夹中显示"
+          title="在文件夹中显示"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-faint
+                     transition-colors duration-[140ms] hover:bg-raised hover:text-ink"
+        >
+          <FolderOpen size={13.5} strokeWidth={1.8} />
+        </button>
+      )}
 
       {onDelete && (
         <button

@@ -1,6 +1,6 @@
 import { useApp } from "@/app/store";
 import { useData } from "@/data/store";
-import type { WorkspaceId } from "@/data/types";
+import type { DocumentSaveTarget, WorkspaceId } from "@/data/types";
 import { cn } from "@/lib/cn";
 import { animatedEmojiText } from "@/lib/emojiText";
 import { spring, tween } from "@/lib/motion";
@@ -10,6 +10,9 @@ import {
   CalendarDays,
   Copy,
   CornerDownLeft,
+  FolderInput,
+  FolderOpen,
+  FolderSearch,
   Monitor,
   Moon,
   Puzzle,
@@ -28,7 +31,7 @@ interface Cmd {
   label: string;
   hint: string;
   icon: LucideIcon;
-  group: "跳转" | "笔记" | "外观";
+  group: "跳转" | "笔记" | "文件" | "外观";
   run: () => void;
 }
 
@@ -37,7 +40,12 @@ interface Cmd {
  * 遮罩用静态 backdrop-blur、只动 opacity —— 动画化 backdrop-filter
  * 会让每帧重新采样模糊，是最贵的一类动画（技术方案 §10.1）。
  */
-export function CommandPalette() {
+export function CommandPalette({
+  docTarget,
+}: {
+  /** 正在看的那篇文档（「在文件夹中显示当前文档」用）；空状态、扩展页没有 */
+  docTarget?: DocumentSaveTarget;
+}) {
   const open = useApp((s) => s.paletteOpen);
   const setOpen = useApp((s) => s.setPaletteOpen);
   const setWorkspace = useApp((s) => s.setWorkspace);
@@ -46,6 +54,9 @@ export function CommandPalette() {
   const reduceMotion = useApp((s) => s.reduceMotion);
   const setReduceMotion = useApp((s) => s.setReduceMotion);
   const notes = useData((s) => s.notes);
+  const revealDocument = useData((s) => s.revealDocument);
+  const openVaultFolder = useData((s) => s.openVaultFolder);
+  const changeVaultRoot = useData((s) => s.changeVaultRoot);
 
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -109,6 +120,36 @@ export function CommandPalette() {
         },
       })),
 
+      /* 每篇文档都是笔记文件夹里的一个 .md 文件 */
+      ...(docTarget
+        ? [
+            {
+              id: "reveal-current",
+              label: "在文件夹中显示当前文档",
+              hint: "打开资源管理器并选中这篇的文件",
+              icon: FolderSearch,
+              group: "文件",
+              run: () => void revealDocument(docTarget),
+            } satisfies Cmd,
+          ]
+        : []),
+      {
+        id: "open-vault",
+        label: "打开笔记文件夹",
+        hint: "所有笔记、日记、目标都在这里",
+        icon: FolderOpen,
+        group: "文件",
+        run: () => void openVaultFolder(),
+      },
+      {
+        id: "change-vault",
+        label: "更换笔记文件夹…",
+        hint: "选一个文件夹存放所有笔记（可以放进网盘同步）",
+        icon: FolderInput,
+        group: "文件",
+        run: () => void changeVaultRoot(),
+      },
+
       {
         id: "theme-light",
         label: "切换到亮色",
@@ -142,7 +183,18 @@ export function CommandPalette() {
         run: () => setReduceMotion(!reduceMotion),
       },
     ];
-  }, [notes, setWorkspace, selectNote, setTheme, reduceMotion, setReduceMotion]);
+  }, [
+    notes,
+    setWorkspace,
+    selectNote,
+    setTheme,
+    reduceMotion,
+    setReduceMotion,
+    docTarget,
+    revealDocument,
+    openVaultFolder,
+    changeVaultRoot,
+  ]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();

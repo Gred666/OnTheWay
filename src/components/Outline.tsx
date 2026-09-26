@@ -2,9 +2,10 @@ import type { OutlineItem } from "@/data/types";
 import type { EditorOutlineHandle } from "@/editor/MarkdownEditor";
 import { cn } from "@/lib/cn";
 import { spring, tween } from "@/lib/motion";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { OverlayScrollbar } from "./OverlayScrollbar";
+import { SwapFade } from "./SwapFade";
 
 /**
  * 右侧目录树。
@@ -117,14 +118,17 @@ export function Outline({
   return (
     <>
       {!zen && <div className="hidden w-[180px] shrink-0 xl:block" aria-hidden="true" />}
-      <RailOutline items={items} activeId={activeId} onJump={scrollTo} hidden={!!zen} />
+      <RailOutline
+        items={items}
+        activeId={activeId}
+        onJump={scrollTo}
+        hidden={!!zen}
+        resetKey={resetKey}
+      />
       <ZenOutline items={items} activeId={activeId} onJump={scrollTo} hidden={!zen} />
     </>
   );
 }
-
-/** 逐条入场的错峰只排前这么多条：再往后都在首屏以下，排下去最后一条要等好几秒才出现 */
-const STAGGER_LIMIT = 14;
 
 /** 当前条目离目录可视区上下边缘不足这么多时，把它滚回中间 */
 const FOLLOW_MARGIN = 32;
@@ -141,11 +145,14 @@ function RailOutline({
   activeId,
   onJump,
   hidden,
+  resetKey,
 }: {
   items: OutlineItem[];
   activeId: string | null;
   onJump: (id: string) => void;
   hidden: boolean;
+  /** 换文档：整份目录跟正文一起交叉淡化 */
+  resetKey: string;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
 
@@ -188,7 +195,8 @@ function RailOutline({
         目录树
       </motion.p>
 
-      <div className="relative min-h-0 flex-1">
+      {/* data-swap-host：换文档时旧目录的快照放在这一层（它不滚动，见 SwapFade） */}
+      <div className="relative min-h-0 flex-1" data-swap-host>
         {/* layoutScroll：指示条用 layoutId 在条目间滑动，滚动过的容器里要告诉 Motion
             把滚动偏移算进去，不然滚动后指示条会从错的位置飞过来 */}
         <motion.div
@@ -196,41 +204,51 @@ function RailOutline({
           layoutScroll
           className="scroll-none h-full overflow-y-auto pr-3"
         >
-          <nav className="relative flex flex-col gap-[1px] pb-8">
-            {items.map((it, i) => {
-              const active = it.id === activeId;
-              return (
-                <motion.button
-                  key={it.id}
-                  type="button"
-                  data-outline-item={it.id}
-                  onClick={() => onJump(it.id)}
-                  initial={{ opacity: 0, x: 5 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ ...tween.base, delay: 0.06 + Math.min(i, STAGGER_LIMIT) * 0.035 }}
-                  className={cn(
-                    "relative rounded-r-sm py-[5px] pr-2 text-left text-[12px] leading-[1.5]",
-                    "transition-colors duration-[160ms]",
-                    it.level === 2 ? "pl-6" : "pl-3",
-                    active ? "text-ink" : "text-faint hover:text-muted",
-                  )}
-                >
-                  {active && (
-                    <motion.span
-                      layoutId="outline-indicator"
-                      className="absolute left-0 top-[5px] bottom-[5px] w-[2px] rounded-full bg-ink"
-                      transition={spring.smooth}
-                    />
-                  )}
-                  {/* 字重不过渡：中文每个小数字重都要重新匹配字体，一帧十几毫秒（见 Sidebar）。
-                  这里尤其要紧 —— 滚动正文时活动标题一直在换。 */}
-                  <span className={cn("block truncate", active ? "font-semibold" : "font-normal")}>
-                    {it.text}
-                  </span>
-                </motion.button>
-              );
-            })}
-          </nav>
+          {/* 换文档时整份目录和正文一起交叉淡化，条目不再逐条错峰：以前换一篇，
+              旧目录一下子没了、新的一条条从右边滑进来，最后一条要等半秒多。
+              nav 按文档重挂，AnimatePresence 的 initial={false} 让这一批不播入场；
+              之后写出来的新标题才单独淡入。 */}
+          <SwapFade swapKey={resetKey}>
+            <nav key={resetKey} className="relative flex flex-col gap-[1px] pb-8">
+              <AnimatePresence initial={false}>
+                {items.map((it) => {
+                  const active = it.id === activeId;
+                  return (
+                    <motion.button
+                      key={it.id}
+                      type="button"
+                      data-outline-item={it.id}
+                      onClick={() => onJump(it.id)}
+                      initial={{ opacity: 0, x: 5 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={tween.base}
+                      className={cn(
+                        "relative rounded-r-sm py-[5px] pr-2 text-left text-[12px] leading-[1.5]",
+                        "transition-colors duration-[160ms]",
+                        it.level === 2 ? "pl-6" : "pl-3",
+                        active ? "text-ink" : "text-faint hover:text-muted",
+                      )}
+                    >
+                      {active && (
+                        <motion.span
+                          layoutId="outline-indicator"
+                          className="absolute left-0 top-[5px] bottom-[5px] w-[2px] rounded-full bg-ink"
+                          transition={spring.smooth}
+                        />
+                      )}
+                      {/* 字重不过渡：中文每个小数字重都要重新匹配字体，一帧十几毫秒（见 Sidebar）。
+                      这里尤其要紧 —— 滚动正文时活动标题一直在换。 */}
+                      <span
+                        className={cn("block truncate", active ? "font-semibold" : "font-normal")}
+                      >
+                        {it.text}
+                      </span>
+                    </motion.button>
+                  );
+                })}
+              </AnimatePresence>
+            </nav>
+          </SwapFade>
         </motion.div>
         <OverlayScrollbar targetRef={scrollerRef} />
       </div>

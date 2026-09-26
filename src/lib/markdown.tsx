@@ -292,11 +292,11 @@ export function renderMarkdown(md: string, ns = "h"): ReactNode[] {
 }
 
 /* ---------------- 目录树 ----------------
-   右侧目录从正文标题 + 行动项分组标题自动生成。
+   右侧目录从正文的标题（ATX / Setext）和 callout 标签自动生成。
    这样文档结构变了目录自动跟上，不需要单独维护一份。
 */
 
-export function buildOutline(md: string, actionGroupTitle?: string): OutlineItem[] {
+export function buildOutline(md: string): OutlineItem[] {
   const items: OutlineItem[] = [];
   const lines = md.replace(/\r\n/g, "\n").split("\n");
   let index = 0;
@@ -327,15 +327,6 @@ export function buildOutline(md: string, actionGroupTitle?: string): OutlineItem
       const text = animatedEmojiText((callout[2] ?? callout[1]!).trim());
       items.push({ id: slug(text, index++, "h"), text, level: 1, line: lineIndex + 1 });
     }
-  }
-
-  if (actionGroupTitle) {
-    items.push({
-      id: "action-group",
-      text: actionGroupTitle,
-      level: 1,
-      line: md.split("\n").length,
-    });
   }
 
   // 开头补一个「概览」锚点回到文档顶部。

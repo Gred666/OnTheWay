@@ -1,7 +1,7 @@
 import { LIST_WIDTH, RAIL_WIDTH, hasListColumn, startTodayTicker, useApp } from "@/app/store";
 import { CommandPalette } from "@/components/CommandPalette";
 import { DocumentView } from "@/components/DocumentView";
-import { ErrorToast } from "@/components/ErrorToast";
+import { ErrorToast, NoticeToast } from "@/components/ErrorToast";
 import { Sidebar } from "@/components/Sidebar";
 import { TitleBar } from "@/components/TitleBar";
 import { UndoToast } from "@/components/UndoToast";
@@ -235,9 +235,10 @@ export function Shell() {
             离底 72px：再低就压在文档底部状态栏上了，「保存失败」恰好显示在那一行 */}
         <div className="pointer-events-none fixed inset-x-0 bottom-[72px] z-40 flex flex-col items-center gap-2">
           <ErrorToast />
+          <NoticeToast />
           <UndoToast />
         </div>
-        <CommandPalette />
+        <CommandPalette docTarget={doc.editor?.target} />
       </div>
     </MotionConfig>
   );

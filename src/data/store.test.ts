@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "./backend";
-import type { DayDoc, Note } from "./types";
+import type { DayDoc, Note, VaultChange } from "./types";
 
 const api = {
   calendarDay: vi.fn(),
@@ -12,10 +12,12 @@ const api = {
   goalSave: vi.fn(),
   noteUpsert: vi.fn(),
   noteGet: vi.fn(),
-  noteList: vi.fn(),
   noteListFull: vi.fn(),
   noteDelete: vi.fn(),
   noteUndelete: vi.fn(),
+  onVaultChanged: vi.fn(),
+  vaultKeepConflictCopy: vi.fn(),
+  vaultReveal: vi.fn(),
 };
 
 vi.mock("./backend", () => ({
@@ -39,7 +41,6 @@ const note = (contentMd: string): Note => ({
   title: "笔记",
   contentMd,
   excerpt: "",
-  icon: "file",
   wordCount: 1,
   isPinned: false,
   isArchived: false,
@@ -47,7 +48,6 @@ const note = (contentMd: string): Note => ({
   archivedAt: null,
   createdAt: 1,
   updatedAt: 1,
-  actionGroup: null,
 });
 
 const initial = useData.getState();
@@ -63,8 +63,21 @@ beforeEach(() => {
     savingDocs: new Set(),
     saveError: null,
     error: null,
+    notice: null,
     drafts: {},
+    externalRevisions: {},
+    conflicts: new Set(),
+    markedDates: new Set(),
   });
+});
+
+const change = (extra: Partial<VaultChange>): VaultChange => ({
+  notes: [],
+  days: [],
+  goals: [],
+  tasks: false,
+  conflicts: [],
+  ...extra,
 });
 
 describe("saveDocument", () => {
@@ -112,7 +125,6 @@ describe("saveDocument", () => {
       title: "",
       periodStart: "2026-08-24",
       contentMd: "",
-      actionGroup: null,
       createdAt: 0,
       updatedAt: 0,
     };
@@ -331,7 +343,6 @@ describe("initialize", () => {
     await useData.getState().initialize();
     expect(api.noteListFull).toHaveBeenCalledTimes(2);
     expect(api.noteGet).not.toHaveBeenCalled();
-    expect(api.noteList).not.toHaveBeenCalled();
     expect(useData.getState().notes.map((item) => item.contentMd)).toEqual([
       "正文1",
       "正文2",
@@ -447,5 +458,114 @@ describe("drafts（保存失败的正文）", () => {
     api.noteUpsert.mockRejectedValue(new Error("database is locked"));
     await expect(useData.getState().flushDrafts()).rejects.toThrow("database is locked");
     expect(useData.getState().drafts["note:n-1"]?.contentMd).toBe("草稿");
+  });
+});
+
+describe("applyVaultChange（别的程序改了仓库里的文件）", () => {
+  it("refreshes a changed note and marks it as an external revision", async () => {
+    useData.setState({ notes: [note("旧的")] });
+    api.noteGet.mockResolvedValue(note("别处改的"));
+
+    await useData.getState().applyVaultChange(change({ notes: ["n-1"] }));
+    expect(useData.getState().notes[0]?.contentMd).toBe("别处改的");
+    expect(useData.getState().externalRevisions["note:n-1"]).toBe(1);
+  });
+
+  it("does not count a refresh that changed nothing in the body", async () => {
+    useData.setState({ notes: [note("一样")] });
+    api.noteGet.mockResolvedValue({ ...note("一样"), isPinned: true });
+
+    await useData.getState().applyVaultChange(change({ notes: ["n-1"] }));
+    expect(useData.getState().notes[0]?.isPinned).toBe(true);
+    expect(useData.getState().externalRevisions["note:n-1"]).toBeUndefined();
+  });
+
+  it("adds new files, moves archived ones and drops deleted ones", async () => {
+    useData.setState({ notes: [note("x"), { ...note("y"), id: "n-2" }] });
+    api.noteGet.mockImplementation(async (id: string) => {
+      if (id === "n-new") return { ...note("新文件"), id: "n-new" };
+      if (id === "n-2") return { ...note("y"), id: "n-2", isArchived: true };
+      throw { kind: "NotFound", message: `note ${id}` };
+    });
+
+    await useData.getState().applyVaultChange(change({ notes: ["n-new", "n-2", "n-1"] }));
+    const state = useData.getState();
+    expect(state.notes.map((item) => item.id)).toEqual(["n-new"]);
+    expect(state.archived.map((item) => item.id)).toEqual(["n-2"]);
+    expect(state.error).toBeNull();
+  });
+
+  it("only refreshes the tasks of cached days when just the tasks changed", async () => {
+    // 那一天的编辑器可能正有没存的修改：只是任务变了的话正文不能动
+    useData.setState({ dayDocs: [day("编辑器里的正文")] });
+    const task = {
+      id: "n-1#2",
+      title: "交稿",
+      status: "todo" as const,
+      meta: null,
+      dueDate: "2026-08-29",
+      timeLabel: null,
+      category: null,
+    };
+    api.calendarDay.mockResolvedValue(day("磁盘上的正文", { tasks: [task] }));
+    api.calendarMarked.mockResolvedValue(["2026-08-29", "2026-09-04"]);
+
+    await useData.getState().applyVaultChange(change({ tasks: true }));
+    const state = useData.getState();
+    expect(state.dayDocs[0]?.noteMd).toBe("编辑器里的正文");
+    expect(state.dayDocs[0]?.tasks).toEqual([task]);
+    expect(state.tasks["n-1#2"]).toEqual(task);
+    expect([...state.markedDates]).toEqual(["2026-08-29", "2026-09-04"]);
+  });
+
+  it("leaves days and goals that were never opened alone", async () => {
+    await useData
+      .getState()
+      .applyVaultChange(change({ days: ["2026-08-29"], goals: ["week:2026-08-24"] }));
+    expect(api.calendarDay).not.toHaveBeenCalled();
+    expect(api.goalGet).not.toHaveBeenCalled();
+  });
+
+  it("tells the user where a conflicting external edit went", async () => {
+    api.noteGet.mockResolvedValue({ ...note("磁盘上的"), id: "n-copy" });
+    await useData
+      .getState()
+      .applyVaultChange(change({ notes: ["n-copy"], conflicts: ["周报 (冲突 2026-09-27 1030)"] }));
+    expect(useData.getState().notice).toContain("周报 (冲突 2026-09-27 1030)");
+    expect(useData.getState().notes[0]?.id).toBe("n-copy");
+  });
+});
+
+describe("外部改动撞上没存的修改", () => {
+  it("keeps the disk version as a conflict copy before saving the editor's", async () => {
+    useData.setState({ notes: [note("别处改的")] });
+    const order: string[] = [];
+    api.vaultKeepConflictCopy.mockImplementation(async () => {
+      order.push("copy");
+      return "笔记 (冲突 2026-09-27 1030)";
+    });
+    api.noteUpsert.mockImplementation(async () => {
+      order.push("save");
+      return "n-1";
+    });
+    api.noteGet.mockResolvedValue(note("编辑器里的"));
+
+    useData.getState().markConflict({ kind: "note", id: "n-1" });
+    await useData.getState().saveDocument({ kind: "note", id: "n-1" }, "编辑器里的");
+    expect(order).toEqual(["copy", "save"]);
+    expect(api.vaultKeepConflictCopy).toHaveBeenCalledWith({ kind: "note", id: "n-1" });
+    expect(useData.getState().conflicts.size).toBe(0);
+
+    // 只另存一次：之后的保存照常
+    await useData.getState().saveDocument({ kind: "note", id: "n-1" }, "编辑器里的，又改了");
+    expect(api.vaultKeepConflictCopy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("revealDocument", () => {
+  it("reports why the folder could not be opened", async () => {
+    api.vaultReveal.mockRejectedValue({ kind: "Io", message: "打开文件夹失败: 没有这个文件" });
+    await useData.getState().revealDocument({ kind: "note", id: "n-1" });
+    expect(useData.getState().error).toBe("打开文件夹失败: 没有这个文件");
   });
 });

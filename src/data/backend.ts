@@ -1,21 +1,23 @@
-import { type Result as IpcResult, commands } from "@/lib/bindings";
+import { events, type Result as IpcResult, commands } from "@/lib/bindings";
 import { isTauri } from "@/lib/tauri";
 import type {
   DayDoc,
+  DocumentSaveTarget,
   Goal,
   GoalHorizon,
   Note,
   NoteInput,
-  NoteSummary,
   SearchResult,
   Task,
+  VaultChange,
+  VaultInfo,
 } from "./types";
 
 /* ============================================================
    后端访问层。
    ★ 视图和 store 只认这里的接口，不关心数据从哪来。
 
-   在 Tauri 里 → 走 IPC 打 Rust + SQLite
+   在 Tauri 里 → 走 IPC 打 Rust：文档是仓库文件夹里的 .md 文件，SQLite 只是索引
    在浏览器里 → 走 mock（`pnpm dev` 直开 1420 端口时调 UI 用）
 
    Rust 侧的类型由 tauri-specta 生成到 lib/bindings.ts，
@@ -23,7 +25,6 @@ import type {
    ============================================================ */
 
 export interface Backend {
-  noteList(archived: boolean): Promise<NoteSummary[]>;
   /** 一个列表的全部笔记（含正文），一次取回。启动时用它，免得逐篇 noteGet。 */
   noteListFull(archived: boolean): Promise<Note[]>;
   noteGet(id: string): Promise<Note>;
@@ -43,6 +44,17 @@ export interface Backend {
   calendarDay(date: string, carryOver: boolean): Promise<DayDoc>;
   calendarDaySave(date: string, title: string, noteMd: string): Promise<DayDoc>;
   calendarMarked(from: string, to: string): Promise<string[]>;
+  vaultInfo(): Promise<VaultInfo>;
+  /** 在系统的文件管理器里定位这篇文档的文件 */
+  vaultReveal(target: DocumentSaveTarget): Promise<void>;
+  /** 打开整个笔记文件夹 */
+  vaultOpenFolder(): Promise<void>;
+  /** 把磁盘上的当前版本另存成冲突副本，返回它的标题（文件不存在时为 null） */
+  vaultKeepConflictCopy(target: DocumentSaveTarget): Promise<string | null>;
+  /** 弹选择文件夹对话框换仓库；取消了返回 null */
+  vaultChangeRoot(): Promise<VaultInfo | null>;
+  /** 订阅仓库里别处发生的变化，返回取消订阅的函数 */
+  onVaultChanged(listener: (change: VaultChange) => void): Promise<() => void>;
 }
 
 /* ---------------- Tauri IPC ---------------- */
@@ -54,7 +66,6 @@ async function unwrap<T>(request: Promise<IpcResult<T, unknown>>): Promise<T> {
 }
 
 const tauriBackend: Backend = {
-  noteList: (archived) => unwrap(commands.noteList(archived)) as Promise<NoteSummary[]>,
   noteListFull: (archived) => unwrap(commands.noteListFull(archived)) as Promise<Note[]>,
   noteGet: (id) => unwrap(commands.noteGet(id)) as Promise<Note>,
   noteUpsert: (input) => unwrap(commands.noteUpsert(input)),
@@ -85,6 +96,17 @@ const tauriBackend: Backend = {
   calendarDaySave: (date, title, noteMd) =>
     unwrap(commands.calendarDaySave(date, title, noteMd)) as Promise<DayDoc>,
   calendarMarked: (from, to) => unwrap(commands.calendarMarked(from, to)),
+  vaultInfo: () => unwrap(commands.vaultInfo()),
+  vaultReveal: async (target) => {
+    await unwrap(commands.vaultReveal(target));
+  },
+  vaultOpenFolder: async () => {
+    await unwrap(commands.vaultOpenFolder());
+  },
+  vaultKeepConflictCopy: (target) => unwrap(commands.vaultKeepConflictCopy(target)),
+  vaultChangeRoot: () => unwrap(commands.vaultChangeRoot()),
+  onVaultChanged: (listener) =>
+    events.vaultChanged.listen((event) => listener(event.payload as VaultChange)),
 };
 
 /* ---------------- 浏览器 mock ---------------- */

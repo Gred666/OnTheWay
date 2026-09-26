@@ -2,13 +2,11 @@ import type { ISODate } from "@/lib/date";
 
 /* ============================================================
    领域类型
-   与技术方案 §5.3 的表结构一一对应。
+   文档都是仓库文件夹里的 Markdown 文件（技术方案 §5）。
    Rust IPC 的宽类型由 tauri-specta 生成到 lib/bindings.ts；这里保留
    视图层需要的窄联合类型，由 data/backend.ts 在边界统一转换。
    命名保持 camelCase（Rust 侧用 #[serde(rename_all = "camelCase")]）。
    ============================================================ */
-
-export type EntityType = "note" | "task" | "goal" | "event" | "review";
 
 /** 五个导航区。「一切皆文档」——每个区最终都渲染成 DocumentView。 */
 export type WorkspaceId = "notes" | "today" | "goal" | "calendar" | "archive" | "extensions";
@@ -22,8 +20,6 @@ export interface Note {
   /** 正文，Markdown 源码 */
   contentMd: string;
   excerpt: string;
-  /** 原型里笔记卡片左侧的小图标 */
-  icon: NoteIcon;
   wordCount: number;
   isPinned: boolean;
   isArchived: boolean;
@@ -31,72 +27,35 @@ export interface Note {
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
-  /** 挂在这篇笔记下的行动项分组。纯笔记没有。 */
-  actionGroup: ActionGroup | null;
-}
-
-/**
- * 列表用的轻量结构，不含正文。
- * 一个 300px 宽的列表没必要把每篇全文都传过来。
- */
-export interface NoteSummary {
-  id: string;
-  title: string;
-  excerpt: string;
-  icon: NoteIcon;
-  isPinned: boolean;
-  archiveCategory: string | null;
-  archivedAt: number | null;
-  createdAt: number;
-  updatedAt: number;
 }
 
 export interface NoteInput {
+  /** null 是新建 */
   id: string | null;
   title: string;
   contentMd: string;
-  icon: NoteIcon | null;
 }
 
-export type NoteIcon =
-  | "pin-place"
-  | "circle-check"
-  | "sparkle"
-  | "bookmark"
-  | "file"
-  | "target"
-  | "calendar";
-
-/* ---------------- 行动项 ----------------
-   原型里的「下阶段行动」「检查项」「本周重点」都是这个。
-   注意：它不是 markdown 的 `- [ ]`，而是独立 task 实体嵌在文档里，
-   有负责人、时间、截止日等元数据。
+/* ---------------- 任务 ----------------
+   日历「当日安排」里的一条。它就是某篇文档正文里带日期的 `- [ ]`：
+   `- [ ] 力量训练 @2026-08-29 18:30 #健康`（见 src-tauri/src/vault/tasks.rs）。
+   在日历里勾选，改的是原文件里的那一行。
 */
 
-export interface ActionGroup {
-  title: string;
-  tasks: Task[];
-}
-
-export type TaskStatus = "todo" | "doing" | "done" | "cancelled";
+export type TaskStatus = "todo" | "done";
 
 export interface Task {
+  /** 所在文档的 id # 行号。只在勾选的那一下用 */
   id: string;
   title: string;
   status: TaskStatus;
-  /** 行动项下方的灰色小字：「负责人 · 以安」「周一 10:00」「截止 9月4日」 */
+  /** 任务下方的灰色小字：「健康 · 18:30 · 本周目标」（分类 · 时间 · 出处） */
   meta: string | null;
-  priority: number;
   dueDate: ISODate | null;
   /** 「上午」「16:00」「18:30」这类展示用时间 */
   timeLabel: string | null;
-  /** 日历视图里事件所属的分类：「产品」「/GOAL」「健康」 */
+  /** 分类：任务里的第一个 #标签 */
   category: string | null;
-  goalId: string | null;
-  sortKey: string;
-  completedAt: number | null;
-  createdAt: number;
-  updatedAt: number;
 }
 
 /* ---------------- 目标 ---------------- */
@@ -117,7 +76,6 @@ export interface Goal {
   /** 该周期的起点：周一 / 1 号 / 1 月 1 日 */
   periodStart: ISODate;
   contentMd: string;
-  actionGroup: ActionGroup | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -152,7 +110,6 @@ export interface SearchHit {
   id: string;
   title: string;
   excerpt: string;
-  icon: NoteIcon;
   isArchived: boolean;
   updatedAt: number;
   /** bm25 分数，越小越相关 */
@@ -167,6 +124,35 @@ export interface SearchResult {
    * 「今天 开会 讨论 季度 目标」。
    */
   tokens: string[];
+}
+
+/* ---------------- 仓库文件夹 ---------------- */
+
+/**
+ * 仓库里别处发生的变化：文件被外部程序改了，或者一次操作连带改了别的文档。
+ * 由 Rust 的 vault-changed 事件送来，store 据此刷新缓存（applyVaultChange）。
+ */
+export interface VaultChange {
+  /** 变了（或没了）的笔记 id */
+  notes: string[];
+  /** 变了的某一天 */
+  days: ISODate[];
+  /** 变了的目标，`week:2026-09-21`（同 goalKey） */
+  goals: string[];
+  /** 带日期的任务有变化：当日安排和日历上的小圆点要刷新 */
+  tasks: boolean;
+  /** 这次产生的冲突副本的标题 */
+  conflicts: string[];
+}
+
+export interface VaultInfo {
+  /** 仓库文件夹的绝对路径 */
+  root: string;
+  notes: number;
+  archived: number;
+  days: number;
+  goals: number;
+  tasks: number;
 }
 
 /* ---------------- 目录树 ---------------- */
@@ -195,15 +181,10 @@ export interface DocumentModel {
   banner?: { icon: "archive"; text: string };
   /** 标题右侧的分段控件 */
   segments?: { group: string; options: string[]; active: string };
-  /** 统一的 Markdown 正文。任务仍是独立领域实体，不混入正文。 */
+  /** 统一的 Markdown 正文 */
   bodyMd: string;
-  /** 行动项分组 */
-  actionGroup?: {
-    title: string;
-    tasks: Task[];
-    /** 隐藏分组标题。日历的当日安排直接列在标题下，没有小标题。 */
-    hideHeader?: boolean;
-  };
+  /** 日历某一天的「当日安排」：别的文档里写着这一天的任务，列在正文后面 */
+  dayTasks?: Task[];
   /** 标题上方的一行小字，如日历某天的「9月15日 · 周二」 */
   eyebrow?: string;
   /** 底部状态栏的分段文字 */

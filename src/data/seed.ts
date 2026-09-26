@@ -1,21 +1,16 @@
 import type { DayDoc, Goal, Note, Task } from "./types";
 
-type NullableTaskField = "meta" | "dueDate" | "timeLabel" | "category" | "goalId" | "completedAt";
+type NullableTaskField = "meta" | "dueDate" | "timeLabel" | "category";
 type SeedTask = Omit<Task, NullableTaskField> & Partial<Pick<Task, NullableTaskField>>;
-type SeedActionGroup = { title: string; taskIds: string[] };
-type SeedNote = Omit<Note, "archiveCategory" | "archivedAt" | "actionGroup"> & {
+type SeedNote = Omit<Note, "archiveCategory" | "archivedAt"> & {
   archiveCategory?: string | null;
   archivedAt?: number | null;
-  actionGroup?: SeedActionGroup;
 };
-type SeedGoal = Omit<Goal, "actionGroup"> & {
-  actionGroup?: SeedActionGroup;
-};
-type SeedDayDoc = Omit<DayDoc, "tasks" | "carriedFrom"> & { taskIds: string[] };
+type SeedDayDoc = Omit<DayDoc, "tasks" | "carriedFrom">;
 
 /* ============================================================
-   种子数据 —— 文案全部取自 Prototype/ 原型图，保持 1:1。
-   P5 接 SQLite 后，这份数据变成首次启动的示例内容。
+   浏览器预览（mock）的种子数据 —— 文案取自原型图，和桌面版新仓库的
+   示例内容（src-tauri/src/vault/seed.rs）一致。
    ============================================================ */
 
 const DAY = 864e5;
@@ -31,150 +26,42 @@ const t = (dayOffset: number, hh: number, mm: number) => {
 /* ---------------- 任务 ---------------- */
 
 export const seedTasks: SeedTask[] = [
-  // 「秋季项目复盘」的下阶段行动
+  // 「秋季项目复盘」里带截止日的那一项
   {
-    id: "t-autumn-1",
-    title: "整理访谈中的高频语言",
-    status: "done",
-    meta: "负责人 · 以安",
-    priority: 2,
-    sortKey: "a0",
-    completedAt: t(-1, 15, 20),
-    createdAt: t(-6, 10, 0),
-    updatedAt: t(-1, 15, 20),
-  },
-  {
-    id: "t-autumn-2",
-    title: "建立每周一次的决策回看",
-    status: "done",
-    meta: "周一 10:00",
-    priority: 2,
-    sortKey: "a1",
-    completedAt: t(-1, 17, 5),
-    createdAt: t(-6, 10, 0),
-    updatedAt: t(-1, 17, 5),
-  },
-  {
-    id: "t-autumn-3",
+    id: "n-autumn#8",
     title: "完成编辑器专注模式原型",
     status: "todo",
-    meta: "截止 9月4日",
-    priority: 3,
+    meta: "秋季项目复盘",
     dueDate: "2026-09-04",
-    sortKey: "a2",
-    createdAt: t(-6, 10, 0),
-    updatedAt: t(-2, 9, 30),
   },
 
-  // 「完成专注模式原型」的检查项 —— 今日TODO
+  // 本周目标「日程」里 8月29日 的三件事
   {
-    id: "t-focus-1",
-    title: "梳理进入与退出路径",
-    status: "done",
-    priority: 2,
-    sortKey: "b0",
-    completedAt: t(0, 11, 40),
-    createdAt: t(-3, 14, 0),
-    updatedAt: t(0, 11, 40),
-  },
-  {
-    id: "t-focus-2",
-    title: "完成空状态和动效说明",
-    status: "todo",
-    priority: 3,
-    sortKey: "b1",
-    createdAt: t(-3, 14, 0),
-    updatedAt: t(-3, 14, 0),
-  },
-  {
-    id: "t-focus-3",
-    title: "邀请 3 位用户试用",
-    status: "todo",
-    priority: 2,
-    sortKey: "b2",
-    createdAt: t(-3, 14, 0),
-    updatedAt: t(-3, 14, 0),
-  },
-
-  // 「本周目标」的本周重点
-  {
-    id: "t-week-1",
-    title: "完成序笺 1.0 核心原型",
-    status: "todo",
-    priority: 4,
-    sortKey: "c0",
-    createdAt: t(-4, 9, 0),
-    updatedAt: t(-4, 9, 0),
-  },
-  {
-    id: "t-week-2",
-    title: "完成 4 次深度工作",
-    status: "done",
-    priority: 3,
-    sortKey: "c1",
-    completedAt: t(-1, 18, 0),
-    createdAt: t(-4, 9, 0),
-    updatedAt: t(-1, 18, 0),
-  },
-  {
-    id: "t-week-3",
-    title: "完成两次力量训练",
-    status: "todo",
-    priority: 2,
-    sortKey: "c2",
-    createdAt: t(-4, 9, 0),
-    updatedAt: t(-4, 9, 0),
-  },
-  {
-    id: "t-week-4",
-    title: "周日完成一次周复盘",
-    status: "todo",
-    priority: 3,
-    sortKey: "c3",
-    createdAt: t(-4, 9, 0),
-    updatedAt: t(-4, 9, 0),
-  },
-
-  // 日历 8月29日
-  {
-    id: "t-cal-1",
+    id: "goal:week:2026-08-24#1",
     title: "完成日历交互说明与空状态",
     status: "todo",
-    meta: "产品 · 上午",
+    meta: "产品 · 上午 · 第 35 周目标",
     category: "产品",
     timeLabel: "上午",
-    priority: 3,
     dueDate: "2026-08-29",
-    sortKey: "d0",
-    createdAt: t(-2, 9, 0),
-    updatedAt: t(-2, 9, 0),
   },
   {
-    id: "t-cal-2",
+    id: "goal:week:2026-08-24#2",
     title: "回顾第 35 周目标",
     status: "done",
-    meta: "/GOAL · 16:00",
-    category: "/GOAL",
+    meta: "GOAL · 16:00 · 第 35 周目标",
+    category: "GOAL",
     timeLabel: "16:00",
-    priority: 2,
     dueDate: "2026-08-29",
-    sortKey: "d1",
-    completedAt: t(0, 8, 40),
-    createdAt: t(-2, 9, 0),
-    updatedAt: t(0, 8, 40),
   },
   {
-    id: "t-cal-3",
+    id: "goal:week:2026-08-24#3",
     title: "力量训练",
     status: "todo",
-    meta: "健康 · 18:30",
+    meta: "健康 · 18:30 · 第 35 周目标",
     category: "健康",
     timeLabel: "18:30",
-    priority: 2,
     dueDate: "2026-08-29",
-    sortKey: "d2",
-    createdAt: t(-2, 9, 0),
-    updatedAt: t(-2, 9, 0),
   },
 ];
 
@@ -184,7 +71,6 @@ export const seedNotes: SeedNote[] = [
   {
     id: "n-autumn",
     title: "秋季项目复盘",
-    icon: "file",
     excerpt: "团队是否更清楚为什么而做。",
     isPinned: false,
     isArchived: false,
@@ -203,13 +89,12 @@ export const seedNotes: SeedNote[] = [
       "",
       "- [x] 整理访谈中的高频语言",
       "- [x] 建立每周一次的决策回看",
-      "- [ ] 完成编辑器专注模式原型",
+      "- [ ] 完成编辑器专注模式原型 @2026-09-04",
     ].join("\n"),
   },
   {
     id: "n-kyoto",
     title: "京都书店清单",
-    icon: "pin-place",
     excerpt: "那些安静、可以坐一下午的地方。",
     isPinned: true,
     isArchived: false,
@@ -240,7 +125,6 @@ export const seedNotes: SeedNote[] = [
   {
     id: "n-grocery",
     title: "周末采购",
-    icon: "circle-check",
     excerpt: "燕麦奶、灯泡、咖啡豆、洗衣液",
     isPinned: false,
     isArchived: false,
@@ -261,7 +145,6 @@ export const seedNotes: SeedNote[] = [
   {
     id: "n-spark",
     title: "产品灵感碎片",
-    icon: "sparkle",
     excerpt: "“好的工具，应该把思绪还给人。”",
     isPinned: false,
     isArchived: false,
@@ -285,7 +168,6 @@ export const seedNotes: SeedNote[] = [
   {
     id: "n-reading",
     title: "8月阅读摘录",
-    icon: "bookmark",
     excerpt: "关于注意力、日常秩序与长期主义。",
     isPinned: false,
     isArchived: false,
@@ -320,7 +202,6 @@ export const seedArchived: SeedNote[] = [
   {
     id: "a-ia",
     title: "第一版信息架构草稿",
-    icon: "file",
     excerpt: "最初的页面层级与交互假设。",
     archiveCategory: "工作笔记",
     isPinned: false,
@@ -341,7 +222,6 @@ export const seedArchived: SeedNote[] = [
   {
     id: "a-moving",
     title: "搬家准备清单",
-    icon: "circle-check",
     excerpt: "纸箱、地址变更、宽带预约。",
     archiveCategory: "TODO",
     isPinned: false,
@@ -371,7 +251,6 @@ export const seedArchived: SeedNote[] = [
   {
     id: "a-spring",
     title: "春季阅读摘录",
-    icon: "bookmark",
     excerpt: "关于注意力与日常秩序的摘录。",
     archiveCategory: "读书笔记",
     isPinned: false,
@@ -396,7 +275,6 @@ export const seedArchived: SeedNote[] = [
   {
     id: "a-roadmap",
     title: "旧版产品路线图",
-    icon: "file",
     excerpt: "已由新的季度计划替代。",
     archiveCategory: "工作笔记",
     isPinned: false,
@@ -435,7 +313,7 @@ export const seedTodayDoc = {
 
 /* ---------------- 目标 ---------------- */
 
-export const seedGoals: SeedGoal[] = [
+export const seedGoals: Goal[] = [
   {
     id: "g-week",
     horizon: "week",
@@ -456,6 +334,14 @@ export const seedGoals: SeedGoal[] = [
       "- [ ] 整理首次启动体验",
       "- [ ] 完成日历交互说明",
       "- [ ] 安排两次力量训练",
+      "",
+      "## 日程",
+      "",
+      "带日期的任务会出现在那一天的日历里。",
+      "",
+      "- [ ] 完成日历交互说明与空状态 @2026-08-29 上午 #产品",
+      "- [x] 回顾第 35 周目标 @2026-08-29 16:00 #GOAL",
+      "- [ ] 力量训练 @2026-08-29 18:30 #健康",
     ].join("\n"),
   },
   {
@@ -511,7 +397,6 @@ export const seedDayDocs: SeedDayDoc[] = [
   {
     date: "2026-08-29",
     title: "完成专注模式原型",
-    taskIds: ["t-cal-1", "t-cal-2", "t-cal-3"],
     noteMd: [
       "为编辑器补充一个真正安静的专注模式：隐藏非必要入口，只保留正文、字数和退出方式。",
       "",
@@ -542,27 +427,19 @@ const normalizeTask = (task: SeedTask): Task => ({
   dueDate: task.dueDate ?? null,
   timeLabel: task.timeLabel ?? null,
   category: task.category ?? null,
-  goalId: task.goalId ?? null,
-  completedAt: task.completedAt ?? null,
 });
 
 const normalizeNote = (note: SeedNote): Note => ({
   ...note,
   archiveCategory: note.archiveCategory ?? null,
   archivedAt: note.archivedAt ?? null,
-  actionGroup: null,
-});
-
-const normalizeGoal = (goal: SeedGoal): Goal => ({
-  ...goal,
-  actionGroup: null,
 });
 
 /** 浏览器 mock 与 Rust 首次启动种子保持同一份内容。 */
 export const seedTasksRaw: Task[] = seedTasks.map(normalizeTask);
 export const seedNotesRaw: Note[] = seedNotes.map(normalizeNote);
 export const seedArchivedRaw: Note[] = seedArchived.map(normalizeNote);
-export const seedGoalsRaw: Goal[] = seedGoals.map(normalizeGoal);
+export const seedGoalsRaw: Goal[] = seedGoals;
 /** 日历某天的文档（不含任务），按日期索引；mock 直接在上面读写 */
 export const seedDayNotes: Record<string, { title: string; noteMd: string; updatedAt: number }> =
   Object.fromEntries(

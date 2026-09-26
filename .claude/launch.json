@@ -6,6 +6,16 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["dev"],
       "port": 1420
+    },
+    {
+      "name": "ontheway-desktop",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:CARGO_HOME='D:\\Dev\\cargo'; $env:RUSTUP_HOME='D:\\Dev\\rustup'; $env:Path='D:\\Dev\\cargo\\bin;' + $env:Path; pnpm tauri dev"
+      ],
+      "port": 1420
     }
   ]
 }

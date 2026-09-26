@@ -13,7 +13,6 @@ pub struct Note {
     pub title: String,
     pub content_md: String,
     pub excerpt: String,
-    pub icon: String,
     pub word_count: i64,
     pub is_pinned: bool,
     pub is_archived: bool,
@@ -21,50 +20,22 @@ pub struct Note {
     pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// 挂在这篇笔记下的行动项分组（通过 link 表关联）
-    pub action_group: Option<ActionGroup>,
 }
 
-/// 列表用的轻量结构：不含 content_md。
-/// 一个 300px 宽的列表没必要把每篇全文都传过来。
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct NoteSummary {
-    pub id: String,
-    pub title: String,
-    pub excerpt: String,
-    pub icon: String,
-    pub is_pinned: bool,
-    pub archive_category: Option<String>,
-    pub archived_at: Option<i64>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct ActionGroup {
-    pub title: String,
-    pub tasks: Vec<Task>,
-}
-
+/// 日历「当日安排」里的一条：某篇文档正文里带日期的 `- [ ]`（见 vault/tasks.rs）
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
+    /// 所在文档的 id # 行号。只在勾选的那一下用，文档改过之后就不作数了
     pub id: String,
     pub title: String,
-    /// todo | doing | done | cancelled
+    /// todo | done
     pub status: String,
+    /// 灰色小字：分类 · 时间 · 出处
     pub meta: Option<String>,
-    pub priority: i64,
     pub due_date: Option<String>,
     pub time_label: Option<String>,
     pub category: Option<String>,
-    pub goal_id: Option<String>,
-    pub sort_key: String,
-    pub completed_at: Option<i64>,
-    pub created_at: i64,
-    pub updated_at: i64,
 }
 
 /// 某个周期（某一周 / 某个月 / 某一年）的目标。
@@ -81,7 +52,6 @@ pub struct Goal {
     /// 周期起点：周一 / 1 号 / 1 月 1 日
     pub period_start: String,
     pub content_md: String,
-    pub action_group: Option<ActionGroup>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -105,7 +75,6 @@ pub struct SearchHit {
     pub id: String,
     pub title: String,
     pub excerpt: String,
-    pub icon: String,
     pub is_archived: bool,
     pub updated_at: i64,
     /// bm25 分数，越小越相关
@@ -128,17 +97,51 @@ pub struct NoteInput {
     pub id: Option<String>,
     pub title: String,
     pub content_md: String,
-    pub icon: Option<String>,
+}
+
+/// 指向一篇文档：和前端的 DocumentSaveTarget 同形
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum DocTarget {
+    Note {
+        id: String,
+    },
+    /// id 是日期 YYYY-MM-DD
+    Day {
+        id: String,
+    },
+    Goal {
+        horizon: String,
+        #[serde(rename = "periodStart")]
+        period_start: String,
+    },
+}
+
+/// 仓库里别处发生的变化：文件被外部程序改了，或者一次操作连带改了别的文档
+/// （在日历里勾任务，改的是任务所在的那篇）。前端据此刷新缓存。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultChange {
+    /// 变了（或没了）的笔记 id
+    pub notes: Vec<String>,
+    /// 变了的某一天（YYYY-MM-DD）
+    pub days: Vec<String>,
+    /// 变了的目标，`week:2026-09-21`，和前端 goalKey 一样
+    pub goals: Vec<String>,
+    /// 带日期的任务有变化：日历的当日安排和小圆点要刷新
+    pub tasks: bool,
+    /// 这次产生的冲突副本的标题
+    pub conflicts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
-pub struct DbStats {
+pub struct VaultInfo {
+    /// 仓库文件夹的绝对路径
+    pub root: String,
     pub notes: i64,
     pub archived: i64,
-    pub tasks: i64,
+    pub days: i64,
     pub goals: i64,
-    pub activities: i64,
-    pub db_bytes: i64,
-    pub db_path: String,
+    pub tasks: i64,
 }

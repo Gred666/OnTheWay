@@ -1,6 +1,6 @@
 import { useData } from "@/data/store";
 import { spring, tween } from "@/lib/motion";
-import { AlertTriangle, X } from "lucide-react";
+import { AlertTriangle, Info, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 
@@ -67,6 +67,58 @@ export function ErrorToast() {
             type="button"
             aria-label="关闭提示"
             onClick={clearError}
+            className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-canvas/70
+                       transition-colors duration-[140ms] hover:bg-canvas/15 hover:text-canvas"
+          >
+            <X size={12} strokeWidth={2.2} />
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/** 提示停留多久（比失败长一点：通常要看清另存成了什么名字） */
+const NOTICE_WINDOW_MS = 10000;
+
+/**
+ * 不是失败、但得让人知道的事。现在只有一种：别的程序改了正在编辑的文档，
+ * 和编辑器里没存的修改撞上了 —— 编辑器里的照常保存，外部那一版另存成冲突副本。
+ */
+export function NoticeToast() {
+  const notice = useData((s) => s.notice);
+  const clearNotice = useData((s) => s.clearNotice);
+  const [hovered, setHovered] = useState(false);
+
+  useEffect(() => {
+    if (!notice || hovered) return;
+    const timer = setTimeout(clearNotice, NOTICE_WINDOW_MS);
+    return () => clearTimeout(timer);
+  }, [notice, hovered, clearNotice]);
+
+  return (
+    <AnimatePresence>
+      {notice && (
+        <motion.div
+          key={notice}
+          role="status"
+          initial={{ opacity: 0, y: 12, scale: 0.97 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 8, transition: tween.fast }}
+          transition={spring.gentle}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          className="pointer-events-auto flex max-w-[560px] items-center gap-3 rounded-xl
+                     bg-ink py-2 pl-3.5 pr-2 text-[12.5px] text-canvas shadow-float"
+        >
+          <Info size={13} strokeWidth={2} className="shrink-0 text-accent" />
+          <span className="min-w-0 truncate" title={notice}>
+            {notice}
+          </span>
+          <button
+            type="button"
+            aria-label="关闭提示"
+            onClick={clearNotice}
             className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-canvas/70
                        transition-colors duration-[140ms] hover:bg-canvas/15 hover:text-canvas"
           >

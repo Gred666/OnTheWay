@@ -183,7 +183,7 @@ function dayDocument(
     eyebrow: isToday ? `今天 · ${formatDayEyebrowCN(date)}` : formatDayEyebrowCN(date),
     segments,
     bodyMd: day ? draftOr({ kind: "day", id: date }, day.noteMd) : "",
-    actionGroup: tasks.length ? { title: "当日安排", tasks, hideHeader: true } : undefined,
+    dayTasks: tasks.length ? tasks : undefined,
     statusParts,
     editor: day ? { target: { kind: "day", id: date }, titleEditable: true } : undefined,
   };

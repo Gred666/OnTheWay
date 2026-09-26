@@ -12,6 +12,7 @@ import {
   Archive,
   ArrowUpDown,
   CalendarPlus,
+  FolderOpen,
   History,
   type LucideIcon,
   Pin,
@@ -191,6 +192,7 @@ function NoteCard({
   const togglePin = useData((s) => s.togglePin);
   const archiveNote = useData((s) => s.archiveNote);
   const deleteNote = useData((s) => s.deleteNote);
+  const revealDocument = useData((s) => s.revealDocument);
   // 「…」菜单开着的时候指针在菜单上、不在行上，行会掉出 hover 态；
   // 底色一暗一亮，看着像菜单和行没关系。开着就按住不放。
   const [menuOpen, setMenuOpen] = useState(false);
@@ -239,18 +241,17 @@ function NoteCard({
         />
       )}
 
-      {/* note.icon 是 seed 里写死的，没有任何入口能改它（新建笔记一律是 file），
-          于是它看着像在分类、实际什么也没分。标题的斜体原本也挂在同一个字段上
-          （icon === "sparkle"），一并去掉 —— 留着就是随机有几篇笔记是斜体。 */}
       <span className="relative z-10 flex items-start gap-2">
         <span className="min-w-0 flex-1">
+          {/* 标题最多折两行：以前单行截断，长标题只看得到开头几个字，
+              一长串没有空格的字母还会顶到右上角的「…」底下 */}
           <span
             className={cn(
-              "flex items-center gap-1.5 text-[13.5px] font-semibold leading-[1.45]",
+              "line-clamp-2 break-words text-[13.5px] font-semibold leading-[1.45]",
               selected ? "text-ink" : "text-ink/90",
             )}
           >
-            <span className="truncate">{note.title}</span>
+            {note.title}
           </span>
           <span className="mt-[3px] block truncate text-[11.5px] leading-[1.45] text-muted">
             {animatedEmojiText(note.excerpt)}
@@ -285,6 +286,13 @@ function NoteCard({
               label: note.isPinned ? "取消置顶" : "置顶",
               icon: note.isPinned ? PinOff : Pin,
               onSelect: () => togglePin(note.id),
+            },
+            {
+              // 每篇笔记就是笔记文件夹里的一个 .md 文件：打开资源管理器并选中它
+              id: "reveal",
+              label: "在文件夹中显示",
+              icon: FolderOpen,
+              onSelect: () => void revealDocument({ kind: "note", id: note.id }),
             },
             {
               id: "archive",

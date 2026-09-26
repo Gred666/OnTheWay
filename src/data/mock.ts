@@ -8,18 +8,19 @@ import {
   type GoalHorizon,
   type Note,
   type NoteInput,
-  type NoteSummary,
   type SearchResult,
   type Task,
+  type VaultInfo,
   goalKey,
 } from "./types";
 
 /* ============================================================
    浏览器 mock 后端。
 
-   只在 `pnpm dev` 直开 1420 端口调 UI 时用；桌面版走 Rust + SQLite。
-   语义尽量贴近 Rust 实现（软删除、归档清置顶、置顶排前），
-   这样在浏览器里看到的行为和真机一致。
+   只在 `pnpm dev` 直开 1420 端口调 UI 时用；桌面版走 Rust（仓库文件夹里的 .md 文件）。
+   语义尽量贴近 Rust 实现（删除可撤销、归档清置顶、置顶排前），
+   这样在浏览器里看到的行为和真机一致。跟文件打交道的操作（在文件夹中显示…）只在桌面版里有。
+   带日期的任务在这里是一份独立的列表，不从正文里解析。
 
    状态存在 localStorage，改了 seed 想清空就升版本号。
    ============================================================ */
@@ -71,20 +72,6 @@ const state: MockState = load();
 /** 模拟一点 IPC 往返延迟，免得开发时对真机性能有错觉 */
 const tick = () => new Promise<void>((r) => setTimeout(r, 8));
 
-function summary(n: Note): NoteSummary {
-  return {
-    id: n.id,
-    title: n.title,
-    excerpt: n.excerpt,
-    icon: n.icon,
-    isPinned: n.isPinned,
-    archiveCategory: n.archiveCategory,
-    archivedAt: n.archivedAt,
-    createdAt: n.createdAt,
-    updatedAt: n.updatedAt,
-  };
-}
-
 /** 某个列表（笔记 / 归档）的笔记，顺序和 Rust 侧一样：置顶在前，再按更新 / 归档时间倒序 */
 function listed(archived: boolean): Note[] {
   const key = archived ? "archivedAt" : "updatedAt";
@@ -96,24 +83,13 @@ function listed(archived: boolean): Note[] {
     });
 }
 
-function hydrate(n: Note): Note {
-  const ids = seedNoteActions[n.id];
-  if (!ids) return { ...n, actionGroup: null };
-  return {
-    ...n,
-    actionGroup: {
-      title: ids.title,
-      tasks: ids.taskIds.map((id) => state.tasks[id]).filter((t): t is Task => !!t),
-    },
-  };
-}
-
-const seedNoteActions: Record<string, { title: string; taskIds: string[] }> = {};
-
-const goalActions: Record<string, { title: string; taskIds: string[] }> = {};
-
 function notFound(what: string): never {
   throw { kind: "NotFound", message: what };
+}
+
+/** 浏览器预览里没有仓库文件夹：跟文件打交道的操作只在桌面版里有 */
+function desktopOnly(): never {
+  throw { kind: "Invalid", message: "浏览器预览里没有本地文件，桌面版里才能打开笔记文件夹" };
 }
 
 const emptyGoal = (horizon: GoalHorizon, periodStart: string): Goal => ({
@@ -122,27 +98,21 @@ const emptyGoal = (horizon: GoalHorizon, periodStart: string): Goal => ({
   title: "",
   periodStart,
   contentMd: "",
-  actionGroup: null,
   createdAt: 0,
   updatedAt: 0,
 });
 
 export const mockBackend: Backend = {
-  async noteList(archived) {
-    await tick();
-    return listed(archived).map(summary);
-  },
-
   async noteListFull(archived) {
     await tick();
-    return listed(archived).map(hydrate);
+    return listed(archived).map((n) => ({ ...n }));
   },
 
   async noteGet(id) {
     await tick();
     const n = state.notes.find((x) => x.id === id);
     if (!n) notFound(`note ${id}`);
-    return hydrate(n);
+    return { ...n };
   },
 
   async noteUpsert(input: NoteInput) {
@@ -156,7 +126,6 @@ export const mockBackend: Backend = {
     if (current) {
       current.title = input.title;
       current.contentMd = contentMd;
-      current.icon = input.icon ?? current.icon;
       current.excerpt = excerpt;
       current.wordCount = countWords(contentMd);
       current.updatedAt = now;
@@ -166,7 +135,6 @@ export const mockBackend: Backend = {
         title: input.title,
         contentMd,
         excerpt,
-        icon: input.icon ?? "file",
         wordCount: countWords(contentMd),
         isPinned: false,
         isArchived: false,
@@ -174,7 +142,6 @@ export const mockBackend: Backend = {
         archivedAt: null,
         createdAt: now,
         updatedAt: now,
-        actionGroup: null,
       });
     }
     save(state);
@@ -247,7 +214,6 @@ export const mockBackend: Backend = {
         id: n.id,
         title: n.title,
         excerpt: n.excerpt,
-        icon: n.icon,
         isArchived: n.isArchived,
         updatedAt: n.updatedAt,
         score: 0,
@@ -261,8 +227,6 @@ export const mockBackend: Backend = {
     if (!t) notFound(`task ${id}`);
     const done = t.status === "done";
     t.status = done ? "todo" : "done";
-    t.completedAt = done ? null : Date.now();
-    t.updatedAt = Date.now();
     save(state);
     return { ...t };
   },
@@ -274,17 +238,7 @@ export const mockBackend: Backend = {
       throw { kind: "Invalid", message: `${periodStart} 不是 ${horizon} 周期的起点` };
     }
     const g = state.goals[goalKey(horizon, periodStart)];
-    if (!g) return emptyGoal(horizon, periodStart);
-    const a = goalActions[g.id];
-    return {
-      ...g,
-      actionGroup: a
-        ? {
-            title: a.title,
-            tasks: a.taskIds.map((id) => state.tasks[id]).filter((t): t is Task => !!t),
-          }
-        : null,
-    };
+    return g ? { ...g } : emptyGoal(horizon, periodStart);
   },
 
   async goalSave(horizon, periodStart, contentMd): Promise<Goal> {
@@ -336,5 +290,42 @@ export const mockBackend: Backend = {
     for (const t of Object.values(state.tasks)) if (t.dueDate) set.add(t.dueDate);
     for (const [d, v] of Object.entries(state.days)) if (v.noteMd || v.title) set.add(d);
     return [...set].filter((d) => d >= from && d <= to).sort();
+  },
+
+  async vaultInfo(): Promise<VaultInfo> {
+    await tick();
+    return {
+      root: "浏览器预览（localStorage）",
+      notes: state.notes.filter((n) => !n.isArchived).length,
+      archived: state.notes.filter((n) => n.isArchived).length,
+      days: Object.keys(state.days).length,
+      goals: Object.keys(state.goals).length,
+      tasks: Object.values(state.tasks).filter((t) => t.dueDate).length,
+    };
+  },
+
+  async vaultReveal() {
+    await tick();
+    desktopOnly();
+  },
+
+  async vaultOpenFolder() {
+    await tick();
+    desktopOnly();
+  },
+
+  async vaultKeepConflictCopy() {
+    await tick();
+    return null;
+  },
+
+  async vaultChangeRoot() {
+    await tick();
+    desktopOnly();
+  },
+
+  // 浏览器里没有别的程序会改这些数据
+  async onVaultChanged() {
+    return () => {};
   },
 };
