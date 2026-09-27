@@ -390,7 +390,7 @@ export function EmojiPicker({
         aria-label="动态表情"
         // 焦点始终留在输入框里（aria-activedescendant 指向当前格），这里只是满足 listbox 可聚焦
         tabIndex={-1}
-        // 六组 + 最近使用一屏放不下：网格限高滚动，露出半行提示下面还有
+        // 八组 + 最近使用一屏放不下：网格限高滚动，露出半行提示下面还有
         className="scroll-thin max-h-[322px] overflow-y-auto overscroll-contain px-2 pb-1.5 pt-1"
       >
         {sections.length === 0 ? (

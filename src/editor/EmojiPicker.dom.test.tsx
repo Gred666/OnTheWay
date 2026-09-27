@@ -57,6 +57,8 @@ describe("分区与网格", () => {
       "daily",
       "work",
       "meme",
+      "react",
+      "animal",
     ]);
     expect(ids(sections[0]!.items)).toEqual(["fire", "done"]);
   });

@@ -42,6 +42,18 @@ export const ANIMATED_EMOJI_FALLBACK: Readonly<Record<string, string>> = {
   crack: "😵",
   "666": "666",
   soul: "👻",
+  doge: "🐶",
+  facepalm: "🤦",
+  sweat: "😅",
+  eyeroll: "🙄",
+  sigh: "😮‍💨",
+  like: "👍",
+  cat: "🐱",
+  duck: "🦆",
+  panda: "🐼",
+  snail: "🐌",
+  chick: "🐣",
+  hamster: "🐹",
 };
 
 const SHORTCODE_RE = /:otw_([a-z0-9_]+):/gi;
