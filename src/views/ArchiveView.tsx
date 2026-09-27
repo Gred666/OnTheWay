@@ -122,8 +122,8 @@ function ArchiveCard({
 
         <span className="relative z-10 flex items-start gap-2">
           <span className="min-w-0 flex-1">
-            {/* 同 NotesView：长标题最多折两行 */}
-            <span className="line-clamp-2 break-words text-[13.5px] font-semibold leading-[1.45] text-ink/90">
+            {/* 同 NotesView：标题单行，超出用省略号 */}
+            <span className="block truncate text-[13.5px] font-semibold leading-[1.45] text-ink/90">
               {note.title}
             </span>
             <span className="mt-[3px] block truncate text-[11.5px] leading-[1.45] text-muted">

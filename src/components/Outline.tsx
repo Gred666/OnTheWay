@@ -237,9 +237,13 @@ function RailOutline({
                         />
                       )}
                       {/* 字重不过渡：中文每个小数字重都要重新匹配字体，一帧十几毫秒（见 Sidebar）。
-                      这里尤其要紧 —— 滚动正文时活动标题一直在换。 */}
+                      这里尤其要紧 —— 滚动正文时活动标题一直在换。
+                      长标题完整折行，不截断、不加省略号。 */}
                       <span
-                        className={cn("block truncate", active ? "font-semibold" : "font-normal")}
+                        className={cn(
+                          "block break-words",
+                          active ? "font-semibold" : "font-normal",
+                        )}
                       >
                         {it.text}
                       </span>
@@ -366,19 +370,22 @@ function ZenOutline({
               type="button"
               onClick={() => onJump(it.id)}
               className={cn(
-                "flex w-full items-center gap-2 rounded-lg py-[5px] pl-2 pr-2.5 text-left",
+                "flex w-full items-start gap-2 rounded-lg py-[5px] pl-2 pr-2.5 text-left",
                 "text-[12px] leading-[1.5] transition-colors duration-[140ms]",
                 it.level === 2 ? "pl-5" : "pl-2",
                 active ? "text-ink" : "text-muted hover:bg-raised/50 hover:text-ink",
               )}
             >
+              {/* 标题会折成多行：横线对齐第一行的中线（行高 18px），不跟着整块居中 */}
               <span
                 className={cn(
-                  "h-[2px] w-3 shrink-0 rounded-full transition-colors duration-[140ms]",
+                  "mt-2 h-[2px] w-3 shrink-0 rounded-full transition-colors duration-[140ms]",
                   active ? "bg-ink" : "bg-line-strong",
                 )}
               />
-              <span className={cn("block truncate", active && "font-semibold")}>{it.text}</span>
+              <span className={cn("min-w-0 break-words", active && "font-semibold")}>
+                {it.text}
+              </span>
             </button>
           );
         })}

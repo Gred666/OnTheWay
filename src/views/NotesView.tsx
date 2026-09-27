@@ -243,11 +243,10 @@ function NoteCard({
 
       <span className="relative z-10 flex items-start gap-2">
         <span className="min-w-0 flex-1">
-          {/* 标题最多折两行：以前单行截断，长标题只看得到开头几个字，
-              一长串没有空格的字母还会顶到右上角的「…」底下 */}
+          {/* 列表里标题只占一行，超出的部分用省略号；完整标题在正文区看 */}
           <span
             className={cn(
-              "line-clamp-2 break-words text-[13.5px] font-semibold leading-[1.45]",
+              "block truncate text-[13.5px] font-semibold leading-[1.45]",
               selected ? "text-ink" : "text-ink/90",
             )}
           >
