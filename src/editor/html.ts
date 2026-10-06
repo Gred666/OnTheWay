@@ -1,4 +1,5 @@
 import { isTauri } from "@/lib/tauri";
+import { Facet } from "@codemirror/state";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 /* ============================================================
@@ -127,18 +128,48 @@ export function safeHref(url: string | undefined): string | null {
 }
 
 const LOCAL_PATH_RE = /^(?:[a-zA-Z]:[\\/]|\/(?!\/)|\\\\)/;
+/** 带协议的地址（http:、data:、asset: …）和锚点：不是相对路径 */
+const SCHEME_RE = /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|#)/;
 
 /**
- * 图片地址。桌面端把本机绝对路径（`C:\…`、`/…`、`file://…`）转成 asset 协议，
- * WebView 才读得到；网络地址和 data: 原样返回。相对路径没有基准目录可言，
- * 只能原样交给 <img>。
+ * 这篇文档所在的文件夹（绝对路径，正斜杠）。正文里的相对图片路径（附件，
+ * `../附件/截图.png`）以它为基准 —— 和 Typora、Obsidian、VS Code 的解析一样。
+ * 由 MarkdownEditor 按文档配置；浏览器预览里没有仓库文件夹，是 null。
  */
-export function resolveImageSource(source: string): string {
+export const imageBaseDir = Facet.define<string | null, string | null>({
+  combine: (values) => values[0] ?? null,
+});
+
+/**
+ * 图片地址。桌面端把本机绝对路径（`C:\…`、`/…`、`file://…`）和相对这篇文档的
+ * 路径转成 asset 协议，WebView 才读得到；网络地址和 data: 原样返回。
+ * 没有基准目录（浏览器预览、HTML 块里的 <img>）时相对路径只能原样交给 <img>。
+ */
+export function resolveImageSource(source: string, base: string | null = null): string {
   const trimmed = source.trim();
   const fileUrl = /^file:\/\//i.test(trimmed);
-  if (!fileUrl && !LOCAL_PATH_RE.test(trimmed)) return trimmed;
+  if (!fileUrl && !LOCAL_PATH_RE.test(trimmed)) {
+    if (!base || !trimmed || SCHEME_RE.test(trimmed) || !isTauri) return trimmed;
+    return convertFileSrc(joinPath(base, decodeFilePath(trimmed)));
+  }
   if (!isTauri) return trimmed;
   return convertFileSrc(fileUrl ? filePathOf(trimmed) : trimmed);
+}
+
+/**
+ * 基准目录 + 相对路径，`..` 和 `.` 就地消掉：`D:/仓库/笔记` + `../附件/a.png` →
+ * `D:/仓库/附件/a.png`。不会退到盘符 / 根目录之上。
+ */
+export function joinPath(base: string, relative: string): string {
+  const parts = base.replace(/\\/g, "/").split("/");
+  const root = parts.shift() ?? "";
+  const stack = parts.filter((part) => part && part !== ".");
+  for (const part of relative.replace(/\\/g, "/").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") stack.pop();
+    else stack.push(part);
+  }
+  return [root, ...stack].join("/");
 }
 
 /**
@@ -166,12 +197,15 @@ function decodeFilePath(path: string): string {
 }
 
 /** `<img src>` 只放行图片能来的地方；不合规的返回 null，替身会显示 alt。 */
-export function safeImageSource(source: string | undefined): string | null {
+export function safeImageSource(
+  source: string | undefined,
+  base: string | null = null,
+): string | null {
   if (!source) return null;
   const trimmed = source.trim();
   if (/^(?:javascript|vbscript):/i.test(trimmed)) return null;
   if (/^data:/i.test(trimmed) && !/^data:image\//i.test(trimmed)) return null;
-  return resolveImageSource(trimmed);
+  return resolveImageSource(trimmed, base);
 }
 
 /* ---------------- 块级 HTML 的净化重建 ---------------- */

@@ -29,10 +29,11 @@ interface AppState {
   selectNote: (id: string) => void;
   selectArchive: (id: string) => void;
   /**
-   * `[[笔记#小节]]` 跳过去之后要滚到的小节。目标笔记的编辑器挂上、目录算出来
-   * 之后由 DocumentView 消费并清掉；docKey 保证不会滚错篇。
+   * 跳到另一篇之后要滚到的位置：`[[标题#小节]]` 的小节，或反向链接里那一行
+   * （正文的行号，从 1 开始）。那一篇的编辑器挂上、目录算出来之后由 DocumentView
+   * 消费并清掉；docKey 保证不会滚错篇。
    */
-  pendingAnchor: { docKey: string; heading: string } | null;
+  pendingAnchor: { docKey: string; heading?: string; line?: number } | null;
   setPendingAnchor: (anchor: AppState["pendingAnchor"]) => void;
   selectDate: (d: ISODate) => void;
   setCalendarScope: (s: AppState["calendarScope"]) => void;

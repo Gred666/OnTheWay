@@ -1,4 +1,5 @@
 import { type ISODate, today } from "@/lib/date";
+import { isTauri } from "@/lib/tauri";
 import { create } from "zustand";
 import { backend } from "./backend";
 import {
@@ -25,6 +26,11 @@ interface DataState {
    */
   dayDocs: DayDoc[];
   markedDates: Set<string>;
+  /**
+   * 仓库文件夹的绝对路径（浏览器预览里是 null）。正文里的相对图片路径（附件）
+   * 按「仓库 + 文档所在的文件夹」解析，见 editor/html.ts 的 resolveImageSource。
+   */
+  vaultRoot: string | null;
   initialized: boolean;
   loading: boolean;
   /** 保存以外的操作（加载、置顶、归档、勾选…）失败的原因，由 ErrorToast 显示。 */
@@ -106,6 +112,11 @@ interface DataState {
   /** 撤销最近一次删除。成功返回恢复的笔记 id，失败或没有可撤销的返回 null。 */
   undoDelete: () => Promise<string | null>;
   dismissUndo: () => void;
+  /**
+   * 处理一篇冲突副本：`copy` = 用副本这一版替换原文，然后删掉副本；`original` = 留原文、
+   * 删掉副本。删掉的副本进回收站，撤销提示条照常能撤销。返回原文的 id。
+   */
+  resolveConflict: (copyId: string, keep: "copy" | "original") => Promise<string | null>;
 }
 
 /**
@@ -195,6 +206,7 @@ export const useData = create<DataState>((set, get) => ({
   goals: {},
   dayDocs: [],
   markedDates: new Set(),
+  vaultRoot: null,
   initialized: false,
   loading: false,
   error: null,
@@ -211,6 +223,10 @@ export const useData = create<DataState>((set, get) => ({
     if (change.conflicts.length > 0) {
       set({
         notice: `别处改动了正在编辑的文档，那一版另存为「${change.conflicts.join("」「")}」`,
+      });
+    } else if (change.foundCopies?.length) {
+      set({
+        notice: `网盘同步时两边都改过，留下了冲突副本「${change.foundCopies.join("」「")}」—— 打开它，选一版留下`,
       });
     }
 
@@ -357,10 +373,14 @@ export const useData = create<DataState>((set, get) => ({
         const api = await backend();
         // 两个列表各一次往返拿回全文。以前是先取摘要列表、再逐篇 noteGet，
         // N 篇笔记就是 N 次 IPC，笔记一多启动就慢。
-        const [notes, archived, marked] = await Promise.all([
+        const [notes, archived, marked, info] = await Promise.all([
           api.noteListFull(false),
           api.noteListFull(true),
           api.calendarMarked("2000-01-01", "2100-12-31"),
+          // 只要路径（附件的相对路径按它解析）；取不到不耽误启动
+          Promise.resolve()
+            .then(() => api.vaultInfo())
+            .catch(() => null),
         ]);
 
         // 别的程序改了仓库里的文件、或者一次操作连带改了别的文档：刷新受影响的缓存
@@ -373,6 +393,7 @@ export const useData = create<DataState>((set, get) => ({
           notes: notes.sort(noteOrder),
           archived,
           markedDates: new Set(marked),
+          vaultRoot: isTauri && info ? info.root : null,
           initialized: true,
           loading: false,
         });
@@ -720,6 +741,34 @@ export const useData = create<DataState>((set, get) => ({
   },
 
   dismissUndo: () => set({ lastDeleted: null }),
+
+  resolveConflict: async (copyId, keep) => {
+    const all = [...get().notes, ...get().archived];
+    const copy = all.find((note) => note.id === copyId);
+    const original = copy?.conflictOf ? all.find((note) => note.id === copy.conflictOf) : undefined;
+    if (!copy || !original) return null;
+    try {
+      if (keep === "copy" && copy.contentMd !== original.contentMd) {
+        const target: DocumentSaveTarget = { kind: "note", id: original.id };
+        await get().saveDocument(target, copy.contentMd);
+        // 原文的编辑器状态可能缓存着（切走时留的）：当成一次外部改动，下次打开换成新正文
+        set((state) => ({
+          externalRevisions: bumped(state.externalRevisions, saveKeyOf(target)),
+        }));
+      }
+      if (copy.isArchived) {
+        // 归档里的副本：deleteNote 只管笔记列表，这里直接删
+        await (await backend()).noteDelete(copy.id);
+        set((state) => ({ archived: state.archived.filter((note) => note.id !== copy.id) }));
+      } else {
+        await get().deleteNote(copy.id);
+      }
+      return original.id;
+    } catch (error) {
+      set({ error: messageOf(error) });
+      return null;
+    }
+  },
 }));
 
 function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {

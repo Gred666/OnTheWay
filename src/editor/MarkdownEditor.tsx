@@ -1,4 +1,4 @@
-import type { OutlineItem } from "@/data/types";
+import type { Attachment, OutlineItem } from "@/data/types";
 import { MOD_KEY } from "@/lib/platform";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
@@ -11,6 +11,7 @@ import {
   EditorSelection,
   EditorState,
   type Extension,
+  Prec,
   StateField,
 } from "@codemirror/state";
 import {
@@ -21,13 +22,16 @@ import {
   type ViewUpdate,
   type WidgetType,
   keymap,
+  placeholder,
 } from "@codemirror/view";
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { AnimatePresence } from "motion/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { EmojiPicker, type EmojiPickerAnchor } from "./EmojiPicker";
+import { TemplatePicker, type TemplatePickerHandle } from "./TemplatePicker";
 import { type AnimatedEmoji, animatedEmojiFor, primeIntro } from "./animatedEmoji";
+import { type AttachHooks, attachmentHandlers, watchDesktopFileDrops } from "./attachments";
 import { type CalloutHead, parseCalloutHead } from "./callout";
 import { codeHighlight } from "./codeHighlight";
 import { type DebouncedSaver, createDebouncedSaver } from "./debouncedSave";
@@ -39,6 +43,7 @@ import { glideTo } from "./glide";
 import { abbrTip, hoverCard } from "./hoverCard";
 import {
   INLINE_HTML_TAGS,
+  imageBaseDir,
   inlineStyleOf,
   parseTag,
   resolveImageSource,
@@ -70,6 +75,17 @@ import { registerEditorFlush } from "./saveBus";
 import { createSearchPanel, scrollToMatch } from "./searchPanel";
 import { smoothCaret } from "./smoothCaret";
 import { TableWidget } from "./tableWidget";
+import {
+  type DocTemplate,
+  type TemplateContext,
+  type TemplateMode,
+  applyTemplate,
+  carriedTasks,
+  hasOtherContent,
+  templatePlaceholder,
+  templateTrigger,
+  templatesFor,
+} from "./templates";
 import {
   AnimatedEmojiWidget,
   CalloutBadgeWidget,
@@ -116,6 +132,8 @@ const externalSync = Annotation.define<boolean>();
    状态的一部分，原样沿用。 */
 
 const session = new Compartment();
+/** 这篇文档所在的文件夹（相对图片路径的基准）：改名、仓库路径晚到时单独换掉 */
+const imageBaseSlot = new Compartment();
 /** 最近切走的这么多篇留着。大文档一篇的状态有几 MB，不能无限留 */
 const STATE_CACHE_LIMIT = 12;
 const stateCache = new Map<string, EditorState>();
@@ -175,6 +193,10 @@ export function MarkdownEditor({
   cacheKey,
   externalRevision = 0,
   onExternalConflict,
+  templateContext,
+  imageBase = null,
+  onAttachFiles,
+  onAttachPaths,
 }: {
   initialMarkdown: string;
   onSave: (markdown: string) => Promise<void>;
@@ -203,6 +225,20 @@ export function MarkdownEditor({
   externalRevision?: number;
   /** 外部改动到的时候编辑器里正有没存的修改（编辑器里的留着，上层负责别丢了外部那一版） */
   onExternalConflict?: () => void;
+  /**
+   * 这篇是某一天 / 某个周期的文档：一行里只写 `/模板` 就弹出对应的模板（templates.ts），
+   * 空文档里显示占位提示。笔记没有。
+   */
+  templateContext?: TemplateContext;
+  /**
+   * 这篇文档所在的文件夹（绝对路径）。正文里的相对图片路径（`../附件/截图.png`）
+   * 以它为基准；浏览器预览里没有仓库文件夹，是 null。
+   */
+  imageBase?: string | null;
+  /** 粘贴 / 拖进来的文件：存进「附件」，返回从这篇引用它们的路径（见 editor/attachments.ts） */
+  onAttachFiles?: (files: File[]) => Promise<Attachment[]>;
+  /** 桌面端从系统拖进窗口的文件（只有路径） */
+  onAttachPaths?: (paths: string[]) => Promise<Attachment[]>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -222,12 +258,28 @@ export function MarkdownEditor({
   onSaveRef.current = onSave;
   onDocumentChangeRef.current = onDocumentChange;
   onWikiLinkRef.current = onWikiLink;
+  const imageBaseRef = useRef(imageBase);
+  /** 现取的附件回调：编辑器复用缓存的状态时，换的只是这一截闭包 */
+  const attachRef = useRef<AttachHooks | null>(null);
+  attachRef.current = onAttachFiles ? { files: onAttachFiles, paths: onAttachPaths } : null;
   /** 动态表情选择器（Mod-E）：开着时是光标的视口坐标 */
   const [emojiAnchor, setEmojiAnchor] = useState<EmojiPickerAnchor | null>(null);
   /** 每次打开换一个 key：上一个还在退场时再按快捷键，得到的是一个全新的选择器（重新定位、重新聚焦） */
   const [emojiSession, setEmojiSession] = useState(0);
   /** 打开选择器前清掉了折行方向的原选区；没插入就关掉时还原 */
   const savedSelectionRef = useRef<EditorSelection | null>(null);
+  const templateContextRef = useRef(templateContext);
+  templateContextRef.current = templateContext;
+  /** 模板选择器：开着时是触发词那一行的视口坐标（见 TemplatePicker） */
+  const [templateMenu, setTemplateMenu] = useState<TemplateMenu | null>(null);
+  /** 给按键和 updateListener 同步读的「开着没有」，不用等 React 提交 */
+  const templateOpenRef = useRef(false);
+  const templatePickerRef = useRef<TemplatePickerHandle | null>(null);
+  const templateSessionRef = useRef(0);
+  const closeTemplateMenu = useCallback(() => {
+    templateOpenRef.current = false;
+    setTemplateMenu(null);
+  }, []);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -257,9 +309,75 @@ export function MarkdownEditor({
       if (active) for (const listener of listeners) listener(active.id);
     };
 
+    // 模板选择器：一行里只写着触发词（`/模板`）、光标在它末尾时打开。只认打字
+    // （含输入法上屏），撤销回来的、外部回填的不算 —— 否则撤销一次模板又弹出来。
+    // 坐标在 CodeMirror 的测量周期里量，量的时候再核对一次触发词还在不在。
+    const openTemplateMenu = (view: EditorView) => {
+      view.requestMeasure({
+        read: (current) => {
+          const trigger = templateTrigger(current.state);
+          if (!trigger) return null;
+          return {
+            anchor: caretAnchor(current, trigger.from),
+            replaceable: hasOtherContent(current.state, trigger),
+            carried: carriedTasks(current.state, trigger).length,
+          };
+        },
+        write: (measured) => {
+          if (!measured || !templateContextRef.current) return;
+          templateOpenRef.current = true;
+          templateSessionRef.current += 1;
+          setTemplateMenu({ ...measured, session: templateSessionRef.current });
+        },
+      });
+    };
+
+    /** 选择器开着时，把方向键 / 回车 / Esc 转给它；输入法组字时的按键是给候选框的 */
+    const forwardToPicker =
+      (action: (picker: TemplatePickerHandle) => void) => (view: EditorView) => {
+        const picker = templatePickerRef.current;
+        if (!templateOpenRef.current || !picker || view.composing) return false;
+        action(picker);
+        return true;
+      };
+
+    const templateExtensions: Extension[] = templateContextRef.current
+      ? [
+          placeholder(templatePlaceholder(templateContextRef.current.scope)),
+          EditorView.updateListener.of((update) => {
+            if (templateOpenRef.current) {
+              // 接着打字、退格、光标挪走、点到别处：触发词不在了就收起
+              const moved =
+                (update.docChanged || update.selectionSet) && !templateTrigger(update.state);
+              if (moved || (update.focusChanged && !update.view.hasFocus)) closeTemplateMenu();
+              return;
+            }
+            if (!update.docChanged) return;
+            if (!update.transactions.some((transaction) => transaction.isUserEvent("input.type")))
+              return;
+            if (templateTrigger(update.state)) openTemplateMenu(update.view);
+          }),
+          // 比列表续行（Enter）、缩进（Tab）都先拿到按键
+          Prec.highest(
+            keymap.of([
+              { key: "ArrowDown", run: forwardToPicker((picker) => picker.move(1)) },
+              { key: "ArrowUp", run: forwardToPicker((picker) => picker.move(-1)) },
+              { key: "Tab", run: forwardToPicker((picker) => picker.move(1)) },
+              { key: "Shift-Tab", run: forwardToPicker((picker) => picker.move(-1)) },
+              { key: "Enter", run: forwardToPicker((picker) => picker.pick("insert")) },
+              { key: "Shift-Enter", run: forwardToPicker((picker) => picker.pick("replace")) },
+              { key: "Escape", run: forwardToPicker(() => closeTemplateMenu()) },
+            ]),
+          ),
+        ]
+      : [];
+
     // 这个编辑器实例自己的那一截：闭包里握着这次的保存器和 React 状态。
     // 复用缓存的状态时，换掉的就是这一截（见文件开头的说明）。
     const sessionExtensions: Extension[] = [
+      ...templateExtensions,
+      imageBaseSlot.of(imageBaseDir.of(imageBaseRef.current)),
+      attachmentHandlers(() => attachRef.current),
       linkClickHandler((title, heading) => onWikiLinkRef.current?.(title, heading)),
       EditorView.updateListener.of((update) => {
         if (!update.docChanged) {
@@ -372,12 +490,24 @@ export function MarkdownEditor({
         notifyActive(view.state);
         return () => listeners.delete(listener);
       },
+      scrollToLine(number) {
+        if (viewRef.current !== view) return false;
+        if (number < 1 || number > view.state.doc.lines) return false;
+        const line = view.state.doc.line(number);
+        view.dispatch({ selection: { anchor: line.to } });
+        view.focus();
+        glideTo(view, line.from, { y: "center" });
+        return true;
+      },
     };
     onOutlineHandle(handle);
     host.dataset.editorReady = "true";
+    const stopFileDrops = watchDesktopFileDrops(view, () => attachRef.current);
 
     return () => {
+      stopFileDrops();
       setEmojiAnchor(null);
+      closeTemplateMenu();
       unregisterFlush();
       if (outlineTimer) clearTimeout(outlineTimer);
       saver.flushQuietly();
@@ -388,7 +518,15 @@ export function MarkdownEditor({
       if (key) rememberState(key, view.state);
       view.destroy();
     };
-  }, [onOutlineHandle]);
+  }, [onOutlineHandle, closeTemplateMenu]);
+
+  // 文档所在的文件夹变了（改名挪了位置、仓库路径刚取回来）：相对路径的图片按新基准重画
+  useEffect(() => {
+    imageBaseRef.current = imageBase;
+    const view = viewRef.current;
+    if (!view || view.state.facet(imageBaseDir) === imageBase) return;
+    view.dispatch({ effects: imageBaseSlot.reconfigure(imageBaseDir.of(imageBase)) });
+  }, [imageBase]);
 
   // 外部正文变化时回填。
   //
@@ -441,6 +579,27 @@ export function MarkdownEditor({
     insertAnimatedEmoji(view, emoji);
   }, []);
 
+  // 按今天的日期现算模板，换掉触发词那一行（或整篇）。是一次普通的编辑：
+  // 撤销一下就回到 `/模板`，自动保存照常
+  const pickTemplate = useCallback(
+    (template: DocTemplate, mode: TemplateMode) => {
+      closeTemplateMenu();
+      const view = viewRef.current;
+      const context = templateContextRef.current;
+      if (!view || !context) return;
+      const trigger = templateTrigger(view.state);
+      if (!trigger) return;
+      view.dispatch(applyTemplate(view.state, trigger, template.build(context), mode));
+      view.focus();
+    },
+    [closeTemplateMenu],
+  );
+  const templateScope = templateContext?.scope;
+  const templates = useMemo(
+    () => (templateScope ? templatesFor(templateScope) : []),
+    [templateScope],
+  );
+
   return (
     <>
       <div
@@ -449,16 +608,33 @@ export function MarkdownEditor({
         className={fill ? "otw-editor mt-7 selectable" : "otw-editor is-compact mt-7 selectable"}
       />
       {createPortal(
-        <AnimatePresence>
-          {emojiAnchor && (
-            <EmojiPicker
-              key={emojiSession}
-              anchor={emojiAnchor}
-              onPick={pickEmoji}
-              onClose={closeEmojiPicker}
-            />
-          )}
-        </AnimatePresence>,
+        <>
+          <AnimatePresence>
+            {emojiAnchor && (
+              <EmojiPicker
+                key={emojiSession}
+                anchor={emojiAnchor}
+                onPick={pickEmoji}
+                onClose={closeEmojiPicker}
+              />
+            )}
+          </AnimatePresence>
+          <AnimatePresence>
+            {templateMenu && templateContext && templates.length > 0 && (
+              <TemplatePicker
+                key={templateMenu.session}
+                anchor={templateMenu.anchor}
+                context={templateContext}
+                templates={templates}
+                replaceable={templateMenu.replaceable}
+                carried={templateMenu.carried}
+                handleRef={templatePickerRef}
+                onPick={pickTemplate}
+                onClose={closeTemplateMenu}
+              />
+            )}
+          </AnimatePresence>
+        </>,
         document.body,
       )}
     </>
@@ -466,12 +642,11 @@ export function MarkdownEditor({
 }
 
 /**
- * 选择器贴着主光标弹出来。光标所在的行量不到坐标（不在渲染范围里）时，
- * 退到编辑区左上角 —— 宁可位置不那么贴，也不能按了快捷键没反应。
+ * 选择器贴着主光标（模板选择器：触发词那一行的行首）弹出来。量不到坐标（不在渲染
+ * 范围里）时，退到编辑区左上角 —— 宁可位置不那么贴，也不能按了快捷键没反应。
  */
-function caretAnchor(view: EditorView): EmojiPickerAnchor {
-  const head = view.state.selection.main.head;
-  const coords = view.coordsAtPos(head, 1) ?? view.coordsAtPos(head, -1);
+function caretAnchor(view: EditorView, pos = view.state.selection.main.head): EmojiPickerAnchor {
+  const coords = view.coordsAtPos(pos, 1) ?? view.coordsAtPos(pos, -1);
   if (coords) return { left: coords.left, top: coords.top, bottom: coords.bottom };
   const box = view.contentDOM.getBoundingClientRect();
   return { left: box.left, top: box.top, bottom: box.top };
@@ -503,10 +678,23 @@ export function insertAnimatedEmoji(view: EditorView, emoji: AnimatedEmoji): voi
   view.focus();
 }
 
+/** 开着的模板选择器 */
+interface TemplateMenu {
+  anchor: EmojiPickerAnchor;
+  /** 触发词之外还有正文：可以「替换全文」 */
+  replaceable: boolean;
+  /** 替换全文时会带进「待续」的未完成任务数 */
+  carried: number;
+  /** 每次打开换一个 key：上一个还在退场时又打开，得到的是全新的选择器 */
+  session: number;
+}
+
 export interface EditorOutlineHandle {
   /** 滚到某个目录条目；编辑器已卸载或条目不存在时返回 false */
   scrollTo: (id: string) => boolean;
   subscribe: (listener: (id: string) => void) => () => void;
+  /** 滚到第几行（从 1 开始）并把光标放在行尾；行号不存在或编辑器已卸载时返回 false */
+  scrollToLine: (line: number) => boolean;
 }
 
 /* ============================================================
@@ -1112,7 +1300,7 @@ function buildInlineDecorations(view: EditorView, changes: ChangeSet | null): Ty
       return;
     }
     if (tag.name === "img" && !tag.closing) {
-      const source = safeImageSource(tag.attrs.src);
+      const source = safeImageSource(tag.attrs.src, state.facet(imageBaseDir));
       if (source && !selfActive) {
         const spec: ImageSpec = {
           alt: tag.attrs.alt ?? "",
@@ -1304,7 +1492,11 @@ function buildInlineDecorations(view: EditorView, changes: ChangeSet | null): Ty
           return;
         }
         if (widget === "image" && !selfActive) {
-          const image = resolveImage(state.doc.toString(), state.sliceDoc(node.from, node.to));
+          const image = resolveImage(
+            state.doc.toString(),
+            state.sliceDoc(node.from, node.to),
+            state.facet(imageBaseDir),
+          );
           if (image) {
             addReplacement(
               node.from,
@@ -1691,7 +1883,8 @@ const typoraInlineDecorations = ViewPlugin.fromClass(
         update.docChanged ||
         update.viewportChanged ||
         update.selectionSet ||
-        syntaxTree(update.startState) !== syntaxTree(update.state)
+        syntaxTree(update.startState) !== syntaxTree(update.state) ||
+        update.startState.facet(imageBaseDir) !== update.state.facet(imageBaseDir)
       ) {
         // 只动了光标 / 视口时 changes 是空的：这时重建出来的替身不再重放入场动画
         const built = buildInlineDecorations(update.view, update.changes);
@@ -1713,9 +1906,13 @@ export const typoraDecorations: Extension = [typoraBlockDecorations, typoraInlin
 /**
  * `![alt](src "title")` / `![alt][ref]`，alt 里的 `|300` / `|300x200` 是 Obsidian 式尺寸。
  */
-export function resolveImage(markdown: string, source: string): ImageSpec | null {
+export function resolveImage(
+  markdown: string,
+  source: string,
+  base: string | null = null,
+): ImageSpec | null {
   const inline = /^!\[([^\]]*)\]\((\S+?)(?:\s+["'](.*)["'])?\)$/.exec(source);
-  if (inline) return withSize(inline[1]!, inline[2]!, inline[3] ?? "");
+  if (inline) return withSize(inline[1]!, inline[2]!, inline[3] ?? "", base);
 
   const reference = /^!\[([^\]]*)\]\[([^\]]*)\]$/.exec(source);
   if (!reference) return null;
@@ -1725,14 +1922,14 @@ export function resolveImage(markdown: string, source: string): ImageSpec | null
     "im",
   ).exec(markdown);
   const url = definition?.[1] ?? definition?.[2];
-  return url ? withSize(reference[1]!, url, definition?.[3] ?? "") : null;
+  return url ? withSize(reference[1]!, url, definition?.[3] ?? "", base) : null;
 }
 
-function withSize(rawAlt: string, source: string, title: string): ImageSpec {
+function withSize(rawAlt: string, source: string, title: string, base: string | null): ImageSpec {
   const size = /^(.*?)\|(\d+)(?:x(\d+))?$/.exec(rawAlt);
   return {
     alt: (size ? size[1]! : rawAlt).trim(),
-    source: resolveImageSource(source),
+    source: resolveImageSource(source, base),
     title,
     width: size ? Number(size[2]) : null,
     height: size?.[3] ? Number(size[3]) : null,

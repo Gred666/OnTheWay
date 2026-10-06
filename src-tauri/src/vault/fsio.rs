@@ -35,6 +35,11 @@ pub fn fingerprint(text: &str) -> String {
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    write_atomic_bytes(path, text.as_bytes())
+}
+
+/// 同 write_atomic，写的是任意字节（附件）
+pub fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(dir)?;
     let name = path
@@ -49,7 +54,7 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
     {
         use std::io::Write;
         let mut file = fs::File::create(&temp)?;
-        file.write_all(text.as_bytes())?;
+        file.write_all(bytes)?;
         file.sync_all()?;
     }
     if let Err(error) = fs::rename(&temp, path) {

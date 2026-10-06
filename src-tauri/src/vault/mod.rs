@@ -21,6 +21,7 @@ pub mod fsio;
 pub mod index;
 pub mod layout;
 pub mod legacy;
+pub mod links;
 pub mod seed;
 pub mod tasks;
 pub mod watch;
@@ -33,7 +34,8 @@ use rusqlite::Connection;
 
 use crate::db::now_ms;
 use crate::domain::model::{
-    DayDoc, DocTarget, Goal, Note, SearchHit, SearchResult, Task, VaultChange, VaultInfo,
+    Attachment, Backlink, BacklinkLine, DayDoc, DocTarget, Goal, Note, SearchHit, SearchResult,
+    Task, VaultChange, VaultInfo,
 };
 use crate::domain::search;
 use crate::error::{AppError, Result};
@@ -61,6 +63,7 @@ impl VaultChange {
             && self.goals.is_empty()
             && !self.tasks
             && self.conflicts.is_empty()
+            && self.found_copies.is_empty()
     }
 
     fn record(&mut self, row: &DocRow) {
@@ -152,7 +155,11 @@ impl Vault {
     /// 把索引和磁盘对齐，返回变了的文档。启动时和文件监听触发时调用。
     pub fn rescan(&mut self) -> Result<VaultChange> {
         let mut change = VaultChange::default();
-        let files = fsio::walk_markdown(&self.root);
+        let mut files = fsio::walk_markdown(&self.root);
+        // 名字像冲突副本的放到最后：网盘拷出来的副本带着原文属性块里的 id，谁先被索引
+        // 谁拿到这个 id。「周报 (1).md」按字节序排在「周报.md」前面，不挪的话原文反倒
+        // 成了「另一份」、换了 id。（排序是稳定的，其余文件的顺序不变）
+        files.sort_by_key(|file| !layout::conflict_originals(layout::stem_of(&file.rel)).is_empty());
         let present: HashSet<&str> = files.iter().map(|file| file.rel.as_str()).collect();
         let known = index::file_states(&self.db)?;
         let known_state: HashMap<&str, (i64, i64)> = known
@@ -305,6 +312,7 @@ impl Vault {
             mtime,
             size,
             hash,
+            file_id: meta.id.clone(),
         };
         match slot {
             Slot::Note { archived } => {
@@ -366,7 +374,42 @@ impl Vault {
             }
         }
         change.record(&row);
+        // 新出现的冲突副本（网盘同步时两边都改过）：让前端提示一声
+        if previous.is_none() && row.kind == "note" && self.conflict_of(&row)?.is_some() {
+            change.found_copies.push(row.title.clone());
+        }
         Ok(row)
+    }
+
+    /// 这篇笔记是不是另一篇的冲突副本，是的话返回原文的 id。两条线索：
+    /// 1. 属性块里的 id 被另一个文件占着 —— 网盘把整个文件拷了一份，id 也跟着拷了；
+    /// 2. 文件名是冲突副本的样子（见 layout::conflict_originals），而且同一个文件夹里
+    ///    真有那篇原文。
+    fn conflict_of(&self, row: &DocRow) -> Result<Option<String>> {
+        if row.kind != "note" {
+            return Ok(None);
+        }
+        if let Some(file_id) = row.file_id.as_deref().filter(|id| *id != row.id) {
+            if let Some(original) = index::by_id(&self.db, file_id)? {
+                if original.kind == "note" && original.rel_path != row.rel_path {
+                    return Ok(Some(original.id));
+                }
+            }
+        }
+        let dir = layout::dir_of(&row.rel_path);
+        for stem in layout::conflict_originals(layout::stem_of(&row.rel_path)) {
+            let rel = layout::join(dir, &format!("{stem}.md"));
+            if let Some(original) = index::by_path(&self.db, &rel)? {
+                if original.kind == "note" && original.id != row.id {
+                    return Ok(Some(original.id));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn note_of(&self, row: &DocRow) -> Result<Note> {
+        Ok(note_from_row(row, self.conflict_of(row)?))
     }
 
     /// 笔记的 id：属性块里的（没被别的文件占用的话）；否则沿用这个路径原来的；再否则新分配一个。
@@ -435,6 +478,8 @@ impl Vault {
         let stem = format!("{} (冲突 {stamp})", layout::stem_of(rel));
         let copy = fsio::unique_rel(&self.root, layout::dir_of(rel), &stem, None);
         let row = self.write_and_index(&copy, &frontmatter::render(&meta, &body), change)?;
+        // 自己另存的这一份已经在 conflicts 里报了，不再当「新发现的副本」报一遍
+        change.found_copies.retain(|title| *title != row.title);
         change.conflicts.push(row.title.clone());
         Ok(row)
     }
@@ -483,14 +528,14 @@ impl Vault {
     }
 
     pub fn note_list_full(&self, archived: bool) -> Result<Vec<Note>> {
-        Ok(index::notes(&self.db, archived)?
+        index::notes(&self.db, archived)?
             .iter()
-            .map(note_from_row)
-            .collect())
+            .map(|row| self.note_of(row))
+            .collect()
     }
 
     pub fn note_get(&self, id: &str) -> Result<Note> {
-        Ok(note_from_row(&self.note_row(id)?))
+        self.note_of(&self.note_row(id)?)
     }
 
     pub fn note_create(&mut self, title: &str, content: &str) -> Result<String> {
@@ -702,8 +747,11 @@ impl Vault {
                 note_md: row.content_md,
                 updated_at: row.updated_at,
                 carried_from: None,
+                rel_path: row.rel_path,
             });
         }
+        // 还没写过：给它将来的位置（延续来的内容也是以今天的身份写到这里）
+        let rel_path = layout::day_path(date)?;
         if carry {
             if let Some(previous) = index::latest_day_before(&self.db, date)? {
                 return Ok(DayDoc {
@@ -713,6 +761,7 @@ impl Vault {
                     note_md: previous.content_md,
                     updated_at: previous.updated_at,
                     carried_from: previous.day,
+                    rel_path,
                 });
             }
         }
@@ -723,6 +772,7 @@ impl Vault {
             note_md: String::new(),
             updated_at: now_ms(),
             carried_from: None,
+            rel_path,
         })
     }
 
@@ -771,6 +821,7 @@ impl Vault {
                 content_md: row.content_md,
                 created_at: row.created_at,
                 updated_at: row.updated_at,
+                rel_path: row.rel_path,
             },
             None => Goal {
                 id: String::new(),
@@ -780,6 +831,7 @@ impl Vault {
                 content_md: String::new(),
                 created_at: 0,
                 updated_at: 0,
+                rel_path: layout::goal_path(horizon, period_start)?,
             },
         })
     }
@@ -923,6 +975,157 @@ impl Vault {
         Ok(Some(copy.title))
     }
 
+    /* ---------------- 反向链接 ---------------- */
+
+    /// 正文里写了 `[[这篇笔记的标题]]` 的文档（笔记、某一天、目标都算；归档的也算），
+    /// 最近改过的在前。这篇自己链自己的不算。
+    pub fn backlinks(&self, id: &str) -> Result<Vec<Backlink>> {
+        let note = self.note_row(id)?;
+        let mut out = Vec::new();
+        for row in index::with_wikilinks(&self.db)? {
+            if row.id == note.id {
+                continue;
+            }
+            let hits: Vec<links::WikiLink> = links::wikilinks(&row.content_md)
+                .into_iter()
+                .filter(|link| links::same_title(&link.title, &note.title))
+                .collect();
+            if hits.is_empty() {
+                continue;
+            }
+            let body_lines: Vec<&str> = row.content_md.split('\n').collect();
+            let mut lines: Vec<BacklinkLine> = Vec::new();
+            for hit in &hits {
+                if lines.len() >= 3 {
+                    break;
+                }
+                if lines.iter().any(|line| line.line == hit.line as i64) {
+                    continue;
+                }
+                let text = body_lines.get(hit.line).copied().unwrap_or_default();
+                lines.push(BacklinkLine {
+                    line: hit.line as i64,
+                    text: links::context_line(text, &note.title),
+                });
+            }
+            let (target, title) = match row.kind {
+                "day" => {
+                    let date = row.day.clone().unwrap_or_default();
+                    let title = if row.title.is_empty() {
+                        month_day(&date)
+                    } else {
+                        format!("{} · {}", month_day(&date), row.title)
+                    };
+                    (DocTarget::Day { id: date }, title)
+                }
+                "goal" => (
+                    DocTarget::Goal {
+                        horizon: row.horizon.clone().unwrap_or_default(),
+                        period_start: row.period_start.clone().unwrap_or_default(),
+                    },
+                    row.title.clone(),
+                ),
+                _ => (DocTarget::Note { id: row.id.clone() }, row.title.clone()),
+            };
+            out.push(Backlink {
+                target,
+                kind: row.kind.to_string(),
+                title,
+                archived: row.archived,
+                updated_at: row.updated_at,
+                lines,
+                count: hits.len() as i64,
+            });
+        }
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(out)
+    }
+
+    /* ---------------- 附件 ---------------- */
+
+    /// 把一个文件（粘贴的图片、拖进来的文件）存进仓库的「附件」文件夹，返回从这篇文档
+    /// 引用它的相对路径。同名的文件已经在了：内容一样就直接用它，不一样就换个名字。
+    pub fn attach(&mut self, target: &DocTarget, name: &str, bytes: &[u8]) -> Result<Attachment> {
+        if bytes.is_empty() {
+            return Err(AppError::Invalid("文件是空的".into()));
+        }
+        if bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err(AppError::Invalid(format!(
+                "文件太大了（{} MB），附件最多 {} MB",
+                bytes.len() / 1_048_576,
+                MAX_ATTACHMENT_BYTES / 1_048_576
+            )));
+        }
+        let doc_rel = self.target_rel(target)?;
+        let (stem, ext) = split_name(name);
+        let ext = ext.to_ascii_lowercase();
+        // 剪贴板里的图片浏览器统一叫 image.png：换成「粘贴-时间」，免得附件里一堆 image-2、image-3
+        let mut stem = layout::attachment_stem(stem);
+        if stem.is_empty() || stem.eq_ignore_ascii_case("image") {
+            stem = format!("粘贴-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+        }
+        let file_name = |n: usize| {
+            let numbered = if n == 1 { stem.clone() } else { format!("{stem}-{n}") };
+            if ext.is_empty() {
+                numbered
+            } else {
+                format!("{numbered}.{ext}")
+            }
+        };
+        for n in 1.. {
+            let candidate = file_name(n);
+            let path = fsio::abs(&self.root, &layout::join(layout::ATTACHMENTS_DIR, &candidate));
+            match std::fs::read(&path) {
+                Ok(existing) if existing == bytes => {}
+                Ok(_) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fsio::write_atomic_bytes(&path, bytes)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            self.log.record("attachment", &candidate, "added");
+            return Ok(Attachment {
+                link: layout::attachment_link(&doc_rel, &candidate),
+                is_image: IMAGE_EXTENSIONS.contains(&ext.as_str()),
+                name: candidate,
+            });
+        }
+        unreachable!()
+    }
+
+    /// 拖进来的是磁盘上的文件：读出来存进「附件」。本来就在仓库的「附件」里的，直接引用。
+    pub fn attach_path(&mut self, target: &DocTarget, source: &Path) -> Result<Attachment> {
+        let name = source
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| AppError::Invalid(format!("不是文件: {}", source.display())))?;
+        let attachments = fsio::abs(&self.root, layout::ATTACHMENTS_DIR);
+        let inside = source
+            .parent()
+            .zip(attachments.canonicalize().ok())
+            .and_then(|(parent, dir)| parent.canonicalize().ok().map(|parent| parent == dir))
+            .unwrap_or(false);
+        if inside {
+            let doc_rel = self.target_rel(target)?;
+            let (_, ext) = split_name(&name);
+            return Ok(Attachment {
+                link: layout::attachment_link(&doc_rel, &name),
+                is_image: IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()),
+                name,
+            });
+        }
+        let size = std::fs::metadata(source)?.len() as usize;
+        if size > MAX_ATTACHMENT_BYTES {
+            return Err(AppError::Invalid(format!(
+                "「{name}」太大了（{} MB），附件最多 {} MB",
+                size / 1_048_576,
+                MAX_ATTACHMENT_BYTES / 1_048_576
+            )));
+        }
+        let bytes = std::fs::read(source)?;
+        self.attach(target, &name, &bytes)
+    }
+
     pub fn info(&self) -> Result<VaultInfo> {
         let counts = index::counts(&self.db)?;
         Ok(VaultInfo {
@@ -936,6 +1139,20 @@ impl Vault {
     }
 }
 
+/// 附件的大小上限
+const MAX_ATTACHMENT_BYTES: usize = 50 * 1_048_576;
+
+/// 当图片插进正文（`![](…)`）的扩展名；和 tauri.conf.json 里 asset 协议放行的一致
+const IMAGE_EXTENSIONS: [&str; 9] = ["png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "bmp", "ico"];
+
+/// 「截图 1.PNG」→ ("截图 1", "PNG")；没有扩展名时第二个是空串
+fn split_name(name: &str) -> (&str, &str) {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() && ext.len() <= 8 => (stem, ext),
+        _ => (name, ""),
+    }
+}
+
 fn trash_rel(id: &str) -> String {
     // id 来自属性块，理论上可能是任何字符串；只留安全的字符
     let safe: String = id
@@ -945,7 +1162,7 @@ fn trash_rel(id: &str) -> String {
     format!("{}/{safe}.md", layout::TRASH_DIR)
 }
 
-fn note_from_row(row: &DocRow) -> Note {
+fn note_from_row(row: &DocRow, conflict_of: Option<String>) -> Note {
     Note {
         id: row.id.clone(),
         title: row.title.clone(),
@@ -958,6 +1175,8 @@ fn note_from_row(row: &DocRow) -> Note {
         archived_at: row.archived_at,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        rel_path: row.rel_path.clone(),
+        conflict_of,
     }
 }
 

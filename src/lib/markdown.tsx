@@ -33,7 +33,7 @@ type Block =
   | { kind: "hr" };
 
 const FENCE_RE = /^(?:`{3,}|~{3,})(.*)$/;
-const TASK_RE = /^\[([ xX])\]\s+/;
+const TASK_RE = /^\[([ xX])\](?:\s+|$)/;
 const DELIMITER_ROW_RE = /^\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$/;
 
 /**
@@ -136,13 +136,14 @@ export function parseBlocks(md: string, ns = "h"): Block[] {
       continue;
     }
 
-    // --- 列表
-    const isUl = /^[-*]\s+/.test(trimmed);
-    const isOl = /^\d+\.\s+/.test(trimmed);
+    // --- 列表。行已经 trim 过：空条目 `- `、空任务 `- [ ] ` 到这里只剩 `-`、`- [ ]`，
+    // 标记后面也可以直接是行尾（和编辑器一样，模板里留给人填的空行不能显示成字面的 `[ ]`）
+    const isUl = /^[-*](?:\s+|$)/.test(trimmed);
+    const isOl = /^\d+\.(?:\s+|$)/.test(trimmed);
     if (isUl || isOl) {
       flushPara();
       const items: ListEntry[] = [];
-      const re = isUl ? /^[-*]\s+/ : /^\d+\.\s+/;
+      const re = isUl ? /^[-*](?:\s+|$)/ : /^\d+\.(?:\s+|$)/;
       let j = i;
       while (j < lines.length) {
         const cur = lines[j]!.trim();

@@ -1,4 +1,5 @@
 import { useApp } from "@/app/store";
+import { EmptyState } from "@/components/EmptyArt";
 import { ColumnButton, GroupLabel, ListColumn } from "@/components/ListColumn";
 import { ActionMenu, RowMenu } from "@/components/RowMenu";
 import { SearchInput } from "@/components/SearchInput";
@@ -253,6 +254,7 @@ function NoteCard({
             {note.title}
           </span>
           <span className="mt-[3px] block truncate text-[11.5px] leading-[1.45] text-muted">
+            {note.conflictOf && <ConflictTag />}
             {animatedEmojiText(note.excerpt)}
           </span>
         </span>
@@ -313,8 +315,18 @@ function NoteCard({
   );
 }
 
+/** 摘要前面的小标签：这篇是别的笔记的冲突副本（网盘同步撞车留下的） */
+export function ConflictTag() {
+  return (
+    <span className="mr-1.5 inline-block rounded-[4px] bg-warning/15 px-1 text-[10.5px] font-medium text-warning">
+      冲突副本
+    </span>
+  );
+}
+
 /**
- * 列表空了。有搜索词时是「没搜到」；没有搜索词就是真的一篇都没有 ——
+ * 列表空了。有搜索词时是「没搜到」（配放大镜插画）；没有搜索词就是真的一篇都没有 ——
+ * 正文区那边已经是大插画 + 「新建」，这里只留一行小字，不再重复一遍插画。
  * 以前两种情况都说「没有匹配的内容，试试更短的关键词」，可用户什么都没搜。
  */
 export function EmptyResult({
@@ -329,19 +341,23 @@ export function EmptyResult({
 }) {
   const searching = query.trim() !== "";
   return (
-    <AnimatePresence mode="wait">
+    <AnimatePresence mode="wait" initial={false}>
       <motion.div
-        key={searching ? query : "empty"}
-        initial={{ opacity: 0, y: 6 }}
-        animate={{ opacity: 1, y: 0 }}
+        key={searching ? "searching" : "empty"}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        transition={tween.base}
-        className="px-3 pt-10 text-center"
+        transition={tween.fast}
+        className="px-3 pt-12"
       >
-        <p className="text-[12.5px] text-muted">{searching ? "没有匹配的内容" : emptyTitle}</p>
-        <p className="mt-1 text-[11.5px] text-faint">
-          {searching ? "试试更短的关键词" : emptyHint}
-        </p>
+        {searching ? (
+          <EmptyState size="sm" art="search" title="没有匹配的内容" hint="试试更短的关键词" />
+        ) : (
+          <div className="text-center">
+            <p className="text-[12.5px] text-muted">{emptyTitle}</p>
+            <p className="mt-1 text-[11.5px] text-faint">{emptyHint}</p>
+          </div>
+        )}
       </motion.div>
     </AnimatePresence>
   );

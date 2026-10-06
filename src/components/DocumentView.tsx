@@ -1,7 +1,10 @@
+import { openDocument } from "@/app/navigate";
 import { RAIL_WIDTH, useApp } from "@/app/store";
+import { attachFiles, attachPaths, documentFolder } from "@/data/attachments";
 import { NEW_NOTE_TITLE, saveKeyOf, useData } from "@/data/store";
 import type { DocumentModel, DocumentSaveTarget } from "@/data/types";
 import type { EditorOutlineHandle } from "@/editor/MarkdownEditor";
+import type { TemplateContext } from "@/editor/templates";
 import { cn } from "@/lib/cn";
 import { buildOutline, renderMarkdown } from "@/lib/markdown";
 import { spring, tween } from "@/lib/motion";
@@ -10,6 +13,9 @@ import { AlertTriangle, Archive, FolderOpen, Maximize2, Minimize2, Trash2 } from
 import { AnimatePresence, motion } from "motion/react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DayTasks } from "./ActionItem";
+import { Backlinks } from "./Backlinks";
+import { ConflictBanner } from "./ConflictBanner";
+import { EmptyState } from "./EmptyArt";
 import { Outline } from "./Outline";
 import { OverlayScrollbar } from "./OverlayScrollbar";
 import { Segmented } from "./Segmented";
@@ -26,7 +32,7 @@ const outlineKeyOf = (markdown: string) =>
 
    之所以要预载：首屏默认工作区（笔记）第一帧就要用编辑器渲染正文。chunk 没
    到位时会先渲染一次 DocumentPreview —— 而两者排版并不一致（正文 15px vs
-   17px/1.82，h2 21px vs 29.75px），到位后一换，整篇重排一次，就是启动时那
+   17px/1.4，h2 21px vs 29.75px），到位后一换，整篇重排一次，就是启动时那
    一下闪动。
 
    这里刻意没有用 React.lazy + Suspense：即便传给 lazy 的 promise 早已 resolve，
@@ -97,15 +103,7 @@ export function DocumentView({
       notes.find((note) => note.title.trim().toLowerCase() === wanted) ??
       archived.find((note) => note.title.trim().toLowerCase() === wanted);
     if (!hit) return;
-    const app = useApp.getState();
-    if (hit.isArchived) {
-      app.selectArchive(hit.id);
-      app.setWorkspace("archive");
-    } else {
-      app.selectNote(hit.id);
-      app.setWorkspace("notes");
-    }
-    app.setPendingAnchor(heading ? { docKey: `note-${hit.id}`, heading } : null);
+    openDocument({ kind: "note", id: hit.id }, heading ? { heading } : undefined);
   }, []);
 
   const outlineSource = liveMarkdown ?? doc.bodyMd;
@@ -117,7 +115,11 @@ export function DocumentView({
   const setPendingAnchor = useApp((s) => s.setPendingAnchor);
   useEffect(() => {
     if (!pendingAnchor || pendingAnchor.docKey !== doc.key || !editorOutline) return;
-    const wanted = pendingAnchor.heading.trim().toLowerCase();
+    if (pendingAnchor.line !== undefined) {
+      if (editorOutline.scrollToLine(pendingAnchor.line)) setPendingAnchor(null);
+      return;
+    }
+    const wanted = (pendingAnchor.heading ?? "").trim().toLowerCase();
     const item = outline.find((entry) => entry.text.trim().toLowerCase() === wanted);
     if (!item) return;
     if (editorOutline.scrollTo(item.id)) setPendingAnchor(null);
@@ -152,10 +154,34 @@ export function DocumentView({
     doc.editor ? (state.externalRevisions[saveKey(doc)] ?? 0) : 0,
   );
   const target = doc.editor?.target;
+  // 某一天 / 某个周期的文档能用 `/模板`（editor/templates.ts）；笔记不接。
+  // 只取类型：模板本身在编辑器分包里，不进主包
+  const todayDate = useApp((s) => s.todayDate);
+  const dayId = target?.kind === "day" ? target.id : null;
+  const goalHorizon = target?.kind === "goal" ? target.horizon : null;
+  const goalStart = target?.kind === "goal" ? target.periodStart : null;
+  const templateContext = useMemo<TemplateContext | undefined>(() => {
+    if (dayId) return { scope: "day", date: dayId, today: todayDate };
+    if (goalHorizon && goalStart) return { scope: goalHorizon, date: goalStart, today: todayDate };
+    return undefined;
+  }, [dayId, goalHorizon, goalStart, todayDate]);
   const handleExternalConflict = useCallback(() => {
     if (target) useData.getState().markConflict(target);
   }, [target]);
   const handleReveal = target ? () => void useData.getState().revealDocument(target) : undefined;
+
+  // 附件：粘贴 / 拖进来的文件存进仓库的「附件」，正文里的相对路径以这篇所在的文件夹为基准
+  const vaultRoot = useData((s) => s.vaultRoot);
+  const imageBase = documentFolder(vaultRoot, doc.relPath);
+  const handleAttachFiles = useCallback(
+    (files: File[]) => (target ? attachFiles(target, files) : Promise.resolve([])),
+    [target],
+  );
+  const handleAttachPaths = useCallback(
+    (paths: string[]) => (target ? attachPaths(target, paths) : Promise.resolve([])),
+    [target],
+  );
+  const noteId = target?.kind === "note" ? target.id : null;
 
   // 正常路径下 bootstrap 已经预载完，这里首帧就拿到组件。
   // 兜底：万一没走 bootstrap（比如单测直接渲染本组件），照旧异步加载后再补上。
@@ -206,129 +232,147 @@ export function DocumentView({
             {/* 换文档时整块交叉淡化：旧的一份快照原地淡出，新的一份淡入（见 SwapFade）。
                 标题、分隔线、正文、状态栏都在里面，一起换，不再各播各的入场动画。 */}
             <SwapFade swapKey={doc.key} exitLift={4} className="flex flex-1 flex-col">
-              {/* ---------- 归档横幅 ----------
+              {doc.empty ? (
+                <EmptyDocument empty={doc.empty} />
+              ) : (
+                <>
+                  {/* ---------- 冲突副本横幅 ---------- */}
+                  {doc.conflict && (
+                    <ConflictBanner key={doc.conflict.copyId} conflict={doc.conflict} />
+                  )}
+
+                  {/* ---------- 归档横幅 ----------
                   key 固定：在两篇归档笔记之间切换时横幅本身不动，文字跟着整块一起淡换。
                   原来按文字做 key，日期不同的两篇一切，旧条往上退、新条从上落，
                   两条叠在一起错开几像素 —— 看起来就是在抖。 */}
-              <AnimatePresence mode="popLayout" initial={false}>
-                {doc.banner && (
-                  <motion.div
-                    key="banner"
-                    initial={{ opacity: 0, y: -6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -4 }}
-                    transition={tween.base}
-                    className="mb-7 flex items-center gap-2 rounded-lg bg-danger/10 px-3.5 py-2.5"
-                  >
-                    <Archive size={12.5} strokeWidth={1.9} className="shrink-0 text-danger" />
-                    <span className="text-[12px] text-danger">{doc.banner.text}</span>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                  <AnimatePresence mode="popLayout" initial={false}>
+                    {doc.banner && (
+                      <motion.div
+                        key="banner"
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        transition={tween.base}
+                        className="mb-7 flex items-center gap-2 rounded-lg bg-danger/10 px-3.5 py-2.5"
+                      >
+                        <Archive size={12.5} strokeWidth={1.9} className="shrink-0 text-danger" />
+                        <span className="text-[12px] text-danger">{doc.banner.text}</span>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
 
-              {/* ---------- 标题行 ---------- */}
-              <header id="doc-top" data-outline-id="doc-top">
-                {/* 标题上方那一行：左边是小字（日历某天的日期），右边是分段控件。
+                  {/* ---------- 标题行 ---------- */}
+                  <header id="doc-top" data-outline-id="doc-top">
+                    {/* 标题上方那一行：左边是小字（日历某天的日期），右边是分段控件。
                     分段控件原来和标题并排在同一行、分掉一截宽度，日历某天的标题
                     稍长就被它截掉。挪上来之后标题独占整行；这一行的高度钉在小字
                     的一行高，控件比它高出来的部分往上溢进顶部留白里（负外边距），
                     标题的位置不受影响，切「日TODO ↔ 周/GOAL」时控件也不挪窝。 */}
-                {(doc.eyebrow || (doc.segments && onSegmentChange)) && (
-                  <div className="mb-2 flex min-h-[20px] items-end justify-between gap-8">
-                    {doc.eyebrow && (
-                      <p
-                        className="min-w-0 truncate text-[12px] font-medium leading-[20px]
+                    {(doc.eyebrow || (doc.segments && onSegmentChange)) && (
+                      <div className="mb-2 flex min-h-[20px] items-end justify-between gap-8">
+                        {doc.eyebrow && (
+                          <p
+                            className="min-w-0 truncate text-[12px] font-medium leading-[20px]
                                    tracking-[0.02em] text-muted"
-                      >
-                        {doc.eyebrow}
-                      </p>
-                    )}
-                    {doc.segments && onSegmentChange && (
-                      <div className="-mt-2.5 ml-auto shrink-0">
-                        <Segmented
-                          group={doc.segments.group}
-                          options={doc.segments.options.map((o) => ({ value: o, label: o }))}
-                          value={doc.segments.active}
-                          onChange={onSegmentChange}
-                          size={doc.segments.options.length > 3 ? "sm" : "md"}
-                        />
+                          >
+                            {doc.eyebrow}
+                          </p>
+                        )}
+                        {doc.segments && onSegmentChange && (
+                          <div className="-mt-2.5 ml-auto shrink-0">
+                            <Segmented
+                              group={doc.segments.group}
+                              options={doc.segments.options.map((o) => ({ value: o, label: o }))}
+                              value={doc.segments.active}
+                              onChange={onSegmentChange}
+                              size={doc.segments.options.length > 3 ? "sm" : "md"}
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
-                  </div>
-                )}
 
-                {/* 标题按文档 key 重挂（可编辑标题的本地状态跟着换篇重置），
+                    {/* 标题按文档 key 重挂（可编辑标题的本地状态跟着换篇重置），
                     但不再单独播入场：以前旧标题直接消失、新标题从下面 16px 弹上来，
                     中间空着一拍，正文却已经换好了。 */}
-                {doc.editor?.titleEditable && onSaveTitle ? (
-                  <EditableDocumentTitle
-                    key={doc.key}
-                    title={doc.title}
-                    // 占位标题（无标题笔记）不是真标题：输入框里留空，让用户直接起名
-                    placeholder={doc.title === NEW_NOTE_TITLE}
-                    onSave={(title) => onSaveTitle(doc.editor!.target, title)}
-                  />
-                ) : (
-                  <h1
-                    key={doc.key}
-                    className="selectable break-words text-[38px] font-bold leading-[1.25]
+                    {doc.editor?.titleEditable && onSaveTitle ? (
+                      <EditableDocumentTitle
+                        key={doc.key}
+                        title={doc.title}
+                        // 占位标题（无标题笔记）不是真标题：输入框里留空，让用户直接起名
+                        placeholder={doc.title === NEW_NOTE_TITLE}
+                        onSave={(title) => onSaveTitle(doc.editor!.target, title)}
+                      />
+                    ) : (
+                      <h1
+                        key={doc.key}
+                        className="selectable break-words text-[38px] font-bold leading-[1.25]
                                tracking-[-0.02em] text-ink"
-                  >
-                    {doc.title}
-                  </h1>
-                )}
-              </header>
+                      >
+                        {doc.title}
+                      </h1>
+                    )}
+                  </header>
 
-              {/* 标题下的细分隔线：宽度从 0 展开，是「文档打开了」的一个小信号。
+                  {/* 标题下的细分隔线：宽度从 0 展开，是「文档打开了」的一个小信号。
                   只在进这个工作区时播一次；换篇时它留在原地，跟着整块一起淡换 */}
-              <motion.div
-                className="mt-6 h-px origin-left bg-line"
-                initial={{ scaleX: 0, opacity: 0 }}
-                animate={{ scaleX: 1, opacity: 1 }}
-                transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1], delay: 0.05 }}
-              />
+                  <motion.div
+                    className="mt-6 h-px origin-left bg-line"
+                    initial={{ scaleX: 0, opacity: 0 }}
+                    animate={{ scaleX: 1, opacity: 1 }}
+                    transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1], delay: 0.05 }}
+                  />
 
-              {/* ---------- 正文 ----------
+                  {/* ---------- 正文 ----------
                   编辑器稳定岛：这里以及编辑器自身都没有 Motion layout/transform
                   （SwapFade 只动 opacity）。Shell 那边的工作区进场也是纯 opacity，
                   所以编辑器可以在新一屏的第一帧就挂上，不需要先拿 DocumentPreview
                   顶一段。这一点很重要：预览和编辑器的排版并不一致（正文 15px vs
-                  17px/1.82，h2 21px vs 29.75px），中途替换会让整篇重排一次，看着像卡顿。
+                  17px/1.4，h2 21px vs 29.75px），中途替换会让整篇重排一次，看着像卡顿。
                   数据还没到（没有 doc.editor）或 editorEnabled 强制只读时才是预览。 */}
-              <div className="flex-1">
-                {canEdit && Editor ? (
-                  <Editor
-                    key={saveKey(doc)}
-                    initialMarkdown={doc.bodyMd}
-                    onSave={(markdown) => onSaveDocument(doc.editor!.target, markdown)}
-                    outlineItems={outline}
-                    onOutlineHandle={setEditorOutline}
-                    onDocumentChange={handleDocumentChange}
-                    onWikiLink={handleWikiLink}
-                    // 日历当日安排跟在正文后面：编辑器别再撑 360px 把任务推到底下
-                    fill={!doc.dayTasks?.length}
-                    // 切走时缓存编辑器状态，切回来不用再解析全文
-                    cacheKey={saveKey(doc)}
-                    externalRevision={externalRevision}
-                    onExternalConflict={handleExternalConflict}
+                  <div className="flex-1">
+                    {canEdit && Editor ? (
+                      <Editor
+                        key={saveKey(doc)}
+                        initialMarkdown={doc.bodyMd}
+                        onSave={(markdown) => onSaveDocument(doc.editor!.target, markdown)}
+                        outlineItems={outline}
+                        onOutlineHandle={setEditorOutline}
+                        onDocumentChange={handleDocumentChange}
+                        onWikiLink={handleWikiLink}
+                        // 日历当日安排跟在正文后面：编辑器别再撑 360px 把任务推到底下
+                        fill={!doc.dayTasks?.length}
+                        // 切走时缓存编辑器状态，切回来不用再解析全文
+                        cacheKey={saveKey(doc)}
+                        externalRevision={externalRevision}
+                        onExternalConflict={handleExternalConflict}
+                        templateContext={templateContext}
+                        imageBase={imageBase}
+                        onAttachFiles={handleAttachFiles}
+                        onAttachPaths={handleAttachPaths}
+                      />
+                    ) : (
+                      <DocumentPreview markdown={doc.bodyMd} />
+                    )}
+
+                    {doc.dayTasks && doc.dayTasks.length > 0 && (
+                      <DayTasks tasks={doc.dayTasks} onToggle={onToggleTask} />
+                    )}
+
+                    {/* ---------- 反向链接：别的文档里写了 [[这篇]] 的地方 ---------- */}
+                    {noteId && <Backlinks key={noteId} noteId={noteId} title={doc.title} />}
+                  </div>
+
+                  {/* ---------- 底部状态栏 ---------- */}
+                  <StatusBar
+                    parts={doc.statusParts}
+                    onDelete={doc.deletable ? onDelete : undefined}
+                    onReveal={handleReveal}
+                    saving={saving}
+                    saveError={saveError}
                   />
-                ) : (
-                  <DocumentPreview markdown={doc.bodyMd} />
-                )}
-
-                {doc.dayTasks && doc.dayTasks.length > 0 && (
-                  <DayTasks tasks={doc.dayTasks} onToggle={onToggleTask} />
-                )}
-              </div>
-
-              {/* ---------- 底部状态栏 ---------- */}
-              <StatusBar
-                parts={doc.statusParts}
-                onDelete={doc.deletable ? onDelete : undefined}
-                onReveal={handleReveal}
-                saving={saving}
-                saveError={saveError}
-              />
+                </>
+              )}
             </SwapFade>
           </motion.div>
         </div>
@@ -386,6 +430,35 @@ function ZenToggle({ zen, onToggle }: { zen: boolean; onToggle: () => void }) {
         </motion.span>
       </AnimatePresence>
     </motion.button>
+  );
+}
+
+/**
+ * 没有内容可显示（一篇笔记都没有、归档是空的）：插画 + 一句话，笔记区再给一个「新建」。
+ * 以前是假装成一篇标题叫「还没有笔记」的文档，标题、分隔线、状态栏一样不少。
+ */
+function EmptyDocument({ empty }: { empty: NonNullable<DocumentModel["empty"]> }) {
+  const createNote = useData((s) => s.createNote);
+  const selectNote = useApp((s) => s.selectNote);
+  return (
+    <div className="flex flex-1 items-center justify-center pb-[12vh]">
+      <EmptyState
+        art={empty.art}
+        title={empty.title}
+        hint={empty.hint}
+        action={
+          empty.action === "createNote"
+            ? {
+                label: "新建笔记",
+                onClick: () =>
+                  void createNote().then((id) => {
+                    if (id) selectNote(id);
+                  }),
+              }
+            : undefined
+        }
+      />
+    </div>
   );
 }
 

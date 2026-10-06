@@ -27,6 +27,10 @@ export interface Note {
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  /** 在仓库里的相对路径（正斜杠）。正文里的相对图片路径以它所在的文件夹为基准 */
+  relPath: string;
+  /** 这篇是另一篇的冲突副本（网盘同步撞车、或本应用另存的）：原文的 id */
+  conflictOf: string | null;
 }
 
 export interface NoteInput {
@@ -78,6 +82,8 @@ export interface Goal {
   contentMd: string;
   createdAt: number;
   updatedAt: number;
+  /** 在仓库里的相对路径；还没写过的周期是它将来的位置 */
+  relPath: string;
 }
 
 /** goals 缓存的键 */
@@ -102,6 +108,8 @@ export interface DayDoc {
    * 只有「今天」会延续；用户一编辑就以这一天自己的身份落库。
    */
   carriedFrom: ISODate | null;
+  /** 在仓库里的相对路径；还没写过的日子是它将来的位置 */
+  relPath: string;
 }
 
 /* ---------------- 搜索 ---------------- */
@@ -141,8 +149,37 @@ export interface VaultChange {
   goals: string[];
   /** 带日期的任务有变化：当日安排和日历上的小圆点要刷新 */
   tasks: boolean;
-  /** 这次产生的冲突副本的标题 */
+  /** 这次产生的冲突副本的标题（编辑器里有没存的修改时外部改动到了，另存的那一份） */
   conflicts: string[];
+  /** 新出现的冲突副本（网盘同步时两边都改过，网盘另存的那一份）的标题 */
+  foundCopies: string[];
+}
+
+/* ---------------- 反向链接 ---------------- */
+
+/** 一篇正文里写了 `[[这篇的标题]]` 的文档（笔记、某一天、目标都算） */
+export interface Backlink {
+  /** 链过来的那篇，点一下跳过去 */
+  target: DocumentSaveTarget;
+  kind: "note" | "day" | "goal";
+  /** 给人看的标题：笔记标题、「10月6日 · 周一」、「第 41 周目标」 */
+  title: string;
+  archived: boolean;
+  updatedAt: number;
+  /** 写着链接的那几行（最多 3 行），双链原样保留 */
+  lines: { line: number; text: string }[];
+  /** 这篇里一共链了几次 */
+  count: number;
+}
+
+/* ---------------- 附件 ---------------- */
+
+/** 存进仓库「附件」文件夹的一个文件 */
+export interface Attachment {
+  /** 从文档引用它的路径，直接写进 `![](…)`（浏览器预览里是 data: 地址） */
+  link: string;
+  name: string;
+  isImage: boolean;
 }
 
 export interface VaultInfo {
@@ -179,6 +216,15 @@ export interface DocumentModel {
   title: string;
   /** 标题上方的横幅，如归档视图的「已归档 · 2026年8月18日」 */
   banner?: { icon: "archive"; text: string };
+  /** 这篇是另一篇的冲突副本：标题上方换成冲突横幅（打开原文 / 留这一版 / 删掉这份） */
+  conflict?: { copyId: string; originalId: string; originalTitle: string };
+  /**
+   * 没有内容可显示（一篇笔记都没有、归档是空的）：正文区换成插画 + 一句话，
+   * 不再假装是一篇标题叫「还没有笔记」的文档
+   */
+  empty?: { art: "notes" | "archive"; title: string; hint: string; action?: "createNote" };
+  /** 在仓库里的相对路径：正文里的相对图片路径（附件）以它所在的文件夹为基准 */
+  relPath?: string;
   /** 标题右侧的分段控件 */
   segments?: { group: string; options: string[]; active: string };
   /** 统一的 Markdown 正文 */

@@ -122,6 +122,13 @@ pub async fn note_undelete(state: State<'_, AppState>, id: String) -> Result<()>
     with_vault(&state, move |v| v.note_undelete(&id)).await
 }
 
+/// 反向链接：正文里写了 `[[这篇的标题]]` 的文档
+#[tauri::command]
+#[specta::specta]
+pub async fn note_backlinks(state: State<'_, AppState>, id: String) -> Result<Vec<Backlink>> {
+    with_vault(&state, move |v| v.backlinks(&id)).await
+}
+
 /* ---------------- 搜索 ---------------- */
 
 #[tauri::command]
@@ -255,6 +262,37 @@ pub async fn vault_keep_conflict_copy(
     target: DocTarget,
 ) -> Result<Option<String>> {
     with_vault(&state, move |v| v.keep_conflict_copy(&target)).await
+}
+
+/// 粘贴进来的文件（剪贴板里的图片）存进「附件」文件夹。内容以 base64 传过来 ——
+/// 一个字节一个数字的 JSON 数组，几 MB 的截图要序列化成几千万个字符。
+#[tauri::command]
+#[specta::specta]
+pub async fn vault_attach(
+    state: State<'_, AppState>,
+    target: DocTarget,
+    name: String,
+    data_base64: String,
+) -> Result<Attachment> {
+    use base64::Engine;
+    let bytes = blocking(move || {
+        base64::engine::general_purpose::STANDARD
+            .decode(data_base64.trim())
+            .map_err(|error| AppError::Invalid(format!("附件内容不是 base64: {error}")))
+    })
+    .await?;
+    with_vault(&state, move |v| v.attach(&target, &name, &bytes)).await
+}
+
+/// 拖进窗口的文件（桌面端拿到的是路径）存进「附件」文件夹
+#[tauri::command]
+#[specta::specta]
+pub async fn vault_attach_path(
+    state: State<'_, AppState>,
+    target: DocTarget,
+    path: String,
+) -> Result<Attachment> {
+    with_vault(&state, move |v| v.attach_path(&target, std::path::Path::new(&path))).await
 }
 
 /// 换一个文件夹当仓库。弹系统的选择文件夹对话框；新文件夹是空的就问要不要把

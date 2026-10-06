@@ -1,6 +1,6 @@
 import { useApp } from "@/app/store";
 import { NEW_NOTE_TITLE, useData } from "@/data/store";
-import { spring, tween } from "@/lib/motion";
+import { tween } from "@/lib/motion";
 import { Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
@@ -53,10 +53,12 @@ export function UndoToast() {
         <motion.div
           key={deleted.note.id}
           role="status"
-          initial={{ opacity: 0, y: 12, scale: 0.97 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
+          // 不缩放：提示条里是字，缩放会让字在动画里发虚、停下那一帧再跳清楚。
+          // tween 不用 spring：spring 收尾时差不到半个像素就直接跳到终点
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 8, transition: tween.fast }}
-          transition={spring.gentle}
+          transition={tween.slow}
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
           className="pointer-events-auto flex max-w-[420px] items-center gap-3 rounded-xl

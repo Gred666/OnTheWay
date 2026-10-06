@@ -10,6 +10,7 @@ import {
   loadRecent,
   moveInGrid,
   pickerSections,
+  pinnedEdge,
   placePicker,
   rememberRecent,
   searchEmojis,
@@ -125,6 +126,28 @@ describe("定位", () => {
       1440 - 292 - 8,
     );
     expect(placePicker({ left: 2, top: 100, bottom: 120 }, size(398, 900)).left).toBe(8);
+  });
+
+  // 展开、收起时贴着光标的那条边不动：往下开钉上边，往上开钉下边
+  it("pins the caret-side edge: top when below, bottom when above", () => {
+    const viewport = { width: 1440, height: 900 };
+    const below = placePicker(caret(100), size(398, 900));
+    expect(pinnedEdge(caret(100), below, viewport, 1)).toEqual({ left: 582, top: 126 });
+    const above = placePicker(caret(700), size(398, 900));
+    expect(pinnedEdge(caret(700), above, viewport, 1)).toEqual({ left: 582, bottom: 900 - 694 });
+  });
+
+  it("snaps the pinned edge to whole device pixels", () => {
+    // 1.5 倍屏：261.859 → 第 392.79 个物理像素 → 393 → 262
+    const edge = pinnedEdge(
+      { left: 716.0156, top: 240.859, bottom: 255.859 },
+      { left: 698.0156, top: 261.859, above: false },
+      { width: 1440, height: 900 },
+      1.5,
+    );
+    expect(edge.top! * 1.5).toBe(Math.round(edge.top! * 1.5));
+    expect(edge.left * 1.5).toBe(Math.round(edge.left * 1.5));
+    expect(edge.top).toBeCloseTo(262, 5);
   });
 });
 

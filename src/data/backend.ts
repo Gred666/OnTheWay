@@ -1,6 +1,8 @@
 import { events, type Result as IpcResult, commands } from "@/lib/bindings";
 import { isTauri } from "@/lib/tauri";
 import type {
+  Attachment,
+  Backlink,
   DayDoc,
   DocumentSaveTarget,
   Goal,
@@ -35,6 +37,8 @@ export interface Backend {
   noteDelete(id: string): Promise<void>;
   /** 撤销删除（删除是软删除） */
   noteUndelete(id: string): Promise<void>;
+  /** 正文里写了 `[[这篇的标题]]` 的文档，最近改过的在前 */
+  noteBacklinks(id: string): Promise<Backlink[]>;
   searchNotes(query: string, limit: number): Promise<SearchResult>;
   taskToggle(id: string): Promise<Task>;
   /** 某个周期的目标；没写过的周期返回空文档（id 为空） */
@@ -53,6 +57,10 @@ export interface Backend {
   vaultKeepConflictCopy(target: DocumentSaveTarget): Promise<string | null>;
   /** 弹选择文件夹对话框换仓库；取消了返回 null */
   vaultChangeRoot(): Promise<VaultInfo | null>;
+  /** 粘贴进来的文件存进「附件」文件夹（内容是 base64），返回从这篇文档引用它的路径 */
+  vaultAttach(target: DocumentSaveTarget, name: string, dataBase64: string): Promise<Attachment>;
+  /** 拖进窗口的文件（桌面端拿到的是路径）存进「附件」文件夹 */
+  vaultAttachPath(target: DocumentSaveTarget, path: string): Promise<Attachment>;
   /** 订阅仓库里别处发生的变化，返回取消订阅的函数 */
   onVaultChanged(listener: (change: VaultChange) => void): Promise<() => void>;
 }
@@ -84,6 +92,7 @@ const tauriBackend: Backend = {
   noteUndelete: async (id) => {
     await unwrap(commands.noteUndelete(id));
   },
+  noteBacklinks: (id) => unwrap(commands.noteBacklinks(id)) as Promise<Backlink[]>,
   searchNotes: (query, limit) =>
     unwrap(commands.searchNotes(query, limit)) as Promise<SearchResult>,
   taskToggle: (id) => unwrap(commands.taskToggle(id)) as Promise<Task>,
@@ -105,6 +114,8 @@ const tauriBackend: Backend = {
   },
   vaultKeepConflictCopy: (target) => unwrap(commands.vaultKeepConflictCopy(target)),
   vaultChangeRoot: () => unwrap(commands.vaultChangeRoot()),
+  vaultAttach: (target, name, dataBase64) => unwrap(commands.vaultAttach(target, name, dataBase64)),
+  vaultAttachPath: (target, path) => unwrap(commands.vaultAttachPath(target, path)),
   onVaultChanged: (listener) =>
     events.vaultChanged.listen((event) => listener(event.payload as VaultChange)),
 };

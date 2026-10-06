@@ -150,9 +150,10 @@ function place(card: HTMLElement, target: HTMLElement) {
     Math.max(EDGE, center - width / 2),
     Math.max(EDGE, window.innerWidth - EDGE - width),
   );
-  card.style.top = `${Math.round(top)}px`;
-  card.style.left = `${Math.round(left)}px`;
-  card.classList.add(above ? "is-above" : "is-below");
+  // 对齐到物理像素：落在半个像素上，边框和字会被抗锯齿成两行，发虚
+  const dpr = window.devicePixelRatio || 1;
+  card.style.top = `${Math.round(top * dpr) / dpr}px`;
+  card.style.left = `${Math.round(left * dpr) / dpr}px`;
 }
 
 export const hoverCard = ViewPlugin.fromClass(HoverCard);

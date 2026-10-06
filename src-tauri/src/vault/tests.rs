@@ -427,8 +427,169 @@ fn a_copied_file_with_the_same_id_becomes_its_own_note() {
 
     let notes = f.vault.note_list_full(false).unwrap();
     assert_eq!(notes.len(), 2);
-    assert!(notes.iter().any(|note| note.id == id && note.title == "原件"));
-    assert!(notes.iter().any(|note| note.id != id && note.title == "原件 - 副本"));
+    assert!(notes.iter().any(|note| note.id == id && note.title == "原件" && note.conflict_of.is_none()));
+    // 带着同一个 id 的拷贝：认得出它是「原件」的一份副本
+    assert!(notes
+        .iter()
+        .any(|note| note.id != id && note.title == "原件 - 副本" && note.conflict_of.as_deref() == Some(&id)));
+}
+
+/* ---------------- 网盘的冲突副本 ---------------- */
+
+#[test]
+fn cloud_conflict_copies_point_at_their_original() {
+    let mut f = fixture();
+    let id = f.vault.note_create("周报", "我这边的版本").unwrap();
+    let text = f.read("笔记/周报.md");
+    // Google Drive / 百度网盘：整个文件拷一份，属性块里的 id 也跟着
+    f.write_externally("笔记/周报 (1).md", &text.replace("我这边的版本", "另一台机器的版本"));
+    // Syncthing：没有属性块也认得出（靠名字，且原文在同一个文件夹里）
+    f.write_externally("笔记/周报.sync-conflict-20261006-153012-ABCDEFG.md", "第三个版本");
+    // 名字像、但没有原文的：只是一篇叫「方案 (1)」的笔记
+    f.write_externally("笔记/方案 (1).md", "正经起名的笔记");
+    f.take_announced();
+    f.vault.rescan_and_announce().unwrap();
+
+    let notes = f.vault.note_list_full(false).unwrap();
+    let by_title = |title: &str| notes.iter().find(|note| note.title == title).unwrap();
+    assert_eq!(by_title("周报").id, id, "原文留着自己的 id");
+    assert_eq!(by_title("周报").conflict_of, None);
+    assert_eq!(by_title("周报 (1)").conflict_of.as_deref(), Some(id.as_str()));
+    assert_eq!(
+        by_title("周报.sync-conflict-20261006-153012-ABCDEFG").conflict_of.as_deref(),
+        Some(id.as_str())
+    );
+    assert_eq!(by_title("方案 (1)").conflict_of, None);
+
+    let announced = f.take_announced();
+    let found: Vec<&String> = announced.iter().flat_map(|change| &change.found_copies).collect();
+    assert_eq!(found.len(), 2, "{found:?}");
+}
+
+#[test]
+fn a_rebuilt_index_gives_the_id_to_the_original_not_the_copy() {
+    let mut f = fixture();
+    let id = f.vault.note_create("周报", "原文").unwrap();
+    let text = f.read("笔记/周报.md");
+    // 「周报 (1).md」按字节序排在「周报.md」前面
+    f.write_externally("笔记/周报 (1).md", &text);
+
+    let rebuilt = Vault::open_in_memory(&f.root);
+    let original = rebuilt.note_get(&id).unwrap();
+    assert_eq!(original.title, "周报");
+    let copy = rebuilt
+        .note_list_full(false)
+        .unwrap()
+        .into_iter()
+        .find(|note| note.title == "周报 (1)")
+        .unwrap();
+    assert_eq!(copy.conflict_of.as_deref(), Some(id.as_str()));
+}
+
+#[test]
+fn our_own_conflict_copies_are_recognized_too() {
+    let mut f = fixture();
+    let id = f.vault.note_create("计划", "旧").unwrap();
+    let copy_title = f
+        .vault
+        .keep_conflict_copy(&DocTarget::Note { id: id.clone() })
+        .unwrap()
+        .unwrap();
+    let copy = f
+        .vault
+        .note_list_full(false)
+        .unwrap()
+        .into_iter()
+        .find(|note| note.title == copy_title)
+        .unwrap();
+    assert_eq!(copy.conflict_of.as_deref(), Some(id.as_str()));
+    // 自己另存的只报在 conflicts 里，不重复当「新发现的副本」
+    let announced = f.take_announced();
+    assert!(announced.iter().all(|change| change.found_copies.is_empty()));
+}
+
+/* ---------------- 反向链接 ---------------- */
+
+#[test]
+fn backlinks_come_from_notes_days_and_goals() {
+    let mut f = fixture();
+    let target = f.vault.note_create("周报", "自己链自己 [[周报]] 不算").unwrap();
+    f.vault
+        .note_create("复盘", "- 回看 [[周报]] 的结论\n另一处 [[ 周报 |上周的]]\n```\n[[周报]]\n```")
+        .unwrap();
+    f.vault.note_create("无关", "[[别的笔记]]").unwrap();
+    f.vault.save_day("2026-10-06", "周一", "- [ ] 整理 [[周报#结论]]").unwrap();
+    f.vault.save_goal("week", "2026-10-05", "## 目标\n写完 [[周报]]").unwrap();
+
+    let links = f.vault.backlinks(&target).unwrap();
+    let titles: Vec<&str> = links.iter().map(|link| link.title.as_str()).collect();
+    assert_eq!(links.len(), 3, "{titles:?}");
+    let note = links.iter().find(|link| link.kind == "note").unwrap();
+    assert_eq!(note.title, "复盘");
+    assert_eq!(note.count, 2, "代码块里的不算");
+    assert_eq!(note.lines[0].text, "回看 [[周报]] 的结论");
+    assert_eq!(note.lines[1].line, 1);
+    let day = links.iter().find(|link| link.kind == "day").unwrap();
+    assert_eq!(day.title, "10月6日 · 周一");
+    assert_eq!(day.lines[0].text, "整理 [[周报#结论]]");
+    assert!(matches!(&day.target, DocTarget::Day { id } if id == "2026-10-06"));
+    let goal = links.iter().find(|link| link.kind == "goal").unwrap();
+    assert_eq!(goal.title, "第 41 周目标");
+}
+
+/* ---------------- 附件 ---------------- */
+
+#[test]
+fn attachments_go_into_the_attachment_folder_with_relative_links() {
+    let mut f = fixture();
+    let id = f.vault.note_create("周报", "").unwrap();
+    let note = DocTarget::Note { id };
+
+    let pasted = f.vault.attach(&note, "image.png", b"png-bytes").unwrap();
+    assert!(pasted.name.starts_with("粘贴-") && pasted.name.ends_with(".png"), "{}", pasted.name);
+    assert_eq!(pasted.link, format!("../附件/{}", pasted.name));
+    assert!(pasted.is_image);
+    assert!(f.exists(&format!("附件/{}", pasted.name)));
+
+    let first = f.vault.attach(&note, "屏幕 截图.PNG", b"a").unwrap();
+    assert_eq!(first.name, "屏幕-截图.png");
+    // 同名同内容：直接用已有的那个
+    let same = f.vault.attach(&note, "屏幕 截图.PNG", b"a").unwrap();
+    assert_eq!(same.name, "屏幕-截图.png");
+    // 同名不同内容：换个名字
+    let other = f.vault.attach(&note, "屏幕 截图.PNG", b"b").unwrap();
+    assert_eq!(other.name, "屏幕-截图-2.png");
+
+    // 某一天在 日记/2026/ 下面，要往上两层
+    let day = f
+        .vault
+        .attach(&DocTarget::Day { id: "2026-10-06".into() }, "a.pdf", b"pdf")
+        .unwrap();
+    assert_eq!(day.link, "../../附件/a.pdf");
+    assert!(!day.is_image);
+    assert!(f.vault.attach(&note, "空.png", b"").is_err());
+    // 附件不是笔记：不进索引
+    assert_eq!(f.vault.note_list_full(false).unwrap().len(), 1);
+}
+
+#[test]
+fn dropped_files_are_copied_unless_already_attached() {
+    let mut f = fixture();
+    let id = f.vault.note_create("周报", "").unwrap();
+    let note = DocTarget::Note { id };
+    let outside = f._dir.path().join("桌面截图.jpg");
+    std::fs::write(&outside, b"jpg").unwrap();
+
+    let copied = f.vault.attach_path(&note, &outside).unwrap();
+    assert_eq!(copied.link, "../附件/桌面截图.jpg");
+    assert!(f.exists("附件/桌面截图.jpg"));
+    assert!(outside.exists(), "原文件不动");
+
+    let again = f
+        .vault
+        .attach_path(&note, &fsio::abs(&f.root, "附件/桌面截图.jpg"))
+        .unwrap();
+    assert_eq!(again.name, "桌面截图.jpg");
 }
 
 #[test]

@@ -18,6 +18,7 @@ import {
   type DocumentSaveTarget,
   type Goal,
   type GoalHorizon,
+  type Note,
   goalKey,
 } from "./types";
 
@@ -57,11 +58,20 @@ export function useCurrentDocument(): DocumentModel {
     /* ---------------- 笔记 ---------------- */
     case "notes": {
       const note = notes.find((n) => n.id === selectedNoteId) ?? notes[0];
-      if (!note) return emptyDoc("还没有笔记", "从左侧新建一篇。");
+      if (!note) {
+        return emptyDoc({
+          art: "notes",
+          title: "还没有笔记",
+          hint: "想到什么就记下来，标题可以晚点再起。",
+          action: "createNote",
+        });
+      }
 
       return {
         key: `note-${note.id}`,
         title: note.title,
+        conflict: conflictOf(note, notes, archived),
+        relPath: note.relPath,
         bodyMd: draftOr({ kind: "note", id: note.id }, note.contentMd),
         statusParts: [
           `${note.wordCount} 字`,
@@ -119,11 +129,17 @@ export function useCurrentDocument(): DocumentModel {
     case "archive": {
       const note = archived.find((n) => n.id === selectedArchiveId) ?? archived[0];
       if (!note) {
-        return emptyDoc("归档是空的", "归档的内容会保留在这里，不出现在日常列表中。");
+        return emptyDoc({
+          art: "archive",
+          title: "归档是空的",
+          hint: "用完的笔记归档到这里，不占日常列表，随时能找回来。",
+        });
       }
       return {
         key: `archive-${note.id}`,
         title: note.title,
+        conflict: conflictOf(note, notes, archived),
+        relPath: note.relPath,
         banner: {
           icon: "archive",
           text: `已归档 · ${formatFullCN(toISODate(new Date(note.archivedAt ?? note.updatedAt)))}`,
@@ -139,7 +155,7 @@ export function useCurrentDocument(): DocumentModel {
     }
 
     case "extensions":
-      return emptyDoc("扩展", "");
+      return { key: "empty-扩展", title: "扩展", bodyMd: "", statusParts: [] };
   }
 }
 
@@ -183,6 +199,7 @@ function dayDocument(
     eyebrow: isToday ? `今天 · ${formatDayEyebrowCN(date)}` : formatDayEyebrowCN(date),
     segments,
     bodyMd: day ? draftOr({ kind: "day", id: date }, day.noteMd) : "",
+    relPath: day?.relPath,
     dayTasks: tasks.length ? tasks : undefined,
     statusParts,
     editor: day ? { target: { kind: "day", id: date }, titleEditable: true } : undefined,
@@ -211,6 +228,7 @@ function goalDocument(
     title: goalTitle(horizon, periodStart),
     segments,
     bodyMd: goal ? draftOr({ kind: "goal", horizon, periodStart }, goal.contentMd) : "",
+    relPath: goal?.relPath,
     statusParts,
     editor: goal ? { target: { kind: "goal", horizon, periodStart } } : undefined,
   };
@@ -218,8 +236,17 @@ function goalDocument(
 
 /* ---------------- 辅助 ---------------- */
 
-function emptyDoc(title: string, body: string): DocumentModel {
-  return { key: `empty-${title}`, title, bodyMd: body, statusParts: [] };
+function emptyDoc(empty: NonNullable<DocumentModel["empty"]>): DocumentModel {
+  return { key: `empty-${empty.title}`, title: empty.title, bodyMd: "", statusParts: [], empty };
+}
+
+/** 这篇是冲突副本、原文还在：冲突横幅要的东西 */
+function conflictOf(note: Note, notes: Note[], archived: Note[]): DocumentModel["conflict"] {
+  if (!note.conflictOf) return undefined;
+  const original =
+    notes.find((n) => n.id === note.conflictOf) ?? archived.find((n) => n.id === note.conflictOf);
+  if (!original) return undefined;
+  return { copyId: note.id, originalId: original.id, originalTitle: original.title };
 }
 
 function horizonLabel(h: GoalHorizon): string {

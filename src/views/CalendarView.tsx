@@ -75,9 +75,10 @@ export function CalendarPanel({ marked }: { marked: Set<string> }) {
           {awayFromToday && (
             <motion.div
               key="today"
-              initial={{ opacity: 0, scale: 0.92 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.92 }}
+              // 只淡入淡出：缩放会让「今天」两个字先糊、停下时再跳清楚
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
               transition={tween.fast}
             >
               <ColumnButton label="回到今天" onClick={jumpToday} wide>
@@ -98,7 +99,8 @@ export function CalendarPanel({ marked }: { marked: Set<string> }) {
                 initial={{ y: dir * 18, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 exit={{ y: dir * -18, opacity: 0 }}
-                transition={spring.smooth}
+                // 同下面的日期网格：收尾不留半像素的跳
+                transition={{ ...spring.smooth, restDelta: 0.01, opacity: tween.fast }}
                 className="absolute inset-0 flex items-center text-[15px] font-semibold
                            tracking-[-0.01em] text-ink tabular-nums"
               >
@@ -137,7 +139,8 @@ export function CalendarPanel({ marked }: { marked: Set<string> }) {
             initial={{ x: dir * 24, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: dir * -24, opacity: 0 }}
-            transition={{ ...spring.smooth, opacity: tween.fast }}
+            // restDelta：spring 默认差半个像素以内就直接跳到终点，满屏日期数字最后会一起抖一下
+            transition={{ ...spring.smooth, restDelta: 0.01, opacity: tween.fast }}
             className="flex flex-col"
           >
             {Array.from({ length: 6 }, (_, row) => {

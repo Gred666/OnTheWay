@@ -9,7 +9,7 @@ import { spring, tween } from "@/lib/motion";
 import { RotateCcw } from "lucide-react";
 import { motion } from "motion/react";
 import { useEffect, useMemo } from "react";
-import { EmptyResult } from "./NotesView";
+import { ConflictTag, EmptyResult } from "./NotesView";
 
 export function ArchiveList({
   items,
@@ -127,6 +127,7 @@ function ArchiveCard({
               {note.title}
             </span>
             <span className="mt-[3px] block truncate text-[11.5px] leading-[1.45] text-muted">
+              {note.conflictOf && <ConflictTag />}
               {animatedEmojiText(note.excerpt)}
             </span>
             <span className="mt-[5px] flex items-center gap-1.5 text-[10.5px] text-faint">

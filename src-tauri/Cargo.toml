@@ -70,6 +70,8 @@ filetime = "0.2"
 jieba-rs = "0.7"
 
 uuid = { version = "1", features = ["v7", "serde"] }
+# 粘贴的图片从前端以 base64 传过来（见 commands::vault_attach）
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 once_cell = "1"

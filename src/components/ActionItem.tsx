@@ -81,7 +81,7 @@ function Checkbox({ done, reduce }: { done: boolean; reduce: boolean }) {
           r="8.25"
           fill="none"
           strokeWidth="1.4"
-          className={done ? "stroke-faint" : "stroke-line-strong group-hover:stroke-muted"}
+          className={done ? "stroke-faint" : "stroke-control-edge group-hover:stroke-muted"}
           animate={{ scale: done ? 1 : 1 }}
           style={{ transformOrigin: "10px 10px" }}
           transition={spring.snappy}

@@ -33,6 +33,7 @@ const day = (noteMd: string, extra: Partial<DayDoc> = {}): DayDoc => ({
   noteMd,
   updatedAt: 1,
   carriedFrom: null,
+  relPath: "日记/2026/2026-08-29.md",
   ...extra,
 });
 
@@ -48,6 +49,8 @@ const note = (contentMd: string): Note => ({
   archivedAt: null,
   createdAt: 1,
   updatedAt: 1,
+  relPath: "笔记/笔记.md",
+  conflictOf: null,
 });
 
 const initial = useData.getState();
@@ -77,6 +80,7 @@ const change = (extra: Partial<VaultChange>): VaultChange => ({
   goals: [],
   tasks: false,
   conflicts: [],
+  foundCopies: [],
   ...extra,
 });
 
@@ -127,6 +131,7 @@ describe("saveDocument", () => {
       contentMd: "",
       createdAt: 0,
       updatedAt: 0,
+      relPath: "目标/2026/2026-W35.md",
     };
     useData.setState({ goals: { "week:2026-08-24": empty } });
     api.goalSave.mockResolvedValue({ ...empty, id: "g1", contentMd: "本周", updatedAt: 5 });

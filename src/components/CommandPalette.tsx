@@ -3,7 +3,7 @@ import { useData } from "@/data/store";
 import type { DocumentSaveTarget, WorkspaceId } from "@/data/types";
 import { cn } from "@/lib/cn";
 import { animatedEmojiText } from "@/lib/emojiText";
-import { spring, tween } from "@/lib/motion";
+import { popoverCard, spring, tween } from "@/lib/motion";
 import {
   Archive,
   Bell,
@@ -34,6 +34,9 @@ interface Cmd {
   group: "跳转" | "笔记" | "文件" | "外观";
   run: () => void;
 }
+
+/** 输入框那一栏的高度（和下面的 h-[52px] 一致）：面板展开的第一帧露出它 */
+const INPUT_BAR_HEIGHT = 52;
 
 /**
  * 命令面板（⌘K / Ctrl+K）。
@@ -244,26 +247,29 @@ export function CommandPalette({
             className="fixed inset-0 z-50 cursor-default bg-ink/[0.14] backdrop-blur-[3px]"
           />
 
-          {/* 只负责给面板定位。pointer-events 让开，点空白处才能落到下面的遮罩上 */}
-          <motion.div
+          {/* 只负责给面板定位。pointer-events 让开，点空白处才能落到下面的遮罩上。
+              它自己不做动画：整块淡入会把面板里的字一起变成半透明的位图 */}
+          <div
             key="panel"
             className="pointer-events-none fixed inset-0 z-50 flex items-start justify-center
                        pt-[16vh]"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={tween.fast}
           >
+            {/* 从输入框那一栏往下展开，里面的字不缩放、不变透明（同表情选择器，
+                lib/motion.ts 的 popoverCard）。以前是 scale 0.97 + 下落 + 淡入：
+                字在动画里被当位图拉伸，前 200ms 发虚，结束那一帧才跳清楚 */}
             <motion.div
               role="dialog"
               aria-modal="true"
               aria-label="命令面板"
-              initial={{ opacity: 0, scale: 0.97, y: -10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.985, y: -6 }}
-              transition={spring.snappy}
+              custom={INPUT_BAR_HEIGHT}
+              variants={popoverCard}
+              initial="hidden"
+              animate="shown"
+              exit="gone"
+              // overflow-clip 而不是 hidden：hidden 还是滚动容器，展开途中键盘走到还没
+              // 露出来的那一项，scrollIntoView 会把整块内容卷上去
               className="pointer-events-auto relative w-[520px] max-w-[calc(100vw-48px)]
-                       overflow-hidden rounded-2xl bg-canvas shadow-modal ring-1 ring-line-strong"
+                       overflow-clip rounded-2xl bg-canvas shadow-modal ring-1 ring-line-strong"
               onKeyDown={(e) => {
                 if (e.key === "ArrowDown") {
                   e.preventDefault();
@@ -362,7 +368,7 @@ export function CommandPalette({
                 )}
               </div>
             </motion.div>
-          </motion.div>
+          </div>
         </>
       )}
     </AnimatePresence>

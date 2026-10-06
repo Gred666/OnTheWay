@@ -2,11 +2,11 @@ import type { DayDoc, Goal, Note, Task } from "./types";
 
 type NullableTaskField = "meta" | "dueDate" | "timeLabel" | "category";
 type SeedTask = Omit<Task, NullableTaskField> & Partial<Pick<Task, NullableTaskField>>;
-type SeedNote = Omit<Note, "archiveCategory" | "archivedAt"> & {
+type SeedNote = Omit<Note, "archiveCategory" | "archivedAt" | "relPath" | "conflictOf"> & {
   archiveCategory?: string | null;
   archivedAt?: number | null;
 };
-type SeedDayDoc = Omit<DayDoc, "tasks" | "carriedFrom">;
+type SeedDayDoc = Omit<DayDoc, "tasks" | "carriedFrom" | "relPath">;
 
 /* ============================================================
    浏览器预览（mock）的种子数据 —— 文案取自原型图，和桌面版新仓库的
@@ -163,6 +163,7 @@ export const seedNotes: SeedNote[] = [
       "- 动画的意义是解释变化，不是展示能力。变化解释完了，动画就该结束。",
       "- 一个功能如果需要说明书，多半是入口放错了地方。",
       "- 搜索框应该记住你上次没搜完的那个词。",
+      "- 「清晰度比功能层数重要」—— [[秋季项目复盘]] 里的结论，放到这里也成立。",
     ].join("\n"),
   },
   {
@@ -313,7 +314,7 @@ export const seedTodayDoc = {
 
 /* ---------------- 目标 ---------------- */
 
-export const seedGoals: Goal[] = [
+export const seedGoals: Omit<Goal, "relPath">[] = [
   {
     id: "g-week",
     horizon: "week",
@@ -330,7 +331,7 @@ export const seedGoals: Goal[] = [
       "",
       "## 本周重点",
       "",
-      "- [ ] 完成编辑器稳定性验证",
+      "- [ ] 完成编辑器稳定性验证（标准见 [[秋季项目复盘]]）",
       "- [ ] 整理首次启动体验",
       "- [ ] 完成日历交互说明",
       "- [ ] 安排两次力量训练",
@@ -433,13 +434,18 @@ const normalizeNote = (note: SeedNote): Note => ({
   ...note,
   archiveCategory: note.archiveCategory ?? null,
   archivedAt: note.archivedAt ?? null,
+  relPath: `${note.isArchived ? "归档" : "笔记"}/${note.title}.md`,
+  conflictOf: null,
 });
 
 /** 浏览器 mock 与 Rust 首次启动种子保持同一份内容。 */
 export const seedTasksRaw: Task[] = seedTasks.map(normalizeTask);
 export const seedNotesRaw: Note[] = seedNotes.map(normalizeNote);
 export const seedArchivedRaw: Note[] = seedArchived.map(normalizeNote);
-export const seedGoalsRaw: Goal[] = seedGoals;
+export const seedGoalsRaw: Goal[] = seedGoals.map((goal) => ({
+  ...goal,
+  relPath: `目标/${goal.periodStart.slice(0, 4)}/${goal.periodStart}.md`,
+}));
 /** 日历某天的文档（不含任务），按日期索引；mock 直接在上面读写 */
 export const seedDayNotes: Record<string, { title: string; noteMd: string; updatedAt: number }> =
   Object.fromEntries(

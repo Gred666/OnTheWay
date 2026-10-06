@@ -19,6 +19,8 @@ pub const NOTES_DIR: &str = "笔记";
 pub const ARCHIVE_DIR: &str = "归档";
 pub const DAYS_DIR: &str = "日记";
 pub const GOALS_DIR: &str = "目标";
+/// 粘贴 / 拖进来的图片，正文里用相对路径引用（见 Vault::attach）
+pub const ATTACHMENTS_DIR: &str = "附件";
 pub const TRASH_DIR: &str = ".ontheway/trash";
 pub const ACTIVITY_DIR: &str = ".ontheway/activity";
 pub const VAULT_MARKER: &str = ".ontheway/vault.json";
@@ -222,9 +224,153 @@ pub fn file_stem_for_title(title: &str) -> String {
     stem
 }
 
+/* ---------------- 网盘的冲突副本 ----------------
+   两台机器都改了同一篇、同步时撞上，网盘不覆盖，而是把其中一版另存一份：
+     Dropbox     「周报 (张三's conflicted copy 2026-10-06).md」「周报 (张三的冲突副本 …).md」
+     Syncthing   「周报.sync-conflict-20261006-153012-ABCDEFG.md」
+     OneDrive    「周报-DESKTOP-ABC1234.md」（机器名）
+     Google Drive / 百度网盘「周报 (1).md」「周报(1).md」
+     本应用自己  「周报 (冲突 2026-10-06 1530).md」
+   iCloud 的「周报 2.md」和本应用给重名笔记起的名字一样，只能靠属性块里重复的 id 认。
+   这里只看名字给出「原文可能叫什么」，原文在不在同一个文件夹里由调用方核对 ——
+   光看名字，「方案 (1)」也可能就是一篇正经起名的笔记。 */
+
+/// 这个文件名若是冲突副本，原文件可能叫什么（不含 .md），按可信程度排。
+pub fn conflict_originals(stem: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut push = |base: &str| {
+        let base = base.trim_end();
+        if !base.is_empty() && base != stem && !out.iter().any(|known: &String| known == base) {
+            out.push(base.to_string());
+        }
+    };
+    // 本应用起冲突副本时撞名会再加「 2」：先去掉这个序号再看
+    let trimmed = strip_counter(stem);
+    for name in [stem, trimmed] {
+        if let Some(index) = name.find(".sync-conflict-") {
+            push(&name[..index]);
+        }
+        if let Some((base, inner)) = trailing_group(name) {
+            let lower = inner.to_lowercase();
+            if inner.contains("冲突") || lower.contains("conflict") {
+                push(base);
+            } else if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()) {
+                push(base);
+            }
+        }
+        let lower = name.to_lowercase();
+        for marker in ["_冲突", "-冲突", " 冲突", "_conflict", "-conflict", " conflict"] {
+            if let Some(index) = lower.rfind(marker) {
+                // 中文标记的字节位置在小写前后一样（只有 ASCII 会变）
+                if name.is_char_boundary(index) {
+                    push(&name[..index]);
+                }
+            }
+        }
+        // OneDrive：结尾是「-机器名」，机器名本身可能也带连字符，每个切点都试
+        for (index, _) in name.match_indices('-').collect::<Vec<_>>().into_iter().rev() {
+            let suffix = &name[index + 1..];
+            let machine = (3..=24).contains(&suffix.len())
+                && suffix
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
+                && suffix.chars().any(|c| c.is_ascii_uppercase());
+            if machine {
+                push(&name[..index]);
+            }
+        }
+    }
+    out
+}
+
+/// 「周报 (冲突 …) 2」→「周报 (冲突 …)」；没有序号原样返回
+fn strip_counter(stem: &str) -> &str {
+    match stem.rsplit_once(' ') {
+        Some((base, n)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => base,
+        _ => stem,
+    }
+}
+
+/// 结尾的「(…)」或「（…）」：返回 (前面的部分, 括号里的内容)
+fn trailing_group(name: &str) -> Option<(&str, &str)> {
+    for (open, close) in [('(', ')'), ('（', '）')] {
+        if let Some(body) = name.strip_suffix(close) {
+            if let Some(index) = body.rfind(open) {
+                return Some((&name[..index], &body[index + open.len_utf8()..]));
+            }
+        }
+    }
+    None
+}
+
+/// 从一篇文档引用附件的相对路径：`笔记/周报.md` 引用 `附件/图.png` 写成 `../附件/图.png`。
+/// 和别的编辑器（Typora、Obsidian、VS Code）的解析方式一样，相对文档自己所在的文件夹。
+pub fn attachment_link(doc_rel: &str, file_name: &str) -> String {
+    let depth = dir_of(doc_rel).split('/').filter(|part| !part.is_empty()).count();
+    format!("{}{ATTACHMENTS_DIR}/{file_name}", "../".repeat(depth))
+}
+
+/// 附件的文件名（不含扩展名）：去掉文件系统和 Markdown 链接里有特殊含义的字符，
+/// 空白换成连字符（`![](a b.png)` 里的空格会把链接截断）。
+pub fn attachment_stem(raw: &str) -> String {
+    let mut out = String::new();
+    for c in raw.trim().chars() {
+        let bad = c.is_whitespace()
+            || c.is_control()
+            || matches!(
+                c,
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '#' | '%' | '[' | ']' | '(' | ')'
+                    | '{' | '}' | '^' | '`' | '!'
+            );
+        let c = if bad { '-' } else { c };
+        if c == '-' && out.ends_with('-') {
+            continue;
+        }
+        out.push(c);
+        if out.chars().count() >= 60 {
+            break;
+        }
+    }
+    out.trim_matches(['-', '.', ' ']).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_conflict_copy_names() {
+        let first = |stem: &str| conflict_originals(stem).into_iter().next();
+        assert_eq!(first("周报 (冲突 2026-10-06 1530)").as_deref(), Some("周报"));
+        assert_eq!(first("周报 (冲突 2026-10-06 1530) 2").as_deref(), Some("周报"));
+        assert_eq!(first("周报 (张三's conflicted copy 2026-10-06)").as_deref(), Some("周报"));
+        assert_eq!(first("周报 (张三的冲突副本 2026-10-06)").as_deref(), Some("周报"));
+        assert_eq!(
+            first("周报.sync-conflict-20261006-153012-ABCDEFG").as_deref(),
+            Some("周报")
+        );
+        assert_eq!(first("周报 (1)").as_deref(), Some("周报"));
+        assert_eq!(first("周报(2)").as_deref(), Some("周报"));
+        assert_eq!(first("周报（冲突副本）").as_deref(), Some("周报"));
+        assert_eq!(first("周报_冲突_20261006").as_deref(), Some("周报"));
+        assert!(conflict_originals("周报-DESKTOP-ABC1234").contains(&"周报".to_string()));
+        // 普通的名字不算
+        assert!(conflict_originals("周报").is_empty());
+        assert!(conflict_originals("第 3 期周报").is_empty());
+        assert!(conflict_originals("周报 (草稿)").is_empty());
+        assert!(conflict_originals("api-v2").is_empty());
+    }
+
+    #[test]
+    fn attachment_links_are_relative_to_the_document() {
+        assert_eq!(attachment_link("笔记/周报.md", "图.png"), "../附件/图.png");
+        assert_eq!(attachment_link("日记/2026/2026-10-06.md", "图.png"), "../../附件/图.png");
+        assert_eq!(attachment_link("随手.md", "图.png"), "附件/图.png");
+        assert_eq!(attachment_stem("屏幕 截图 (2)"), "屏幕-截图-2");
+        assert_eq!(attachment_stem("  a  b  "), "a-b");
+        assert_eq!(attachment_stem("周报#1 [草稿]"), "周报-1-草稿");
+        assert_eq!(attachment_stem("..."), "");
+    }
 
     #[test]
     fn classifies_by_location() {

@@ -20,6 +20,10 @@ pub struct Note {
     pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// 在仓库里的相对路径（正斜杠）。正文里的相对图片路径以它所在的文件夹为基准
+    pub rel_path: String,
+    /// 这篇是另一篇的冲突副本（网盘同步撞车、或本应用另存的）：原文的 id
+    pub conflict_of: Option<String>,
 }
 
 /// 日历「当日安排」里的一条：某篇文档正文里带日期的 `- [ ]`（见 vault/tasks.rs）
@@ -54,6 +58,8 @@ pub struct Goal {
     pub content_md: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// 在仓库里的相对路径；还没写过的周期是它将来的位置
+    pub rel_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -67,6 +73,8 @@ pub struct DayDoc {
     /// 这一天还没写过、内容是从之前最近一天延续来的：那一天的日期。
     /// 只有请求「今天」时才会延续；用户一编辑，就以这一天自己的身份落库。
     pub carried_from: Option<String>,
+    /// 在仓库里的相对路径；还没写过的日子是它将来的位置
+    pub rel_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -130,8 +138,48 @@ pub struct VaultChange {
     pub goals: Vec<String>,
     /// 带日期的任务有变化：日历的当日安排和小圆点要刷新
     pub tasks: bool,
-    /// 这次产生的冲突副本的标题
+    /// 这次产生的冲突副本的标题（编辑器里有没存的修改时外部改动到了，另存的那一份）
     pub conflicts: Vec<String>,
+    /// 新出现的冲突副本（网盘同步时两边都改过，网盘另存的那一份）的标题
+    pub found_copies: Vec<String>,
+}
+
+/// 反向链接：一篇正文里写了 `[[这篇的标题]]` 的文档
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Backlink {
+    /// 链过来的那篇，点一下跳过去
+    pub target: DocTarget,
+    /// note | day | goal
+    pub kind: String,
+    /// 给人看的标题：笔记标题、「9月26日」、「第 39 周目标」
+    pub title: String,
+    pub archived: bool,
+    pub updated_at: i64,
+    /// 写着链接的那几行（最多 3 行）
+    pub lines: Vec<BacklinkLine>,
+    /// 这篇里一共链了几次
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BacklinkLine {
+    /// 正文里的行号（从 0 开始）
+    pub line: i64,
+    /// 去掉列表符号之类、截过长度的那一行，双链原样保留（前端再画成小块）
+    pub text: String,
+}
+
+/// 存进「附件」文件夹的一个文件
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    /// 从文档引用它的相对路径，直接写进 `![](…)`
+    pub link: String,
+    /// 文件名
+    pub name: String,
+    pub is_image: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]

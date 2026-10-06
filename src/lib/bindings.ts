@@ -218,6 +218,40 @@ async vaultKeepConflictCopy(target: DocTarget) : Promise<Result<string | null, A
 }
 },
 /**
+ * 反向链接：正文里写了 `[[这篇的标题]]` 的文档
+ */
+async noteBacklinks(id: string) : Promise<Result<Backlink[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_backlinks", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 粘贴进来的文件（剪贴板里的图片）存进「附件」文件夹。内容以 base64 传过来 ——
+ * 一个字节一个数字的 JSON 数组，几 MB 的截图要序列化成几千万个字符。
+ */
+async vaultAttach(target: DocTarget, name: string, dataBase64: string) : Promise<Result<Attachment, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("vault_attach", { target, name, dataBase64 }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 拖进窗口的文件（桌面端拿到的是路径）存进「附件」文件夹
+ */
+async vaultAttachPath(target: DocTarget, path: string) : Promise<Result<Attachment, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("vault_attach_path", { target, path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * 换一个文件夹当仓库。弹系统的选择文件夹对话框；新文件夹是空的就问要不要把
  * 现在的笔记一起复制过去（原来的不动）。取消了返回 null。前端拿到结果后整页重载。
  */
@@ -253,12 +287,61 @@ vaultChanged: "vault-changed"
  * 而不是去解析错误字符串。
  */
 export type AppError = { kind: "Db"; message: string } | { kind: "NotFound"; message: string } | { kind: "Invalid"; message: string } | { kind: "DbTooNew"; message: { found: number; supported: number } } | { kind: "Io"; message: string } | { kind: "Internal"; message: string }
+/**
+ * 存进「附件」文件夹的一个文件
+ */
+export type Attachment = { 
+/**
+ * 从文档引用它的相对路径，直接写进 `![](…)`
+ */
+link: string; 
+/**
+ * 文件名
+ */
+name: string; isImage: boolean }
+/**
+ * 反向链接：一篇正文里写了 `[[这篇的标题]]` 的文档
+ */
+export type Backlink = { 
+/**
+ * 链过来的那篇，点一下跳过去
+ */
+target: DocTarget; 
+/**
+ * note | day | goal
+ */
+kind: string; 
+/**
+ * 给人看的标题：笔记标题、「9月26日」、「第 39 周目标」
+ */
+title: string; archived: boolean; updatedAt: number; 
+/**
+ * 写着链接的那几行（最多 3 行）
+ */
+lines: BacklinkLine[]; 
+/**
+ * 这篇里一共链了几次
+ */
+count: number }
+export type BacklinkLine = { 
+/**
+ * 正文里的行号（从 0 开始）
+ */
+line: number; 
+/**
+ * 去掉列表符号之类、截过长度的那一行，双链原样保留（前端再画成小块）
+ */
+text: string }
 export type DayDoc = { date: string; title: string; tasks: Task[]; noteMd: string; updatedAt: number; 
 /**
  * 这一天还没写过、内容是从之前最近一天延续来的：那一天的日期。
  * 只有请求「今天」时才会延续；用户一编辑，就以这一天自己的身份落库。
  */
-carriedFrom: string | null }
+carriedFrom: string | null; 
+/**
+ * 在仓库里的相对路径；还没写过的日子是它将来的位置
+ */
+relPath: string }
 /**
  * 指向一篇文档：和前端的 DocumentSaveTarget 同形
  */
@@ -284,8 +367,20 @@ horizon: string; title: string;
 /**
  * 周期起点：周一 / 1 号 / 1 月 1 日
  */
-periodStart: string; contentMd: string; createdAt: number; updatedAt: number }
-export type Note = { id: string; title: string; contentMd: string; excerpt: string; wordCount: number; isPinned: boolean; isArchived: boolean; archiveCategory: string | null; archivedAt: number | null; createdAt: number; updatedAt: number }
+periodStart: string; contentMd: string; createdAt: number; updatedAt: number; 
+/**
+ * 在仓库里的相对路径；还没写过的周期是它将来的位置
+ */
+relPath: string }
+export type Note = { id: string; title: string; contentMd: string; excerpt: string; wordCount: number; isPinned: boolean; isArchived: boolean; archiveCategory: string | null; archivedAt: number | null; createdAt: number; updatedAt: number; 
+/**
+ * 在仓库里的相对路径（正斜杠）。正文里的相对图片路径以它所在的文件夹为基准
+ */
+relPath: string; 
+/**
+ * 这篇是另一篇的冲突副本（网盘同步撞车、或本应用另存的）：原文的 id
+ */
+conflictOf: string | null }
 /**
  * 新建 / 更新笔记的入参。
  * id 为 None 表示新建。
@@ -339,9 +434,13 @@ goals: string[];
  */
 tasks: boolean; 
 /**
- * 这次产生的冲突副本的标题
+ * 这次产生的冲突副本的标题（编辑器里有没存的修改时外部改动到了，另存的那一份）
  */
-conflicts: string[] }
+conflicts: string[]; 
+/**
+ * 新出现的冲突副本（网盘同步时两边都改过，网盘另存的那一份）的标题
+ */
+foundCopies: string[] }
 /**
  * 仓库里别处发生的变化（外部程序改了文件、勾任务改了别的文档），前端据此刷新
  */

@@ -98,3 +98,15 @@ describe("标题行的光标占位图片不撑高行", () => {
     expect(rule![1]).toMatch(/vertical-align:\s*top/);
   });
 });
+
+/**
+ * 行内带底色的样式（双链小块之类）不能上下加 padding：编辑器的行只有 1.4 倍高（23.8px），
+ * 字体框已经 22px，底色再往上冒就会盖住上一行的下划线 —— 每一行是 position: relative，
+ * 后面的行整个画在前面的行上面。
+ */
+describe("行内底色不越出这一行", () => {
+  it("the wikilink chip has no vertical padding in the editor", () => {
+    const padding = declarationsFor("cm-otw-wikilink").find((d) => d.startsWith("padding"));
+    expect(padding).toBe("padding: 0 0.32em");
+  });
+});

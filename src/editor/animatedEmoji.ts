@@ -355,11 +355,20 @@ export class EmojiPlayer {
 
   constructor(readonly emoji: AnimatedEmoji) {}
 
-  /** 放进宿主（一个 .otw-ae 框） */
-  mount(host: HTMLElement): void {
+  /**
+   * 放进宿主（一个 .otw-ae 框）。
+   *
+   * image: false —— 静止帧也用活的 SVG，不用图。图省的是「同一个表情画很多遍」：同一张
+   * 图全页只解析一次。可每张不同的 data: SVG 图，浏览器都要为它单独建一个隔离的 SVG
+   * 文档（IsolatedSVGDocumentHost，同步发生在布局里），而且再插一次 <image> 还得再建。
+   * 选择器里 48 个表情各不相同、各出现一次：用图的话每次打开都要建 48 个文档，
+   * 4 倍降速 + 2x 屏上首次打开主线程卡 0.65 秒、之后每次 0.2–0.3 秒；换成活的 SVG
+   * 只多算几百个元素的样式。
+   */
+  mount(host: HTMLElement, { image = true }: { image?: boolean } = {}): void {
     injectStyles();
     this.host = host;
-    const url = stillUrl(this.emoji);
+    const url = image ? stillUrl(this.emoji) : null;
     this.still = url ? stillElement(this.emoji, url) : this.liveElement();
     host.prepend(this.still);
   }

@@ -152,6 +152,12 @@ fn parse_line(line: usize, raw: &str) -> Option<ScheduledTask> {
         words.push(token);
     }
 
+    // 只有日期、没写事情的（模板里留给人填的 `- [ ] @2026-09-28 `）不进日历：
+    // 日历上一条空白的安排什么也说明不了
+    if words.is_empty() {
+        return None;
+    }
+
     Some(ScheduledTask {
         line,
         raw: raw.to_string(),
@@ -229,6 +235,15 @@ mod tests {
         assert!(one("- 不是任务 @2026-09-01").is_none());
         assert!(one("- [ ]紧挨着 @2026-09-01").is_none());
         assert!(one("[ ] 没有列表符号 @2026-09-01").is_none());
+    }
+
+    #[test]
+    fn tasks_with_only_a_date_are_not_scheduled() {
+        assert!(one("  - [ ] @2026-09-28 ").is_none());
+        assert!(one("- [ ] @2026-09-28 14:00 #工作").is_none());
+        let filled = one("  - [ ] @2026-09-28 14:00 开会").unwrap();
+        assert_eq!(filled.title, "开会");
+        assert_eq!(filled.time_label.as_deref(), Some("14:00"));
     }
 
     #[test]

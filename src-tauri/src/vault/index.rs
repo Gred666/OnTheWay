@@ -15,7 +15,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use super::tasks::ScheduledTask;
 use crate::error::Result;
 
-const VERSION: i64 = 1;
+const VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE doc (
@@ -37,7 +37,8 @@ CREATE TABLE doc (
   updated_at     INTEGER NOT NULL,
   mtime          INTEGER NOT NULL,
   size           INTEGER NOT NULL,
-  hash           TEXT    NOT NULL           -- 文件内容指纹：磁盘上的是不是索引里这一版
+  hash           TEXT    NOT NULL,          -- 文件内容指纹：磁盘上的是不是索引里这一版
+  file_id        TEXT                       -- 文件属性块里写的 id。和 id 不一样 = 这是别的文件的拷贝（网盘冲突副本）
 );
 CREATE UNIQUE INDEX doc_day  ON doc(day) WHERE kind = 'day';
 CREATE UNIQUE INDEX doc_goal ON doc(horizon, period_start) WHERE kind = 'goal';
@@ -118,11 +119,14 @@ pub struct DocRow {
     pub mtime: i64,
     pub size: i64,
     pub hash: String,
+    /// 文件属性块里写着的 id（没有就是 None）。和 `id` 不同说明这个 id 已经被
+    /// 另一个文件占着，这一份多半是拷贝出来的（网盘的冲突副本）
+    pub file_id: Option<String>,
 }
 
 const COLUMNS: &str = "id, kind, rel_path, day, horizon, period_start, title, content_md, excerpt,
     word_count, is_pinned, is_archived, archive_category, archived_at, created_at, updated_at,
-    mtime, size, hash";
+    mtime, size, hash, file_id";
 
 fn row(r: &Row) -> rusqlite::Result<DocRow> {
     let kind: String = r.get("kind")?;
@@ -150,6 +154,7 @@ fn row(r: &Row) -> rusqlite::Result<DocRow> {
         mtime: r.get("mtime")?,
         size: r.get("size")?,
         hash: r.get("hash")?,
+        file_id: r.get("file_id")?,
     })
 }
 
@@ -209,6 +214,11 @@ pub fn latest_day_before(conn: &Connection, date: &str) -> Result<Option<DocRow>
     )
 }
 
+/// 正文里写了 `[[` 的文档：反向链接只需要在它们里面找
+pub fn with_wikilinks(conn: &Connection) -> Result<Vec<DocRow>> {
+    many(conn, "WHERE instr(content_md, '[[') > 0", [])
+}
+
 /// 扫描用：已索引的每个文件的 (路径, mtime, size)
 pub fn file_states(conn: &Connection) -> Result<Vec<(String, i64, i64)>> {
     let mut stmt = conn.prepare("SELECT rel_path, mtime, size FROM doc")?;
@@ -241,7 +251,7 @@ pub fn put(
         delete_rows(&tx, &old)?;
     }
     tx.execute(
-        &format!("INSERT INTO doc ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"),
+        &format!("INSERT INTO doc ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"),
         params![
             doc.id,
             doc.kind,
@@ -262,6 +272,7 @@ pub fn put(
             doc.mtime,
             doc.size,
             doc.hash,
+            doc.file_id,
         ],
     )?;
     for task in tasks {

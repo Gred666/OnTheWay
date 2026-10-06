@@ -1,7 +1,7 @@
 import { cn } from "@/lib/cn";
-import { layoutIds, spring, tween } from "@/lib/motion";
+import { layoutIds, popoverCard, spring } from "@/lib/motion";
 import { shortcut } from "@/lib/platform";
-import { Search } from "lucide-react";
+import { CornerDownLeft, Search } from "lucide-react";
 import { motion, useIsPresent } from "motion/react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ANIMATED_EMOJIS, type AnimatedEmoji, EmojiPlayer } from "./animatedEmoji";
@@ -27,6 +27,12 @@ export interface EmojiPickerAnchor {
 const COLUMNS = 6;
 const GAP = 6;
 const EDGE = 8;
+/** 面板尺寸（和下面的类名一致：w-[292px]，搜索栏 42 + 网格限高 322 + 底栏 34） */
+const PANEL_WIDTH = 292;
+const GRID_HEIGHT = 322;
+const SEARCH_HEIGHT = 42;
+const FOOTER_HEIGHT = 34;
+const PANEL_HEIGHT = SEARCH_HEIGHT + GRID_HEIGHT + FOOTER_HEIGHT;
 
 /* ---------------- 最近使用 ---------------- */
 
@@ -150,9 +156,35 @@ export interface Placement {
 /** 网格最少留两行多一点，再矮就没法用了 */
 const MIN_GRID = 120;
 
+export function viewportSize(): { width: number; height: number } {
+  return { width: window.innerWidth, height: window.innerHeight };
+}
+
+export function samePlacement(a: Placement, b: Placement): boolean {
+  return a.left === b.left && a.top === b.top && a.above === b.above && a.gridMax === b.gridMax;
+}
+
+/**
+ * 面板的 CSS 定位：钉住贴着光标的那条边（往下开钉上边，往上开用 bottom 钉下边），
+ * 展开、收起时那条边不动（lib/motion.ts 的 popoverCard）。对齐到物理像素：落在半个
+ * 像素上，边框和字都会被抗锯齿成两行，发虚。
+ */
+export function pinnedEdge(
+  anchor: EmojiPickerAnchor,
+  place: Placement,
+  viewport = viewportSize(),
+  dpr = window.devicePixelRatio || 1,
+): { left: number; top?: number; bottom?: number } {
+  const snap = (value: number) => Math.round(value * dpr) / dpr;
+  return place.above
+    ? { left: snap(place.left), bottom: snap(viewport.height - (anchor.top - GAP)) }
+    : { left: snap(place.left), top: snap(place.top) };
+}
+
 /**
  * 下面放得下就放下面，否则放得下就翻到上面；两边都放不下（矮窗口、光标在中间）
  * 时挑空间大的一边，把网格压矮到正好放得下。左右夹在窗口里。
+ * 模板选择器（TemplatePicker）也用它，`grid` 是它可以压矮的列表区。
  */
 export function placePicker(
   anchor: EmojiPickerAnchor,
@@ -161,9 +193,11 @@ export function placePicker(
     height: number;
     grid: number;
     viewport: { width: number; height: number };
+    /** 面板左缘比锚点往左挪多少（默认让第一格表情对准光标） */
+    nudge?: number;
   },
 ): Placement {
-  const { width, height, grid, viewport } = size;
+  const { width, height, grid, viewport, nudge = 18 } = size;
   const roomBelow = viewport.height - EDGE - (anchor.bottom + GAP);
   const roomAbove = anchor.top - GAP - EDGE;
   let above = false;
@@ -178,7 +212,7 @@ export function placePicker(
   }
   const gridMax = fitted < height ? grid - (height - fitted) : undefined;
   return {
-    left: Math.max(EDGE, Math.min(anchor.left - 18, viewport.width - width - EDGE)),
+    left: Math.max(EDGE, Math.min(anchor.left - nudge, viewport.width - width - EDGE)),
     top: above ? anchor.top - GAP - fitted : Math.max(EDGE, anchor.bottom + GAP),
     above,
     gridMax,
@@ -197,7 +231,9 @@ function EmojiGlyph({ emoji, active }: { emoji: AnimatedEmoji; active: boolean }
     if (!host) return;
     const player = new EmojiPlayer(emoji);
     playerRef.current = player;
-    player.mount(host);
+    // 选择器里每个表情各出现一次，静止帧不用图：每张不同的图浏览器都要单独建一个
+    // SVG 文档，48 个一起建，打开选择器就卡一下（见 EmojiPlayer.mount）
+    player.mount(host, { image: false });
     return () => {
       player.stop();
       host.replaceChildren();
@@ -228,8 +264,18 @@ export function EmojiPicker({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [recent] = useState(loadRecent);
-  const [place, setPlace] = useState<Placement | null>(null);
+  // 第一帧就摆在最终位置：入场方向（往上开还是往下开）只在挂载时取一次，得先知道。
+  // 面板尺寸是定的，用常量先算；挂上以后再按量到的尺寸校正（见下面的 layout effect）
+  const [place, setPlace] = useState<Placement>(() =>
+    placePicker(anchor, {
+      width: PANEL_WIDTH,
+      height: PANEL_HEIGHT,
+      grid: GRID_HEIGHT,
+      viewport: viewportSize(),
+    }),
+  );
   const panelRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   /** 这次换当前项是不是键盘干的：键盘走到看不见的格子要滚过去，鼠标悬停不滚（不然边上的格子一碰就跳） */
@@ -255,27 +301,24 @@ export function EmojiPicker({
     option?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
-  // 定位：量出面板尺寸后贴着光标摆，左右夹在窗口里
+  // 校正定位：按量到的面板尺寸重新摆（和常量算的一样就不动）。在绘制之前跑，看不到挪动
   useLayoutEffect(() => {
     const panel = panelRef.current;
-    if (!panel) return;
-    // offsetWidth / offsetHeight 是布局尺寸：入场动画的 scale(0.96) 这时已经挂上了，
-    // 用 getBoundingClientRect 量会小 4%，贴右边、翻到上面时就差出十几像素
-    setPlace(
-      placePicker(anchor, {
-        width: panel.offsetWidth,
-        height: panel.offsetHeight,
-        grid: gridRef.current?.offsetHeight ?? 0,
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-      }),
-    );
+    const content = contentRef.current;
+    if (!panel || !content) return;
+    // 高度量里面的内容：面板自己这时还是入场第一帧那一窄条
+    const measured = placePicker(anchor, {
+      width: panel.offsetWidth,
+      height: content.offsetHeight,
+      grid: gridRef.current?.offsetHeight ?? 0,
+      viewport: viewportSize(),
+    });
+    setPlace((current) => (samePlacement(current, measured) ? current : measured));
   }, [anchor]);
 
-  // 摆好位置之后再聚焦：定位前面板是 visibility: hidden，那时候 focus() 会静默失败
-  const placed = place !== null;
   useEffect(() => {
-    if (placed) inputRef.current?.focus();
-  }, [placed]);
+    inputRef.current?.focus();
+  }, []);
 
   // 点到外面、窗口失焦、页面滚动或缩放：锚点已经不对了，直接收起。
   // 已经在退场的那一个不再监听 —— 否则它会把紧接着新开的选择器也关掉。
@@ -343,123 +386,135 @@ export function EmojiPicker({
 
   let index = -1;
   return (
+    // 从光标那条边展开，里面的字不缩放、不变透明：缩放会让字糊一下再抖一下，半透明会和
+    // 底下的正文叠影，看着像正文跳了一下（见 lib/motion.ts 的 popoverCard）
     <motion.div
       ref={panelRef}
       role="dialog"
       aria-label="插入动态表情"
-      initial={{ opacity: 0, scale: 0.96, y: place?.above ? 6 : -6 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
-      // 退场要快：Esc 之后还挂着半秒会让人以为没关掉
-      exit={{ opacity: 0, scale: 0.98, y: place?.above ? 3 : -3, transition: tween.fast }}
-      transition={spring.snappy}
+      // 第一帧露出贴着光标的那一栏：往下开是搜索栏，往上开是底栏
+      custom={place.above ? FOOTER_HEIGHT : SEARCH_HEIGHT}
+      variants={popoverCard}
+      initial="hidden"
+      animate="shown"
+      exit="gone"
       onKeyDown={onKeyDown}
       style={{
-        left: place?.left ?? anchor.left,
-        top: place?.top ?? anchor.bottom + GAP,
-        visibility: place ? "visible" : "hidden",
-        // 退场中的那一帧帧已经透明了，不能再接点击 —— 否则点在它原来的位置会插进一个表情
+        ...pinnedEdge(anchor, place),
+        // 退场中的那几帧已经在收了，不能再接点击 —— 否则点在它原来的位置会插进一个表情
         pointerEvents: present ? undefined : "none",
-        transformOrigin: place?.above ? "18px 100%" : "18px 0",
       }}
-      className="otw-emoji-picker fixed z-50 w-[292px] overflow-hidden rounded-xl bg-canvas
-                 shadow-float ring-1 ring-line-strong"
+      // overflow-clip 而不是 hidden：hidden 还是个滚动容器，展开途中键盘走到还没露出来的
+      // 格子，scrollIntoView 会把整个面板的内容卷上去
+      className={cn(
+        "otw-emoji-picker fixed z-50 flex w-[292px] flex-col overflow-clip rounded-xl bg-canvas",
+        "shadow-float ring-1 ring-line-strong",
+        place.above && "justify-end",
+      )}
     >
-      <div className="flex h-[42px] items-center gap-2 border-b border-line px-3">
-        <Search size={14} strokeWidth={2} className="shrink-0 text-faint" />
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索表情，如 冲 / huo / fire"
-          aria-label="搜索动态表情"
-          role="combobox"
-          aria-expanded="true"
-          aria-controls="otw-emoji-grid"
-          aria-activedescendant={current ? `otw-emoji-${current.id}-${active}` : undefined}
-          spellCheck={false}
-          className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none
+      <div ref={contentRef} className="shrink-0">
+        <div className="flex h-[42px] items-center gap-2 border-b border-line px-3">
+          <Search size={14} strokeWidth={2} className="shrink-0 text-faint" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索表情，如 冲 / huo / fire"
+            aria-label="搜索动态表情"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="otw-emoji-grid"
+            aria-activedescendant={current ? `otw-emoji-${current.id}-${active}` : undefined}
+            spellCheck={false}
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none
                      placeholder:text-faint"
-        />
-      </div>
+          />
+        </div>
 
-      <div
-        ref={gridRef}
-        id="otw-emoji-grid"
-        style={place?.gridMax ? { maxHeight: place.gridMax } : undefined}
-        role="listbox"
-        aria-label="动态表情"
-        // 焦点始终留在输入框里（aria-activedescendant 指向当前格），这里只是满足 listbox 可聚焦
-        tabIndex={-1}
-        // 八组 + 最近使用一屏放不下：网格限高滚动，露出半行提示下面还有
-        className="scroll-thin max-h-[322px] overflow-y-auto overscroll-contain px-2 pb-1.5 pt-1"
-      >
-        {sections.length === 0 ? (
-          <p className="px-2 py-8 text-center text-[12.5px] text-muted">
-            没有找到「{query.trim()}」
-          </p>
-        ) : (
-          sections.map((section) => (
-            <div key={section.id} role="group" aria-label={section.label}>
-              <p className="px-1.5 pb-0.5 pt-1.5 text-[10.5px] font-medium tracking-[0.05em] text-faint">
-                {section.label}
-              </p>
-              <div className="grid grid-cols-6">
-                {section.items.map((emoji) => {
-                  index += 1;
-                  const itemIndex = index;
-                  const selected = itemIndex === active;
-                  return (
-                    <button
-                      key={`${section.id}-${emoji.id}`}
-                      id={`otw-emoji-${emoji.id}-${itemIndex}`}
-                      type="button"
-                      role="option"
-                      aria-selected={selected}
-                      aria-label={emoji.name}
-                      title={`${emoji.name}  ${emoji.shortcode}`}
-                      tabIndex={-1}
-                      data-emoji={emoji.id}
-                      // 按下时别把焦点从输入框抢走，键盘还能接着用
-                      onMouseDown={(event) => event.preventDefault()}
-                      onMouseMove={() => {
-                        if (!selected) setActive(itemIndex);
-                      }}
-                      onClick={() => pick(emoji)}
-                      className="relative flex h-[44px] items-center justify-center rounded-lg"
-                    >
-                      {/* 退场时撤掉：带 layoutId 的元素会让 Motion 把整个面板多留一会儿 */}
-                      {selected && present && (
-                        <motion.span
-                          layoutId={layoutIds.emojiCursor}
-                          className="absolute inset-[2px] rounded-lg bg-accent-wash"
-                          transition={spring.snappy}
-                        />
-                      )}
-                      <span
-                        className={cn(
-                          "relative z-10 text-[23px] transition-transform duration-[140ms]",
-                          selected && "scale-[1.12]",
-                        )}
+        <div
+          ref={gridRef}
+          id="otw-emoji-grid"
+          style={place.gridMax ? { maxHeight: place.gridMax } : undefined}
+          role="listbox"
+          aria-label="动态表情"
+          // 焦点始终留在输入框里（aria-activedescendant 指向当前格），这里只是满足 listbox 可聚焦
+          tabIndex={-1}
+          // 八组 + 最近使用一屏放不下：网格限高滚动，露出半行提示下面还有
+          className="scroll-thin max-h-[322px] overflow-y-auto overscroll-contain px-2 pb-1.5 pt-1"
+        >
+          {sections.length === 0 ? (
+            <p className="px-2 py-8 text-center text-[12.5px] text-muted">
+              没有找到「{query.trim()}」
+            </p>
+          ) : (
+            sections.map((section) => (
+              <div key={section.id} role="group" aria-label={section.label}>
+                <p className="px-1.5 pb-0.5 pt-1.5 text-[10.5px] font-medium tracking-[0.05em] text-faint">
+                  {section.label}
+                </p>
+                <div className="grid grid-cols-6">
+                  {section.items.map((emoji) => {
+                    index += 1;
+                    const itemIndex = index;
+                    const selected = itemIndex === active;
+                    return (
+                      <button
+                        key={`${section.id}-${emoji.id}`}
+                        id={`otw-emoji-${emoji.id}-${itemIndex}`}
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        aria-label={emoji.name}
+                        title={`${emoji.name}  ${emoji.shortcode}`}
+                        tabIndex={-1}
+                        data-emoji={emoji.id}
+                        // 按下时别把焦点从输入框抢走，键盘还能接着用
+                        onMouseDown={(event) => event.preventDefault()}
+                        onMouseMove={() => {
+                          if (!selected) setActive(itemIndex);
+                        }}
+                        onClick={() => pick(emoji)}
+                        className="relative flex h-[44px] items-center justify-center rounded-lg"
                       >
-                        <EmojiGlyph emoji={emoji} active={selected} />
-                      </span>
-                    </button>
-                  );
-                })}
+                        {/* 退场时撤掉：带 layoutId 的元素会让 Motion 把整个面板多留一会儿 */}
+                        {selected && present && (
+                          <motion.span
+                            layoutId={layoutIds.emojiCursor}
+                            className="absolute inset-[2px] rounded-lg bg-accent-wash"
+                            transition={spring.snappy}
+                          />
+                        )}
+                        <span
+                          className={cn(
+                            "relative z-10 text-[23px] transition-transform duration-[140ms]",
+                            selected && "scale-[1.12]",
+                          )}
+                        >
+                          <EmojiGlyph emoji={emoji} active={selected} />
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ))
-        )}
-      </div>
+            ))
+          )}
+        </div>
 
-      <div className="flex h-[34px] items-center gap-2 border-t border-line px-3 text-[11px] text-faint">
-        {current ? (
-          <>
-            <span className="truncate font-medium text-body">{current.name}</span>
-            <span className="truncate font-mono text-[10.5px]">{current.shortcode}</span>
-          </>
-        ) : null}
-        <span className="ml-auto shrink-0">↵ 插入 · Esc 关闭 · {shortcut("E")}</span>
+        <div className="flex h-[34px] items-center gap-2 border-t border-line px-3 text-[11px] text-faint">
+          {current ? (
+            <>
+              <span className="truncate font-medium text-body">{current.name}</span>
+              <span className="truncate font-mono text-[10.5px]">{current.shortcode}</span>
+            </>
+          ) : null}
+          {/* 回车画成图标，不用 ↵：正文字体里没有这个字，第一次画它浏览器要把系统字体
+            挨个找一遍（装的字体越多越慢），打开选择器就卡在这一下 */}
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            <CornerDownLeft size={10.5} strokeWidth={2} aria-label="回车" />
+            插入 · Esc 关闭 · {shortcut("E")}
+          </span>
+        </div>
       </div>
     </motion.div>
   );

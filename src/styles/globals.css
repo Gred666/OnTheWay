@@ -19,6 +19,9 @@
   --color-raised: #e5e5df; /* 导航选中、hover 实心 */
   --color-line: #f1f1ee; /* 分隔线 */
   --color-line-strong: #e7e7e1; /* 需要更明显的边界 */
+  /* 没勾上的勾选框、任务圈的轮廓。亮色和 line-strong 一样；暗色单独提亮 ——
+     #35352f 落在 #1e1e1c 上几乎看不见，空的勾选框像是没有 */
+  --color-control-edge: #e7e7e1;
 
   /* ---------- 主色 ---------- */
   --color-accent: #2f63d8;
@@ -89,6 +92,7 @@
     --color-raised: #2b2b28;
     --color-line: #2a2a27;
     --color-line-strong: #35352f;
+    --color-control-edge: #4c4c45;
 
     --color-accent: #6b93f0;
     --color-accent-hover: #82a4f4;
@@ -122,6 +126,7 @@
   --color-raised: #2b2b28;
   --color-line: #2a2a27;
   --color-line-strong: #35352f;
+  --color-control-edge: #4c4c45;
 
   --color-accent: #6b93f0;
   --color-accent-hover: #82a4f4;
@@ -540,26 +545,20 @@ body {
 }
 
 /* ------------------------------------------------------------
-   下拉菜单（ActionMenu）的进出场
+   下拉菜单（ActionMenu）的进出场：只淡入淡出，不缩放、不位移
 
-   用 CSS 关键帧而不是 Motion：Motion 动 scale / y 是逐帧用 JS 写
-   style.transform，Chromium 看到的只是「transform 又变了」，每一帧都
-   按新的缩放重新栅格化一遍 —— 文字在动画期间是抖着的、发虚的，停下来
-   才实，看着就是「菜单出来之后又渲染了一下」。CSS 动画由合成器驱动，
-   只按终态 1:1 栅格化一次，前几帧缩小显示的是同一张位图。
+   菜单里全是字。以前起点是 scale 0.96 + 上移 4px：CSS 的 transform 动画
+   在合成器上跑，整块菜单被当成一张位图去缩放、平移，动画那 160ms 里字是
+   发虚的（灰度抗锯齿 + 重采样），结束那一帧回到正常绘制，字一下变清楚 ——
+   「先糊、再抖一下」。去掉缩放只留位移也一样（1.5 倍屏十倍慢放逐帧确认过），
+   只动 opacity 的那一版从头到尾和最终画面一致。
 
    收起靠 Radix 自己的 Presence：data-state 翻到 closed 时它读到
    animation-name 变了，就等 animationend 再卸载。所以进出场必须是
    **两个不同名字**的动画。
-
-   起点 scale 0.96 + 上移 4px，从触发器那一角（transform-origin 由 Radix
-   算好）长出来；160ms，前快后缓。收起 100ms 淡掉、微微缩回。
    ------------------------------------------------------------ */
-.otw-menu {
-  transform-origin: var(--radix-dropdown-menu-content-transform-origin);
-}
 .otw-menu[data-state="open"] {
-  animation: otw-menu-in 160ms var(--ease-out-quint) both;
+  animation: otw-menu-in 140ms var(--ease-out-quint) both;
 }
 .otw-menu[data-state="closed"] {
   animation: otw-menu-out 100ms var(--ease-in-out-sub) both;
@@ -567,13 +566,11 @@ body {
 @keyframes otw-menu-in {
   from {
     opacity: 0;
-    transform: translateY(-4px) scale(0.96);
   }
 }
 @keyframes otw-menu-out {
   to {
     opacity: 0;
-    transform: translateY(-2px) scale(0.98);
   }
 }
 
@@ -646,7 +643,7 @@ body {
   color: var(--color-body);
   font-family: var(--font-sans);
   font-size: 17px;
-  line-height: 1.82;
+  line-height: 1.4;
   letter-spacing: 0.012em;
 }
 
@@ -654,9 +651,14 @@ body {
   outline: none;
 }
 
+/* 正文行高 1.4（17px 字一行 23.8px）。以前 .cm-editor 上写的是 1.82，但 CodeMirror 自带
+   主题给 .cm-scroller 写了 1.4，正文其实一直按 1.4 排；习惯了这个密度，就定成 1.4
+   （2026-10-06）。写在这里，免得再有人照着 1.82 去算留白（自带主题插在 <head> 最前面，
+   同样特异度时这里的规则说了算）。行内带底色的样式上下不能加 padding，见 .cm-otw-wikilink */
 .otw-editor .cm-scroller {
   overflow: visible;
   font-family: inherit;
+  line-height: 1.4;
 }
 
 .otw-editor .cm-content {
@@ -693,6 +695,20 @@ body {
 .otw-editor .cm-selectionBackground,
 .otw-editor .cm-content ::selection {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent) !important;
+}
+
+/* 空的某一天 / 某个周期：「…或输入 /模板 从模板开始」（editor/templates.ts） */
+.otw-editor .cm-placeholder {
+  color: var(--color-faint);
+}
+
+/* ---------- 模板选择器（editor/TemplatePicker.tsx）----------
+   右边的缩略预览是一页纸，底部渐隐：模板比预览区长，截断处不该是一条硬边。 */
+.otw-template-sheet {
+  mask-image: linear-gradient(to bottom, #000 72%, transparent);
+}
+.otw-template-sheet input[type="checkbox"] {
+  pointer-events: none;
 }
 
 /* ---------- 光标（editor/smoothCaret.ts）----------
@@ -732,6 +748,27 @@ body {
 .otw-editor .otw-caret.is-secondary {
   opacity: 0.55;
 }
+/* 拖文件进编辑器时会插在哪：一条主色竖线（editor/attachments.ts）。本身零宽，
+   竖线画在伪元素上，拖动时正文一个像素都不挪 */
+.otw-editor .cm-otw-drop-caret {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: 1em;
+  vertical-align: text-top;
+  pointer-events: none;
+}
+.otw-editor .cm-otw-drop-caret::after {
+  content: "";
+  position: absolute;
+  top: -0.12em;
+  left: -1px;
+  width: 2px;
+  height: 1.3em;
+  border-radius: 1px;
+  background: var(--color-accent);
+}
+
 /* 两份一样的关键帧：换名字才能让已经放过的动画重新开始 */
 @keyframes otw-caret-blink {
   0%,
@@ -857,7 +894,8 @@ body {
 /* 标题行里 CodeMirror 的光标占位图片（隐藏的 `## ` 两侧各一个 img.cm-widgetBuffer，
    1em 高、text-top 对齐）会顶出标题偏紧的行高（1.225），把这一行撑高 5–7px；
    光标一放上去 `##` 露出来、占位图片消失，这一行缩回去，下面整篇跟着往上跳。
-   贴着行顶对齐就撑不出去了。正文行高宽松（1.82），同样的占位图片撑不动，不用管。 */
+   贴着行顶对齐就撑不出去了。正文里 1em 高的占位图片矮于字体框（17px 字的字体框约 22px，
+   编辑器实际行高 1.4 = 23.8px，见 .cm-otw-wikilink 的注释），撑不动，不用管。 */
 .otw-editor
   :is(.cm-otw-h1, .cm-otw-h2, .cm-otw-h3, .cm-otw-h4, .cm-otw-h5, .cm-otw-h6)
   .cm-widgetBuffer {
@@ -869,7 +907,9 @@ body {
 .otw-editor .cm-otw-syntax-marker {
   color: var(--color-faint);
   font-size: 0.78em;
-  white-space: nowrap;
+  /* 能折行：光标进到链接 / 图片里时，`(…)` 里的地址也是标记，长地址不折行会把整栏撑宽、
+     后面的字被裁掉。短标记（`**`、`[`）没有可断的地方，照样不会被拆开 */
+  overflow-wrap: anywhere;
   vertical-align: 0.08em;
   animation: otw-fade-in 160ms var(--ease-out-quint) both;
 }
@@ -1032,11 +1072,14 @@ body {
   cursor: pointer;
 }
 
-/* [[双链]]：和只读排版里的 .otw-wikilink 同一副样子 */
+/* [[双链]]：和只读排版里的 .otw-wikilink 同一副样子。
+   上下不留 padding：编辑器里一行只有 23.8px 高（正文行高 1.4，见 .cm-scroller），
+   字体框已经占了 22px，再加上下 0.08em，底色就冒出这一行 1.36px，
+   盖住上一行链接的下划线（后面的行画在前面的行上面）。 */
 .otw-editor .cm-otw-wikilink {
   color: var(--color-ink);
   background: var(--color-accent-wash);
-  padding: 0.08em 0.32em;
+  padding: 0 0.32em;
   border-radius: var(--radius-xs);
   border-bottom: 1px solid var(--color-accent-line);
   transition: background-color var(--duration-fast) var(--ease-out-quint), border-color
@@ -1225,7 +1268,7 @@ body {
 
 /* ---------- 悬停卡片（editor/hoverCard.ts）：脚注预览、缩写全称 ----------
    挂在 body 上、fixed 定位，不在 .otw-editor 里面，所以选择器不带前缀。
-   贴在目标上方（放不下才在下方），从目标那一侧轻轻浮出来。 */
+   贴在目标上方（放不下才在下方），淡入淡出。 */
 .otw-hovercard {
   position: fixed;
   z-index: 60;
@@ -1243,12 +1286,9 @@ body {
   letter-spacing: 0.01em;
   pointer-events: none;
   user-select: none;
-  transform-origin: 50% 100%;
-  animation: otw-hovercard-in 150ms var(--ease-out-quint) both;
-}
-.otw-hovercard.is-below {
-  transform-origin: 50% 0;
-  animation-name: otw-hovercard-in-below;
+  /* 只淡入，不缩放、不位移：卡片里是字，transform 动画会让字发虚、结束时再跳清楚
+     （同 .otw-menu） */
+  animation: otw-hovercard-in 140ms var(--ease-out-quint) both;
 }
 .otw-hovercard.is-leaving {
   animation: otw-hovercard-out 100ms var(--ease-in-out-sub) both;
@@ -1275,19 +1315,11 @@ body {
 @keyframes otw-hovercard-in {
   from {
     opacity: 0;
-    transform: translateY(3px) scale(0.98);
-  }
-}
-@keyframes otw-hovercard-in-below {
-  from {
-    opacity: 0;
-    transform: translateY(-3px) scale(0.98);
   }
 }
 @keyframes otw-hovercard-out {
   to {
     opacity: 0;
-    transform: scale(0.98);
   }
 }
 
@@ -1851,7 +1883,9 @@ body {
   opacity: 0.35;
   cursor: default;
 }
-.otw-editor .cm-otw-table-tools button:is([data-action="row-delete"], [data-action="col-delete"]):hover:not(:disabled) {
+.otw-editor
+  .cm-otw-table-tools
+  button:is([data-action="row-delete"], [data-action="col-delete"]):hover:not(:disabled) {
   background: color-mix(in srgb, var(--color-danger) 10%, transparent);
   color: var(--color-danger);
 }
@@ -1914,7 +1948,7 @@ body {
   height: 16px;
   margin: 0 0.42em 0 0.1em;
   place-items: center;
-  border: 1.5px solid var(--color-line-strong);
+  border: 1.5px solid var(--color-control-edge);
   border-radius: 4px;
   color: var(--color-accent-ink);
   line-height: 1;

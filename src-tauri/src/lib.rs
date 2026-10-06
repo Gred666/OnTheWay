@@ -120,6 +120,9 @@ fn command_builder() -> Builder<tauri::Wry> {
         commands::vault_reveal,
         commands::vault_open_folder,
         commands::vault_keep_conflict_copy,
+        commands::note_backlinks,
+        commands::vault_attach,
+        commands::vault_attach_path,
         commands::vault_change_root::<tauri::Wry>,
     ])
     .events(collect_events![commands::VaultChanged])
@@ -152,6 +155,9 @@ pub fn export_typescript_bindings(path: impl AsRef<std::path::Path>) {
         commands::vault_reveal,
         commands::vault_open_folder,
         commands::vault_keep_conflict_copy,
+        commands::note_backlinks,
+        commands::vault_attach,
+        commands::vault_attach_path,
         commands::vault_change_root::<tauri::test::MockRuntime>,
     ])
     .events(collect_events![commands::VaultChanged]);

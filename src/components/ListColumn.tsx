@@ -33,9 +33,10 @@ export function ListColumn({
             {title}
           </motion.h2>
           {action && (
+            // 只淡入不缩放：按钮里可能是字（日历的「今天」），缩放会让字先糊、停下时再跳清楚
             <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
               transition={{ ...tween.base, delay: 0.06 }}
               className="shrink-0"
             >
