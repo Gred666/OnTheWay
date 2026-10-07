@@ -1,0 +1,145 @@
+<!doctype html>
+<!-- 模板：python design/logo/gen.py 把下面的占位注释换成对应的 SVG / PNG，写出 preview.html -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OnTheWay Logo</title>
+<style>
+  :root {
+    --ink: #1a1a18; --body: #353532; --muted: #74746e; --faint: #a3a39b;
+    --canvas: #ffffff; --rail: #f1f1ed; --line: #e7e7e1;
+    --color-accent: #2f63d8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--rail); color: var(--body);
+    font: 15px/1.65 Inter, "Segoe UI Variable Display", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 56px 16px 96px; }
+  h1 { margin: 0; color: var(--ink); font-size: 30px; letter-spacing: -0.015em; }
+  h2 { margin: 0 0 18px; color: var(--muted); font-size: 12px; letter-spacing: 0.12em; font-weight: 600; }
+  section { margin-top: 64px; }
+  .lead { color: var(--muted); margin: 4px 0 0; }
+  .card { background: var(--canvas); border-radius: 18px; padding: 32px; }
+  .dk { background: #1e1e1c; color: #eeeee9; --color-accent: #6b93f0; }
+
+  .hero { display: grid; grid-template-columns: minmax(0, 340px) 1fr; gap: 56px; align-items: center; margin-top: 36px; }
+  .hero .art { aspect-ratio: 1; }
+  .meaning { display: grid; gap: 22px; }
+  .meaning div { border-left: 2px solid var(--line); padding-left: 16px; }
+  .meaning b { color: var(--ink); display: block; font-size: 16px; }
+  .meaning span { color: var(--muted); }
+  .tokens { display: flex; gap: 16px; flex-wrap: wrap; }
+  .tokens span { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); font-family: "JetBrains Mono", Consolas, monospace; }
+  .tokens i { width: 14px; height: 14px; border-radius: 4px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / .1); }
+
+  .trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .trio .card { display: grid; justify-items: center; gap: 14px; padding: 36px 24px 22px; }
+  .trio .art { width: min(180px, 100%); aspect-ratio: 1; }
+  .trio small { color: var(--muted); font-size: 12px; }
+  .trio .dk small { color: #8d8d85; }
+
+  .ladder { display: flex; align-items: flex-end; gap: 28px; flex-wrap: wrap; }
+  figure { margin: 0; display: grid; justify-items: center; gap: 10px; }
+  figcaption { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .note { font-size: 13px; color: var(--muted); margin: 20px 0 0; }
+
+  .bars { display: grid; gap: 14px; }
+  .taskbar { height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; gap: 4px; }
+  .taskbar span { width: 40px; height: 40px; border-radius: 6px; display: grid; place-items: center; position: relative; }
+  .taskbar span:empty::before { content: ""; width: 22px; height: 22px; border-radius: 6px; background: currentColor; opacity: .18; }
+  .taskbar .on { background: rgb(128 128 128 / .14); }
+  .taskbar .on::after { content: ""; position: absolute; bottom: 2px; width: 16px; height: 3px; border-radius: 2px; background: var(--color-accent); }
+  .tb-light { background: #eeeef0; color: #333; }
+  .tb-dark { background: #202020; color: #ddd; --color-accent: #6b93f0; }
+  .dock { height: 120px; border-radius: 18px; background: linear-gradient(160deg, #c7d3e8, #eadfd2); display: grid; place-items: center; }
+  .shelf { display: flex; gap: 4px; padding: 6px 8px; border-radius: 22px; background: rgb(255 255 255 / .4); box-shadow: inset 0 0 0 1px rgb(255 255 255 / .55); }
+  .shelf span { width: 72px; height: 72px; display: grid; place-items: center; }
+  .shelf span:empty::before { content: ""; width: 59px; height: 59px; border-radius: 14px; background: rgb(255 255 255 / .6); }
+
+  .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .duo .card { display: grid; place-items: center; height: 180px; color: var(--ink); }
+  .duo .card.dk { color: #eeeee9; }
+  .duo svg { height: 56px; width: auto; max-width: 100%; overflow: visible; }
+
+  .marks { display: flex; gap: 40px; align-items: center; flex-wrap: wrap; }
+  .marks .m { display: block; width: 64px; height: 64px; color: var(--ink); }
+  .marks .m.s { width: 22px; height: 22px; }
+  .marks .dk { border-radius: 14px; padding: 18px; }
+  .marks .dk .m { color: #eeeee9; }
+  .marks svg { width: 100%; height: 100%; display: block; }
+
+  @media (max-width: 760px) {
+    .hero, .duo, .trio { grid-template-columns: 1fr; }
+    .hero { gap: 32px; }
+    .hero .art { max-width: 260px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>OnTheWay</h1>
+  <p class="lead">应用图标 · 还在路上的一个「O」</p>
+
+  <div class="hero">
+    <div class="art"><!--hero--></div>
+    <div class="meaning">
+      <div><b>一笔写成的「O」</b><span>OnTheWay 的首字母，和侧栏里的手写字标是同一种笔迹。粗细按平头笔算出来：左下落笔重，右上收笔轻。</span></div>
+      <div><b>一圈</b><span>一天、一周、一年：日历和 GOAL 的周期，也是每次复盘绕回来的那一圈。</span></div>
+      <div><b>没合上，缺口里一个蓝点</b><span>这一圈还没走完，蓝点是「你现在在这儿」。主色 #2F63D8 在整个图标里只用在这一个点上，和应用里一样克制。</span></div>
+      <div class="tokens">
+        <span><i style="background:linear-gradient(#fdfdfb,#ecece6)"></i>纸 #FDFDFB → #ECECE6</span>
+        <span><i style="background:#1a1a18"></i>墨 #1A1A18</span>
+        <span><i style="background:#2f63d8"></i>主色 #2F63D8</span>
+      </div>
+    </div>
+  </div>
+
+  <section>
+    <h2>版本</h2>
+    <div class="trio">
+      <div class="card"><div class="art"><!--hero--></div><small>纸 · 主图标（Windows / Linux）</small></div>
+      <div class="card dk"><div class="art"><!--dark--></div><small>墨 · 暗色版</small></div>
+      <div class="card"><div class="art"><!--mac--></div><small>macOS 网格：留边 + 投影</small></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>尺寸</h2>
+    <div class="card">
+      <div class="ladder"><!--ladder--></div>
+      <p class="note">32px 及以下不是直接缩小，而是单独重画的：线条加粗、去掉粗细变化、圆圈放大一点，不然在任务栏里只剩一个灰圈。icon.ico 里打包的就是这几张。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>在系统里</h2>
+    <div class="bars">
+      <div class="taskbar tb-light"><span></span><span></span><span class="on"><!--task-paper--></span><span></span><span></span></div>
+      <div class="taskbar tb-dark"><span></span><span></span><span class="on"><!--task-paper--></span><span></span><span></span></div>
+      <div class="taskbar tb-dark"><span></span><span></span><span class="on"><!--task-ink--></span><span></span><span></span></div>
+      <div class="dock"><div class="shelf"><span></span><span></span><span><!--mac--></span><span></span><span></span></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>和字标组合</h2>
+    <div class="duo">
+      <div class="card"><!--lockup--></div>
+      <div class="card dk"><!--lockup--></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>单独的标记</h2>
+    <div class="card marks">
+      <span class="m"><!--mark--></span>
+      <span class="m s"><!--mark--></span>
+      <span class="dk"><span class="m"><!--mark--></span></span>
+    </div>
+    <p class="note">墨色用 currentColor，蓝点用 --color-accent，放进应用里会跟着暗色模式一起换。浏览器标签页的 favicon.svg 用的是加粗版。</p>
+  </section>
+</main>
+</body>
+</html>
