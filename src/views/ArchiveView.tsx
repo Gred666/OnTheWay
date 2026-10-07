@@ -1,15 +1,17 @@
+import { selectNeighbor } from "@/app/navigate";
 import { useApp } from "@/app/store";
 import { ListColumn } from "@/components/ListColumn";
 import { SearchInput } from "@/components/SearchInput";
+import { useData } from "@/data/store";
 import type { Note } from "@/data/types";
 import { cn } from "@/lib/cn";
 import { formatSmartCN, toISODate } from "@/lib/date";
 import { animatedEmojiText } from "@/lib/emojiText";
 import { spring, tween } from "@/lib/motion";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, Trash2 } from "lucide-react";
 import { motion } from "motion/react";
 import { useEffect, useMemo } from "react";
-import { ConflictTag, EmptyResult } from "./NotesView";
+import { ConflictTag, EmptyResult, useListTitle } from "./NotesView";
 
 export function ArchiveList({
   items,
@@ -22,9 +24,10 @@ export function ArchiveList({
   const selectArchive = useApp((s) => s.selectArchive);
   const query = useApp((s) => s.archiveQuery);
   const setQuery = useApp((s) => s.setArchiveQuery);
+  const deleteNote = useData((s) => s.deleteNote);
 
-  // 同 NotesList：选中的那条被恢复走了（或初始 id 不存在），正文退到第一条，
-  // 列表高亮也跟过去。
+  // 同 NotesList：选中的那条在别处没了（或上次看的那条已经不在），正文退到第一条，
+  // 列表高亮也跟过去。从这里恢复 / 删除的已经先挪到了下一条（selectNeighbor）
   useEffect(() => {
     if (items.length === 0 || items.some((n) => n.id === selectedId)) return;
     selectArchive(items[0]!.id);
@@ -62,7 +65,15 @@ export function ArchiveList({
               divided={i > 0}
               selected={n.id === selectedId}
               onSelect={() => selectArchive(n.id)}
-              onRestore={() => onRestore(n.id)}
+              // 正在看的这篇走了：选中先挪到下一篇（app/navigate 的 selectNeighbor）
+              onRestore={() => {
+                selectNeighbor(n.id);
+                onRestore(n.id);
+              }}
+              onDelete={() => {
+                selectNeighbor(n.id);
+                void deleteNote(n.id);
+              }}
             />
           ))}
         </div>
@@ -78,6 +89,7 @@ function ArchiveCard({
   selected,
   onSelect,
   onRestore,
+  onDelete,
 }: {
   note: Note;
   index: number;
@@ -85,8 +97,10 @@ function ArchiveCard({
   selected: boolean;
   onSelect: () => void;
   onRestore: () => void;
+  onDelete: () => void;
 }) {
   const dateLabel = note.archivedAt ? formatSmartCN(toISODate(new Date(note.archivedAt))) : "";
+  const title = useListTitle(note);
 
   return (
     <motion.div
@@ -95,6 +109,7 @@ function ArchiveCard({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: -12, transition: tween.fast }}
       transition={{ ...tween.base, delay: Math.min(index, 9) * 0.028 }}
+      data-note-row={note.id}
       className={cn(
         "group relative",
         divided && "before:absolute before:inset-x-3 before:top-0 before:h-px before:bg-line",
@@ -103,7 +118,7 @@ function ArchiveCard({
       <button
         type="button"
         onClick={onSelect}
-        className="relative w-full rounded-lg px-3 py-3 pr-9 text-left"
+        className="relative w-full rounded-lg px-3 py-3 pr-14 text-left"
       >
         {selected && (
           <motion.span
@@ -124,10 +139,10 @@ function ArchiveCard({
           <span className="min-w-0 flex-1">
             {/* 同 NotesView：标题单行，超出用省略号 */}
             <span className="block truncate text-[13.5px] font-semibold leading-[1.45] text-ink/90">
-              {note.title}
+              {title}
             </span>
             <span className="mt-[3px] block truncate text-[11.5px] leading-[1.45] text-muted">
-              {note.conflictOf && <ConflictTag />}
+              {note.conflictOf && <ConflictTag title={note.title} />}
               {animatedEmojiText(note.excerpt)}
             </span>
             <span className="mt-[5px] flex items-center gap-1.5 text-[10.5px] text-faint">
@@ -139,23 +154,37 @@ function ArchiveCard({
         </span>
       </button>
 
-      {/* 恢复按钮：悬停旋转一圈，是「转回去」的直观隐喻 */}
-      <motion.button
-        type="button"
-        aria-label={`恢复「${note.title}」`}
-        title="恢复到笔记"
-        onClick={onRestore}
-        whileHover={{ rotate: -150 }}
-        whileTap={{ scale: 0.85, rotate: -300 }}
-        transition={spring.smooth}
-        className={cn(
-          "absolute right-3 top-[11px] z-20 grid h-5 w-5 place-items-center rounded",
-          "transition-opacity duration-[150ms] hover:text-accent",
-          selected ? "text-accent opacity-100" : "text-faint opacity-0 group-hover:opacity-100",
-        )}
-      >
-        <RotateCcw size={12.5} strokeWidth={2} />
-      </motion.button>
+      {/* 右上角两个按钮：删除（悬停才出现）、恢复（选中时常亮）。
+          以前只有恢复 —— 归档里的笔记删不掉，得先恢复出来再删 */}
+      <div className="absolute right-3 top-[11px] z-20 flex items-center gap-1">
+        <button
+          type="button"
+          aria-label={`删除「${title}」`}
+          title="删除（可以撤销）"
+          onClick={onDelete}
+          className="grid h-5 w-5 place-items-center rounded text-faint opacity-0 transition-[opacity,color]
+                     duration-[150ms] hover:text-danger focus-visible:opacity-100 group-hover:opacity-100"
+        >
+          <Trash2 size={12} strokeWidth={2} />
+        </button>
+        {/* 恢复按钮：悬停旋转一圈，是「转回去」的直观隐喻 */}
+        <motion.button
+          type="button"
+          aria-label={`恢复「${title}」`}
+          title="恢复到笔记"
+          onClick={onRestore}
+          whileHover={{ rotate: -150 }}
+          whileTap={{ scale: 0.85, rotate: -300 }}
+          transition={spring.smooth}
+          className={cn(
+            "grid h-5 w-5 place-items-center rounded",
+            "transition-opacity duration-[150ms] hover:text-accent focus-visible:opacity-100",
+            selected ? "text-accent opacity-100" : "text-faint opacity-0 group-hover:opacity-100",
+          )}
+        >
+          <RotateCcw size={12.5} strokeWidth={2} />
+        </motion.button>
+      </div>
     </motion.div>
   );
 }

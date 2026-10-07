@@ -2,13 +2,31 @@ import { type ISODate, today } from "@/lib/date";
 import { isTauri } from "@/lib/tauri";
 import { create } from "zustand";
 import { backend } from "./backend";
+import { conflictOriginalContent, conflictOriginalTitle, conflictTarget } from "./conflicts";
 import {
+  cleanFolderName,
+  folderLabel,
+  folderOf,
+  nameOf,
+  parentOf,
+  relPathIn,
+  renamedPath,
+  renamedRelPath,
+  uniqueChild,
+  within,
+} from "./folders";
+import {
+  type CalendarMarks,
   type DayDoc,
   type DocumentSaveTarget,
+  type FolderDeletion,
   type Goal,
   type GoalHorizon,
+  type JournalDoc,
   type Note,
+  SYNC_OFF,
   type SearchResult,
+  type SyncStatus,
   type Task,
   type VaultChange,
   goalKey,
@@ -25,7 +43,16 @@ interface DataState {
    * 今天还没写过时后端会把之前最近一天延续过来（carriedFrom），用户一编辑才落库。
    */
   dayDocs: DayDoc[];
-  markedDates: Set<string>;
+  /** 日历月网格上的记号：写过记录 / 做过事的日子，还有待办的日子 */
+  marks: CalendarMarks;
+  /** 重新取一次日历记号（勾了任务、别处改了带日期的任务） */
+  refreshMarks: () => Promise<void>;
+  /**
+   * 所有写过的某一天、某个周期的目标（连同正文）。命令面板打开时取一次，
+   * 搜索时和笔记一起搜；取回来之前是空的。
+   */
+  journal: JournalDoc[];
+  loadJournal: () => Promise<void>;
   /**
    * 仓库文件夹的绝对路径（浏览器预览里是 null）。正文里的相对图片路径（附件）
    * 按「仓库 + 文档所在的文件夹」解析，见 editor/html.ts 的 resolveImageSource。
@@ -52,6 +79,8 @@ interface DataState {
   markConflict: (target: DocumentSaveTarget) => void;
   /** 仓库里别处发生的变化（文件监听、勾任务改了别的文档）：刷新受影响的缓存 */
   applyVaultChange: (change: VaultChange) => Promise<void>;
+  /** 多设备同步的状态（技术方案 §5.9）；没开同步时 state 是 off */
+  syncStatus: SyncStatus;
   /** 在系统的文件管理器里定位这篇文档的文件 */
   revealDocument: (target: DocumentSaveTarget) => Promise<void>;
   openVaultFolder: () => Promise<void>;
@@ -95,28 +124,80 @@ interface DataState {
   forgetCarriedDays: (today: ISODate) => void;
   searchNotes: (query: string) => Promise<SearchResult>;
   saveDocument: (target: DocumentSaveTarget, contentMd: string) => Promise<void>;
-  /** 新建一篇空笔记，返回后端分配的 id；失败返回 null。 */
-  createNote: () => Promise<string | null>;
-  /** 改标题：笔记和某一天都行；GOAL 的标题由周期决定，改不了。 */
+  /** 新建一篇空笔记（放在 folder 里，默认「笔记」本身），返回后端分配的 id；失败返回 null。 */
+  createNote: (folder?: string) => Promise<string | null>;
+  /**
+   * 点了链到还没有的笔记的 `[[标题]]`：新建一篇这个标题的（放在 folder 里），返回它的 id。
+   * 底部提示条可以撤销（直接删掉，不再弹「已删除」）
+   */
+  createLinkedNote: (title: string, folder: string) => Promise<string | null>;
+
+  /* ---- 文件夹：仓库里「笔记」下面的子目录，路径相对「笔记」（见 data/folders.ts） ---- */
+  folders: string[];
+  refreshFolders: () => Promise<void>;
+  /** 新建文件夹，返回它的路径（重名时后端加了序号）；失败返回 null */
+  createFolder: (parent: string, name: string) => Promise<string | null>;
+  /** 改名，返回新路径；失败返回 null。底下笔记的路径跟着换 */
+  renameFolder: (folder: string, name: string) => Promise<string | null>;
+  /** 删除文件夹：里面的笔记进回收站，底部提示条可以撤销 */
+  deleteFolder: (folder: string) => Promise<void>;
+  /** 在系统的文件管理器里打开这个文件夹 */
+  revealFolder: (folder: string) => Promise<void>;
+  /** 把笔记挪到另一个文件夹，底部提示条可以撤销 */
+  moveNote: (id: string, folder: string) => Promise<void>;
+  /**
+   * 能撤销的上一个操作（移动笔记、删除文件夹、归档、恢复），和 lastDeleted 共用底部那条提示：
+   * 谁后发生显示谁，另一个随之作废。
+   */
+  undoable: {
+    key: string;
+    kind: "move" | "delete" | "archive" | "restore" | "create" | "relink" | "history";
+    message: string;
+    undo: () => Promise<void>;
+    /** 撤销完要打开的笔记（归档 / 恢复撤销后回到那一篇） */
+    reopen?: string;
+  } | null;
+  dismissUndoable: () => void;
+  /**
+   * 改标题：笔记和某一天都行；GOAL 的标题由周期决定，改不了。
+   * 笔记改了标题，别处的 `[[旧标题]]` 随后跟着改成新标题（relinkTitle）
+   */
   saveTitle: (target: DocumentSaveTarget, title: string) => Promise<void>;
+  /**
+   * 笔记改了标题之后：别处链到旧标题的 `[[…]]` 改成新标题，底部提示条可以撤销。
+   * 改不了（新标题写不进双链、和别的笔记重名）时提示一句为什么
+   */
+  relinkTitle: (id: string, oldTitle: string, newTitle: string) => Promise<void>;
+  /**
+   * 把一篇文档的正文换成历史里的某一版（when 是那一版的时间，提示条里说）。
+   * 底部提示条可以撤销：换回恢复之前的正文
+   */
+  restoreVersion: (target: DocumentSaveTarget, body: string, when: string) => Promise<void>;
   toggleTask: (id: string) => Promise<void>;
   togglePin: (id: string) => Promise<void>;
-  archiveNote: (id: string) => Promise<void>;
-  restoreNote: (id: string) => Promise<void>;
+  /** 归档。底部提示条可以撤销；撤销本身（undoable: false）不再给提示条 */
+  archiveNote: (id: string, options?: { undoable?: boolean }) => Promise<void>;
+  /** 从归档恢复到笔记。同上 */
+  restoreNote: (id: string, options?: { undoable?: boolean }) => Promise<void>;
+  /** 删除笔记（归档里的也行），进回收站，底部提示条可以撤销 */
   deleteNote: (id: string) => Promise<void>;
   /**
-   * 刚删掉、还能撤销的那篇笔记，以及它原来在列表里的位置。撤销提示条据此显示；
+   * 刚删掉、还能撤销的那篇笔记，它原来在哪个列表的第几行。撤销提示条据此显示；
    * 只保留最近一篇，提示条消失（dismissUndo）后就不能撤销了。
    */
-  lastDeleted: { note: Note; index: number } | null;
+  lastDeleted: { note: Note; index: number; archived: boolean } | null;
   /** 撤销最近一次删除。成功返回恢复的笔记 id，失败或没有可撤销的返回 null。 */
   undoDelete: () => Promise<string | null>;
   dismissUndo: () => void;
   /**
    * 处理一篇冲突副本：`copy` = 用副本这一版替换原文，然后删掉副本；`original` = 留原文、
-   * 删掉副本。删掉的副本进回收站，撤销提示条照常能撤销。返回原文的 id。
+   * 删掉副本。删掉的副本进回收站，撤销提示条照常能撤销。返回原文（笔记、某一天或目标），
+   * 横幅接着打开它。
    */
-  resolveConflict: (copyId: string, keep: "copy" | "original") => Promise<string | null>;
+  resolveConflict: (
+    copyId: string,
+    keep: "copy" | "original",
+  ) => Promise<DocumentSaveTarget | null>;
 }
 
 /**
@@ -124,7 +205,7 @@ interface DataState {
  * Rust 侧的错误是 `{ kind, message }`，直接 JSON.stringify 会在状态栏里
  * 甩出一坨大括号，得把 message 拆出来。
  */
-const messageOf = (error: unknown): string => {
+export const messageOf = (error: unknown): string => {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   if (error && typeof error === "object" && "message" in error) {
@@ -139,6 +220,24 @@ export const NEW_NOTE_TITLE = "无标题笔记";
 
 const noteOrder = (a: Note, b: Note) =>
   a.isPinned === b.isPinned ? b.updatedAt - a.updatedAt : a.isPinned ? -1 : 1;
+
+/** 日历记号取多大的范围：两个 Set 而已，一次取完比按月分页省事 */
+const MARKS_FROM = "2000-01-01";
+const MARKS_TO = "2100-12-31";
+
+const isDone = (task: Task) => task.status === "done";
+
+/** 提示条里的标题：还没起名的显示占位 */
+const titleOf = (note: Note) => note.title.trim() || NEW_NOTE_TITLE;
+
+/** 某一天写没写过记录变了：只动 written，待办那一种等 refreshMarks */
+function withWritten(marks: CalendarMarks, date: string, written: boolean): CalendarMarks {
+  if (marks.written.has(date) === written) return marks;
+  const next = new Set(marks.written);
+  if (written) next.add(date);
+  else next.delete(date);
+  return { ...marks, written: next };
+}
 
 const withGoal = (goals: Record<string, Goal>, goal: Goal): Record<string, Goal> => ({
   ...goals,
@@ -171,6 +270,7 @@ function patchTask(state: DataState, id: string, task: Task): Partial<DataState>
 let initializePromise: Promise<void> | null = null;
 /** 仓库变化的订阅只装一次（initialize 失败重试时不重复装） */
 let vaultSubscription: Promise<() => void> | null = null;
+let syncSubscriptions: Promise<(() => void)[]> | null = null;
 
 const isNotFound = (error: unknown) =>
   !!error && typeof error === "object" && (error as { kind?: unknown }).kind === "NotFound";
@@ -205,7 +305,24 @@ export const useData = create<DataState>((set, get) => ({
   tasks: {},
   goals: {},
   dayDocs: [],
-  markedDates: new Set(),
+  marks: { written: new Set(), open: new Set() },
+  refreshMarks: async () => {
+    try {
+      const marks = await (await backend()).calendarMarks(MARKS_FROM, MARKS_TO);
+      set({ marks });
+    } catch (error) {
+      set({ error: messageOf(error) });
+    }
+  },
+  journal: [],
+  loadJournal: async () => {
+    try {
+      const journal = await (await backend()).journalList();
+      set({ journal });
+    } catch {
+      // 取不到就只搜笔记：命令面板里的附加结果，不该为它弹错误提示
+    }
+  },
   vaultRoot: null,
   initialized: false,
   loading: false,
@@ -214,6 +331,7 @@ export const useData = create<DataState>((set, get) => ({
   notice: null,
   clearNotice: () => set({ notice: null }),
   externalRevisions: {},
+  syncStatus: SYNC_OFF,
   conflicts: new Set(),
   markConflict: (target) =>
     set((state) => ({ conflicts: new Set(state.conflicts).add(saveKeyOf(target)) })),
@@ -226,7 +344,7 @@ export const useData = create<DataState>((set, get) => ({
       });
     } else if (change.foundCopies?.length) {
       set({
-        notice: `网盘同步时两边都改过，留下了冲突副本「${change.foundCopies.join("」「")}」—— 打开它，选一版留下`,
+        notice: `同步时两边都改过，留下了冲突副本「${change.foundCopies.join("」「")}」—— 打开它，选一版留下`,
       });
     }
 
@@ -312,14 +430,9 @@ export const useData = create<DataState>((set, get) => ({
       }
     }
 
-    if (change.tasks) {
-      try {
-        const marked = await api.calendarMarked("2000-01-01", "2100-12-31");
-        set({ markedDates: new Set(marked) });
-      } catch (error) {
-        set({ error: messageOf(error) });
-      }
-    }
+    if (change.tasks) await get().refreshMarks();
+
+    if (change.folders) await get().refreshFolders();
   },
 
   revealDocument: async (target) => {
@@ -373,10 +486,14 @@ export const useData = create<DataState>((set, get) => ({
         const api = await backend();
         // 两个列表各一次往返拿回全文。以前是先取摘要列表、再逐篇 noteGet，
         // N 篇笔记就是 N 次 IPC，笔记一多启动就慢。
-        const [notes, archived, marked, info] = await Promise.all([
+        const [notes, archived, folders, marks, info] = await Promise.all([
           api.noteListFull(false),
           api.noteListFull(true),
-          api.calendarMarked("2000-01-01", "2100-12-31"),
+          // 文件夹列表取不到也不耽误启动：笔记都在，只是先全摊在「全部笔记」里
+          Promise.resolve()
+            .then(() => api.folderList())
+            .catch(() => [] as string[]),
+          api.calendarMarks(MARKS_FROM, MARKS_TO),
           // 只要路径（附件的相对路径按它解析）；取不到不耽误启动
           Promise.resolve()
             .then(() => api.vaultInfo())
@@ -387,12 +504,24 @@ export const useData = create<DataState>((set, get) => ({
         vaultSubscription ??= api.onVaultChanged((change) => {
           void get().applyVaultChange(change);
         });
+        // 同步：状态跟着事件走；要告诉用户的话（冲突副本、超限文件没同步）走提示条
+        syncSubscriptions ??= Promise.all([
+          api.onSyncStatus((syncStatus) => set({ syncStatus })),
+          api.onSyncNotice((notice) => set({ notice })),
+        ]);
+        void Promise.resolve()
+          .then(() => api.syncStatus())
+          .then((syncStatus) => set({ syncStatus: syncStatus ?? SYNC_OFF }))
+          .catch(() => {
+            // 取不到就当没开同步
+          });
 
         // 目标和某天的文档都按需取：切到哪个周期 / 哪一天再 loadGoal / loadDay
         set({
           notes: notes.sort(noteOrder),
           archived,
-          markedDates: new Set(marked),
+          folders,
+          marks,
           vaultRoot: isTauri && info ? info.root : null,
           initialized: true,
           loading: false,
@@ -474,10 +603,11 @@ export const useData = create<DataState>((set, get) => ({
         const updated = await (await backend()).calendarDaySave(id, source.title, contentMd);
         set((state) => ({
           dayDocs: withDay(state.dayDocs, updated),
-          markedDates:
-            contentMd.trim() || updated.title || updated.tasks.length > 0
-              ? new Set(state.markedDates).add(id)
-              : new Set([...state.markedDates].filter((date) => date !== id)),
+          marks: withWritten(
+            state.marks,
+            id,
+            !!(contentMd.trim() || updated.title || updated.tasks.some(isDone)),
+          ),
         }));
         return true;
       }
@@ -536,16 +666,12 @@ export const useData = create<DataState>((set, get) => ({
     }
   },
 
-  createNote: async () => {
+  createNote: async (folder = "") => {
     try {
       const api = await backend();
-      // id 传 null 就是新建，真正的 id 由后端分配 —— 所以这里没法乐观更新，
-      // 得等一个来回。新建是个一次性动作，不像输入那样每次按键都要响应。
-      const id = await api.noteUpsert({
-        id: null,
-        title: NEW_NOTE_TITLE,
-        contentMd: "",
-      });
+      // 真正的 id 由后端分配 —— 所以这里没法乐观更新，得等一个来回。
+      // 新建是个一次性动作，不像输入那样每次按键都要响应。
+      const id = await api.noteCreate(folder, NEW_NOTE_TITLE);
       const created = await api.noteGet(id);
       set((state) => ({ notes: [created, ...state.notes].sort(noteOrder), error: null }));
       return id;
@@ -555,10 +681,39 @@ export const useData = create<DataState>((set, get) => ({
     }
   },
 
+  createLinkedNote: async (title, folder) => {
+    const id = await get().createNote(folder);
+    if (!id) return null;
+    try {
+      await get().saveTitle({ kind: "note", id }, title);
+    } catch {
+      // 标题没存上：笔记已经建了，留着「无标题」也能用，错误在状态栏里
+    }
+    set({
+      lastDeleted: null,
+      undoable: {
+        key: `create:${id}:${Date.now()}`,
+        kind: "create",
+        message: `已新建「${title}」`,
+        undo: async () => {
+          set((state) => ({ notes: state.notes.filter((note) => note.id !== id) }));
+          try {
+            await (await backend()).noteDelete(id);
+          } catch (error) {
+            set({ error: messageOf(error) });
+            await get().refreshFolders();
+          }
+        },
+      },
+    });
+    return id;
+  },
+
   saveTitle: async (target, title) => {
     const cleanTitle = title.trim();
     if (!cleanTitle || target.kind === "goal") return;
     const key = saveKeyOf(target);
+    let renamed: { id: string; from: string } | null = null;
 
     // 和正文的保存排在同一条队里，source 在轮到自己时才读（见 serialized）
     const write = async () => {
@@ -571,7 +726,7 @@ export const useData = create<DataState>((set, get) => ({
         const updated = await api.calendarDaySave(target.id, cleanTitle, source.noteMd);
         set((state) => ({
           dayDocs: withDay(state.dayDocs, updated),
-          markedDates: new Set(state.markedDates).add(target.id),
+          marks: withWritten(state.marks, target.id, true),
         }));
         return;
       }
@@ -586,6 +741,8 @@ export const useData = create<DataState>((set, get) => ({
         title: cleanTitle,
         contentMd: source.contentMd,
       });
+      // 刚新建、还没起名的那篇（占位标题）没人会链它
+      if (source.title !== NEW_NOTE_TITLE) renamed = { id, from: source.title };
       const updated = await api.noteGet(id);
       set((state) => ({
         // 同样不重排：改标题时列表在脚下跳一下同样很吓人。
@@ -601,6 +758,70 @@ export const useData = create<DataState>((set, get) => ({
       set({ saveError: { key, message: messageOf(error) } });
       throw error;
     }
+    const done = renamed as { id: string; from: string } | null;
+    if (done) void get().relinkTitle(done.id, done.from, cleanTitle);
+  },
+
+  relinkTitle: async (id, oldTitle, newTitle) => {
+    try {
+      // 别的文档要是还有没存的修改（刚切过来），先存掉：不然晚到的那次保存会把旧链接写回去
+      const { flushAllEditors } = await import("@/editor/saveBus");
+      await flushAllEditors();
+      const api = await backend();
+      const result = await api.noteRelink(id, oldTitle);
+      if (result.skipped) {
+        set({ notice: result.skipped });
+        return;
+      }
+      if (!result.links) return;
+      // 改过的文档由 vault-changed 逐篇刷新（桌面版是 Rust 发的，浏览器预览是 mock 发的）
+      const where =
+        result.docs.length === 1 ? `「${result.docs[0]}」` : ` ${result.docs.length} 篇`;
+      set({
+        lastDeleted: null,
+        undoable: {
+          key: `relink:${id}:${Date.now()}`,
+          kind: "relink",
+          message: `已把${where}里的 [[${oldTitle.trim()}]] 改成 [[${newTitle}]]`,
+          undo: async () => {
+            await api.noteRelinkUndo(result.rewrites);
+          },
+        },
+      });
+    } catch (error) {
+      set({ error: messageOf(error) });
+    }
+  },
+
+  restoreVersion: async (target, body, when) => {
+    try {
+      // 编辑器里没存的先存掉：恢复之前的样子要是最新的，晚到的保存也不会把旧正文写回来
+      const { flushAllEditors } = await import("@/editor/saveBus");
+      await flushAllEditors();
+      const before = conflictOriginalContent(target, get());
+      if (before === undefined || before === body) return;
+      const key = saveKeyOf(target);
+      const replace = async (content: string) => {
+        await get().saveDocument(target, content);
+        // 编辑器开着这一篇：当成一次外部改动，换上新正文
+        set((state) => ({ externalRevisions: bumped(state.externalRevisions, key) }));
+      };
+      await replace(body);
+      set({
+        lastDeleted: null,
+        undoable: {
+          key: `history:${key}:${Date.now()}`,
+          kind: "history",
+          message: `已恢复到 ${when} 的版本`,
+          undo: async () => {
+            await (await import("@/editor/saveBus")).flushAllEditors();
+            await replace(before);
+          },
+        },
+      });
+    } catch (error) {
+      set({ error: messageOf(error) });
+    }
   },
 
   toggleTask: async (id) => {
@@ -612,6 +833,8 @@ export const useData = create<DataState>((set, get) => ({
     try {
       const saved = await (await backend()).taskToggle(id);
       set((state) => patchTask(state, id, saved));
+      // 这一天还有没有没做完的：日历上的记号跟着变
+      void get().refreshMarks();
     } catch (error) {
       set((state) => ({ ...patchTask(state, id, current), error: messageOf(error) }));
     }
@@ -636,7 +859,7 @@ export const useData = create<DataState>((set, get) => ({
     }
   },
 
-  archiveNote: async (id) => {
+  archiveNote: async (id, { undoable = true } = {}) => {
     const previous = get().notes.find((note) => note.id === id);
     if (!previous) return;
     const optimistic: Note = {
@@ -656,6 +879,18 @@ export const useData = create<DataState>((set, get) => ({
       const saved = await api.noteGet(id);
       set((state) => ({
         archived: state.archived.map((note) => (note.id === id ? saved : note)),
+        ...(undoable
+          ? {
+              lastDeleted: null,
+              undoable: {
+                key: `archive:${id}:${Date.now()}`,
+                kind: "archive" as const,
+                message: `已归档「${titleOf(previous)}」`,
+                undo: () => get().restoreNote(id, { undoable: false }),
+                reopen: id,
+              },
+            }
+          : {}),
       }));
     } catch (error) {
       set((state) => ({
@@ -666,7 +901,7 @@ export const useData = create<DataState>((set, get) => ({
     }
   },
 
-  restoreNote: async (id) => {
+  restoreNote: async (id, { undoable = true } = {}) => {
     const previous = get().archived.find((note) => note.id === id);
     if (!previous) return;
     const optimistic = { ...previous, isArchived: false, archivedAt: null };
@@ -680,7 +915,21 @@ export const useData = create<DataState>((set, get) => ({
       const saved = await api.noteGet(id);
       set((state) => ({
         notes: state.notes.map((note) => (note.id === id ? saved : note)).sort(noteOrder),
+        ...(undoable
+          ? {
+              lastDeleted: null,
+              undoable: {
+                key: `restore:${id}:${Date.now()}`,
+                kind: "restore" as const,
+                message: `已恢复「${titleOf(previous)}」到「${folderLabel(folderOf(saved))}」`,
+                undo: () => get().archiveNote(id, { undoable: false }),
+                reopen: id,
+              },
+            }
+          : {}),
       }));
+      // 回到归档前的文件夹；那个文件夹这期间被删了的话后端重新建上
+      await get().refreshFolders();
     } catch (error) {
       set((state) => ({
         archived: [previous, ...state.archived],
@@ -691,12 +940,18 @@ export const useData = create<DataState>((set, get) => ({
   },
 
   deleteNote: async (id) => {
-    const index = get().notes.findIndex((note) => note.id === id);
-    const previous = get().notes[index];
+    // 笔记列表里没有就去归档里找：两个列表各删各的，撤销时放回原来那一个
+    const archived = !get().notes.some((note) => note.id === id);
+    const listOf = (state: Pick<DataState, "notes" | "archived">) =>
+      archived ? state.archived : state.notes;
+    const patch = (list: Note[]) => (archived ? { archived: list } : { notes: list });
+    const index = listOf(get()).findIndex((note) => note.id === id);
+    const previous = listOf(get())[index];
     if (!previous) return;
     set((state) => ({
-      notes: state.notes.filter((note) => note.id !== id),
-      lastDeleted: { note: previous, index },
+      ...patch(listOf(state).filter((note) => note.id !== id)),
+      lastDeleted: { note: previous, index, archived },
+      undoable: null,
     }));
     const request = (async () => (await backend()).noteDelete(id))();
     pendingDelete = request.catch(() => undefined);
@@ -704,7 +959,7 @@ export const useData = create<DataState>((set, get) => ({
       await request;
     } catch (error) {
       set((state) => ({
-        notes: insertAt(state.notes, index, previous),
+        ...patch(insertAt(listOf(state), index, previous)),
         lastDeleted: state.lastDeleted?.note.id === id ? null : state.lastDeleted,
         error: messageOf(error),
       }));
@@ -720,19 +975,24 @@ export const useData = create<DataState>((set, get) => ({
     const { id } = deleted.note;
     try {
       await pendingDelete;
+      const present = (state: Pick<DataState, "notes" | "archived">) =>
+        state.notes.some((note) => note.id === id) || state.archived.some((note) => note.id === id);
       // 删除失败的话已经回滚过了，笔记还在列表里，没什么可撤销的
-      if (get().notes.some((note) => note.id === id)) return id;
+      if (present(get())) return id;
       const api = await backend();
       await api.noteUndelete(id);
       // 重新取一次：删之前失焦触发的那次保存可能比删除晚一步落库，
-      // 手里这份未必是最新的正文。
+      // 手里这份未必是最新的正文。归档里删的，放回去还在归档里
       const restored = await api.noteGet(id);
-      set((state) => ({
-        notes: state.notes.some((note) => note.id === id)
-          ? state.notes
-          : insertAt(state.notes, deleted.index, restored),
-        error: null,
-      }));
+      const index = restored.isArchived === deleted.archived ? deleted.index : 0;
+      set((state) => {
+        if (present(state)) return { error: null };
+        return restored.isArchived
+          ? { archived: insertAt(state.archived, index, restored), error: null }
+          : { notes: insertAt(state.notes, index, restored), error: null };
+      });
+      // 原来的文件夹可能已经删了，放回去时后端重新建上
+      await get().refreshFolders();
       return id;
     } catch (error) {
       set({ error: messageOf(error) });
@@ -742,19 +1002,178 @@ export const useData = create<DataState>((set, get) => ({
 
   dismissUndo: () => set({ lastDeleted: null }),
 
+  folders: [],
+
+  refreshFolders: async () => {
+    try {
+      const folders = await (await backend()).folderList();
+      set({ folders });
+    } catch (error) {
+      set({ error: messageOf(error) });
+    }
+  },
+
+  // 新建、改名都先按后端的规矩（folders.ts 的 cleanFolderName / uniqueChild）把结果放进列表：
+  // 回车那一下输入框就换成文件夹，中间不空一拍；后端回来的路径不一样（磁盘上有同名的
+  // 别的东西之类）再改正，失败了退回去
+  createFolder: async (parent, name) => {
+    const clean = cleanFolderName(name);
+    if (!clean) return null;
+    const guess = uniqueChild(get().folders, parent, clean);
+    set((state) => ({ folders: [...state.folders, guess].sort() }));
+    try {
+      const path = await (await backend()).folderCreate(parent, name);
+      if (path !== guess) {
+        set((state) => ({
+          folders: [...new Set(state.folders.map((p) => (p === guess ? path : p)))].sort(),
+        }));
+      }
+      return path;
+    } catch (error) {
+      set((state) => ({
+        folders: state.folders.filter((p) => p !== guess),
+        error: messageOf(error),
+      }));
+      return null;
+    }
+  },
+
+  renameFolder: async (folder, name) => {
+    const clean = cleanFolderName(name);
+    if (!clean) return null;
+    const guess = uniqueChild(get().folders, parentOf(folder), clean, folder);
+    if (guess === folder) return folder;
+    const before = { folders: get().folders, notes: get().notes };
+    // 本地换掉前缀：列表立刻跟上，后端随后发来的 vault-changed 再逐篇刷新
+    const move = (from: string, to: string) =>
+      set((state) => ({
+        folders: state.folders.map((path) => renamedPath(path, from, to)).sort(),
+        notes: state.notes.map((note) => {
+          const relPath = renamedRelPath(note.relPath, from, to);
+          return relPath === note.relPath ? note : { ...note, relPath };
+        }),
+      }));
+    move(folder, guess);
+    try {
+      const next = await (await backend()).folderRename(folder, name);
+      if (next !== guess) move(guess, next);
+      return next;
+    } catch (error) {
+      set({ ...before, error: messageOf(error) });
+      return null;
+    }
+  },
+
+  deleteFolder: async (folder) => {
+    const before = { folders: get().folders, notes: get().notes };
+    const name = nameOf(folder);
+    set((state) => ({
+      folders: state.folders.filter((path) => !within(path, folder)),
+      notes: state.notes.filter((note) => !within(folderOf(note), folder)),
+    }));
+    try {
+      // 正在编辑的那篇也在里面的话，先把没存的存掉，进回收站的是最新的一版
+      const { flushAllEditors } = await import("@/editor/saveBus");
+      await flushAllEditors();
+      const deletion: FolderDeletion = await (await backend()).folderDelete(folder);
+      const count = deletion.notes.length;
+      set({
+        lastDeleted: null,
+        undoable: {
+          key: `folder:${folder}:${Date.now()}`,
+          kind: "delete",
+          message: count ? `已删除「${name}」和里面的 ${count} 篇笔记` : `已删除「${name}」`,
+          undo: async () => {
+            const api = await backend();
+            await api.folderUndelete(deletion);
+            const [notes, folders] = await Promise.all([api.noteListFull(false), api.folderList()]);
+            set({ notes: notes.sort(noteOrder), folders });
+          },
+        },
+        ...(deletion.kept
+          ? { notice: `「${name}」里还有别的文件（图片、PDF…），文件夹留着，笔记已经删掉了` }
+          : {}),
+      });
+      if (deletion.kept) await get().refreshFolders();
+    } catch (error) {
+      set({ ...before, error: messageOf(error) });
+    }
+  },
+
+  revealFolder: async (folder) => {
+    try {
+      await (await backend()).folderReveal(folder);
+    } catch (error) {
+      set({ error: messageOf(error) });
+    }
+  },
+
+  moveNote: async (id, folder) => {
+    const previous = get().notes.find((note) => note.id === id);
+    if (!previous || folderOf(previous) === folder) return;
+    const from = folderOf(previous);
+    // 乐观地先挪过去：文件名一般不变，重名加序号的情况等后端回来再改正
+    set((state) => ({
+      notes: state.notes.map((note) =>
+        note.id === id ? { ...note, relPath: relPathIn(note, folder) } : note,
+      ),
+    }));
+    try {
+      // 正在编辑的话先把没存的存掉，再和这篇的保存排在同一条队里挪：挪的时候正文里的
+      // 相对链接会改写，不能让一次晚到的保存把旧链接写回去
+      const { flushAllEditors } = await import("@/editor/saveBus");
+      await flushAllEditors();
+      const key = saveKeyOf({ kind: "note", id });
+      const moved = await serialized(key, async () => (await backend()).noteMove(id, folder));
+      set((state) => ({
+        notes: state.notes.map((note) => (note.id === id ? moved : note)),
+        externalRevisions:
+          moved.contentMd !== previous.contentMd
+            ? bumped(state.externalRevisions, key)
+            : state.externalRevisions,
+        lastDeleted: null,
+        undoable: {
+          key: `move:${id}:${Date.now()}`,
+          kind: "move",
+          message: `已移到「${folderLabel(folder)}」`,
+          undo: () =>
+            get()
+              .moveNote(id, from)
+              .then(() => set({ undoable: null })),
+        },
+      }));
+    } catch (error) {
+      set((state) => ({
+        notes: state.notes.map((note) => (note.id === id ? previous : note)),
+        error: messageOf(error),
+      }));
+    }
+  },
+
+  undoable: null,
+  dismissUndoable: () => set({ undoable: null }),
+
   resolveConflict: async (copyId, keep) => {
     const all = [...get().notes, ...get().archived];
     const copy = all.find((note) => note.id === copyId);
-    const original = copy?.conflictOf ? all.find((note) => note.id === copy.conflictOf) : undefined;
-    if (!copy || !original) return null;
+    if (!copy?.conflictOf) return null;
+    const target = conflictTarget(copy.conflictOf);
+    // 原文是笔记、已经不在了：横幅本来就不显示
+    if (conflictOriginalTitle(target, get()) === undefined) return null;
     try {
-      if (keep === "copy" && copy.contentMd !== original.contentMd) {
-        const target: DocumentSaveTarget = { kind: "note", id: original.id };
-        await get().saveDocument(target, copy.contentMd);
-        // 原文的编辑器状态可能缓存着（切走时留的）：当成一次外部改动，下次打开换成新正文
-        set((state) => ({
-          externalRevisions: bumped(state.externalRevisions, saveKeyOf(target)),
-        }));
+      if (keep === "copy") {
+        // 某一天 / 目标是按需取的：没取回来时 saveDocument 什么都不写
+        if (target.kind === "day") await get().loadDay(target.id, target.id === today());
+        if (target.kind === "goal") await get().loadGoal(target.horizon, target.periodStart);
+        const current = conflictOriginalContent(target, get());
+        if (current === undefined) return null;
+        if (current !== copy.contentMd) {
+          await get().saveDocument(target, copy.contentMd);
+          // 原文的编辑器状态可能缓存着（切走时留的）：当成一次外部改动，下次打开换成新正文
+          set((state) => ({
+            externalRevisions: bumped(state.externalRevisions, saveKeyOf(target)),
+          }));
+        }
       }
       if (copy.isArchived) {
         // 归档里的副本：deleteNote 只管笔记列表，这里直接删
@@ -763,7 +1182,7 @@ export const useData = create<DataState>((set, get) => ({
       } else {
         await get().deleteNote(copy.id);
       }
-      return original.id;
+      return target;
     } catch (error) {
       set({ error: messageOf(error) });
       return null;

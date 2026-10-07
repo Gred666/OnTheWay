@@ -9,15 +9,30 @@ import { useEffect, useState } from "react";
    设计上它是「不存在的」——没有背景、没有边框，只是一条 38px 的
    可拖拽空白带，浮在内容之上。窗口按钮平时是极淡的灰点，
    悬停整条标题栏时才浮现。这样静止时界面干净，需要时又找得到。
+
+   按钮看上去还是那几个小圆角块，但能点的范围铺满整条标题栏的高度、
+   一直到窗口右边缘：鼠标甩到右上角就是「关闭」，不用瞄准。
    ============================================================ */
 
 export function TitleBar() {
   const [maximized, setMaximized] = useState(false);
   const [hovered, setHovered] = useState(false);
 
+  // 最大化 / 还原不只来自这里的按钮：Win+↑、拖到屏幕顶上吸附、双击以外的系统操作
+  // 都会改窗口大小。窗口一变就重新问一次，图标别和实际状态对不上
   useEffect(() => {
     if (!isTauri) return;
-    void win.isMaximized().then(setMaximized);
+    let frame = 0;
+    const sync = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => void win.isMaximized().then(setMaximized));
+    };
+    sync();
+    window.addEventListener("resize", sync);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", sync);
+    };
   }, []);
 
   // 浏览器里调试时不渲染，免得占掉 38px 影响布局判断
@@ -25,7 +40,7 @@ export function TitleBar() {
 
   return (
     <div
-      className="fixed inset-x-0 top-0 z-40 flex h-[38px] items-center justify-end pr-2"
+      className="fixed inset-x-0 top-0 z-40 flex h-[38px] items-stretch justify-end"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onMouseDown={(event) => {
@@ -35,7 +50,7 @@ export function TitleBar() {
       }}
     >
       <motion.div
-        className="flex items-center gap-0.5"
+        className="flex items-stretch"
         animate={{ opacity: hovered ? 1 : 0.28 }}
         transition={tween.base}
       >
@@ -62,7 +77,7 @@ export function TitleBar() {
           )}
         </WinButton>
 
-        <WinButton label="关闭" danger onClick={() => void win.close()}>
+        <WinButton label="关闭" danger corner onClick={() => void win.close()}>
           <path d="M4 4l8 8M12 4l-8 8" strokeWidth="1.3" strokeLinecap="round" fill="none" />
         </WinButton>
       </motion.div>
@@ -75,11 +90,14 @@ function WinButton({
   onClick,
   label,
   danger,
+  corner,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   label: string;
   danger?: boolean;
+  /** 最右边那一个：点的范围一直铺到窗口右边缘 */
+  corner?: boolean;
 }) {
   return (
     <button
@@ -87,20 +105,27 @@ function WinButton({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className={`grid h-7 w-9 place-items-center rounded-md text-muted transition-colors
-                  duration-[120ms] ${
-                    danger ? "hover:bg-danger hover:text-white" : "hover:bg-raised hover:text-ink"
-                  }`}
+      // 按钮本身是整条标题栏高的一格；看得见的圆角块是里面那一层
+      className={`group grid place-items-center pl-0.5 ${corner ? "pr-2" : "pr-0"}`}
     >
-      <svg
-        viewBox="0 0 16 16"
-        className="h-4 w-4"
-        fill="currentColor"
-        stroke="currentColor"
-        aria-hidden="true"
+      <span
+        className={`grid h-7 w-9 place-items-center rounded-md text-muted transition-colors
+                    duration-[120ms] ${
+                      danger
+                        ? "group-hover:bg-danger group-hover:text-white"
+                        : "group-hover:bg-raised group-hover:text-ink"
+                    }`}
       >
-        {children}
-      </svg>
+        <svg
+          viewBox="0 0 16 16"
+          className="h-4 w-4"
+          fill="currentColor"
+          stroke="currentColor"
+          aria-hidden="true"
+        >
+          {children}
+        </svg>
+      </span>
     </button>
   );
 }

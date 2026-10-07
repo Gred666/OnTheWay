@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   contextLine,
   findWikiLinks,
+  linkableTitle,
+  retargetWikiLinks,
   sameTitle,
   splitWikiSegments,
   wikiDisplayText,
@@ -23,6 +25,31 @@ describe("双链", () => {
     const body =
       "```\n[[代码里的]]\n```\n`[[行内代码]]` 真的 [[链接]]\n\\[[转义]]\n~~~md\n[[也是代码]]\n~~~";
     expect(titles(body)).toEqual(["链接"]);
+  });
+
+  it("retargets only links to the old title", () => {
+    const body =
+      "看 [[周报]] 和 [[周报|上周的]]，跳到 [[ 周报 #结论]]、[[Weekly^abc]]\n" +
+      "`[[周报]]` 是代码，\\[[周报]] 是转义，[[周报 2]] 是别的\n```\n[[周报]]\n```\n末行 [[周报]]";
+    expect(retargetWikiLinks(body, "周报", "月报")).toEqual({
+      body:
+        "看 [[月报]] 和 [[月报|上周的]]，跳到 [[ 月报 #结论]]、[[Weekly^abc]]\n" +
+        "`[[周报]]` 是代码，\\[[周报]] 是转义，[[周报 2]] 是别的\n```\n[[周报]]\n```\n末行 [[月报]]",
+      count: 4,
+    });
+    expect(retargetWikiLinks("见 [[weekly notes]]", " Weekly Notes ", "Monthly")).toEqual({
+      body: "见 [[Monthly]]",
+      count: 1,
+    });
+    expect(retargetWikiLinks("没有链接", "周报", "月报")).toBeNull();
+    expect(retargetWikiLinks("[[月报]]", "周报", "月报")).toBeNull();
+  });
+
+  it("knows which titles cannot be written into a link", () => {
+    expect(linkableTitle("月报 2026")).toBe(true);
+    for (const title of ["", "  ", "C# 笔记", "a|b", "[草稿]", "x^y"]) {
+      expect(linkableTitle(title)).toBe(false);
+    }
   });
 
   it("ignores broken brackets", () => {

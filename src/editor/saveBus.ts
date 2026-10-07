@@ -1,5 +1,6 @@
 import { useData } from "@/data/store";
 import { isTauri, win } from "@/lib/tauri";
+import { flushViewMemory } from "@/lib/viewMemory";
 
 export type FlushEditor = () => Promise<void>;
 
@@ -35,6 +36,7 @@ const messageOf = (error: unknown): string => {
 export async function installCloseGuard(): Promise<() => void> {
   if (!isTauri) {
     const beforeUnload = () => {
+      flushViewMemory();
       void flushAllEditors();
     };
     window.addEventListener("beforeunload", beforeUnload);
@@ -46,6 +48,8 @@ export async function installCloseGuard(): Promise<() => void> {
   let discardOnNextRequest = false;
   return getCurrentWindow().onCloseRequested(async (event) => {
     if (closing) return;
+    // 每篇看到哪、光标在哪（lib/viewMemory.ts）平时攒一会儿才写，关窗前写掉
+    flushViewMemory();
     if (discardOnNextRequest) {
       closing = true;
       // 「放弃」只针对当时那次失败。之后保存可能早已恢复、又攒了几百毫秒还没

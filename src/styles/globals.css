@@ -503,6 +503,76 @@ body {
   }
 }
 
+/* 换主题的日落 / 日出（lib/themeTransition.ts）。
+   换的那一帧所有元素都不做自己的颜色过渡：整页同一帧变成新主题，不会一块先变一块后变 */
+.otw-theme-instant,
+.otw-theme-instant *,
+.otw-theme-instant *::before,
+.otw-theme-instant *::after {
+  transition: none !important;
+}
+/* 旧主题的副本：盖在整页上，被羽化遮罩擦掉。点击、键盘都穿过它落到下面的真实页面 */
+.otw-theme-ghost {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--color-rail);
+  color: var(--color-body);
+}
+.otw-theme-ghost *,
+.otw-theme-ghost *::before,
+.otw-theme-ghost *::after {
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+/* 克隆出来的动画会从头再播：一律停掉，只留原件正在播的那些（接着原件的进度播，见 data-ghost-anim） */
+.otw-theme-ghost *:not([data-ghost-anim]),
+.otw-theme-ghost *::before,
+.otw-theme-ghost *::after {
+  animation: none !important;
+}
+.otw-theme-ghost :is(.otw-caret, .cm-cursorLayer, [data-sky-glyph]) {
+  visibility: hidden !important;
+}
+/* mermaid 图在暗色下是整体反色的，按 <html> 的主题选 —— 副本按它自己的旧主题来 */
+.otw-theme-ghost[data-ghost-theme="light"] .cm-otw-diagram svg {
+  filter: none !important;
+}
+.otw-theme-ghost[data-ghost-theme="dark"] .cm-otw-diagram svg {
+  filter: invert(0.88) hue-rotate(180deg) !important;
+}
+/* 天色：晚霞 / 晨光的光带、太阳的余晖、星星。只是几块渐变和几个点，位移走合成层 */
+.otw-theme-sky {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483001;
+  overflow: hidden;
+  pointer-events: none;
+}
+.otw-theme-sky-band {
+  position: absolute;
+  inset: 0 0 auto;
+  will-change: transform, opacity;
+}
+.otw-theme-sky-sun {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 115vw;
+  height: 80vh;
+  margin-top: -40vh;
+  will-change: transform, opacity;
+}
+.otw-theme-star {
+  position: absolute;
+  border-radius: 50%;
+  background: rgb(255 252 240);
+  box-shadow: 0 0 6px 1px rgb(255 248 225 / 0.55);
+  opacity: 0;
+}
+
 /* 换文档时旧内容的静态快照（components/SwapFade.tsx），盖在新内容上淡出。
    克隆出来的 DOM 会把 CSS 入场动画从头再播一遍（替身淡入、光标闪烁），这里全部冻住；
    光标、查找面板这些跟着编辑器活的东西不带过去。 */
@@ -575,6 +645,35 @@ body {
 }
 
 /* ------------------------------------------------------------
+   笔记文件夹（views/NotesView.tsx）
+   - 拖笔记时整页是「抓着」的手形，也别顺手选中一片字
+   - 拖着的影子只淡入，不缩放、不位移（里面是字）
+   - 一行文件夹闪一下：笔记刚放进去、刚从它里面退出来、刚建好 / 改完名。
+     只动底色，字不动
+   ------------------------------------------------------------ */
+body.otw-dragging,
+body.otw-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+/* 拖着经过的行别冒出「…」和进入箭头：这时候只关心能不能放进去 */
+body.otw-dragging .otw-row-actions {
+  visibility: hidden;
+}
+.otw-drag-ghost {
+  animation: otw-menu-in 120ms var(--ease-out-quint) both;
+}
+.otw-folder-flash {
+  animation: otw-folder-flash 1100ms var(--ease-out-quint);
+}
+@keyframes otw-folder-flash {
+  from {
+    background-color: var(--color-accent-wash);
+    box-shadow: 0 0 0 1px var(--color-accent-line);
+  }
+}
+
+/* ------------------------------------------------------------
    手写 Logo 的描边循环
    一轮 6.6s：0→9% 描出这一笔，挂到 55%，67% 之前沿同方向收回，
    剩下的时间留白。每笔靠 animation-delay 错开 0.22s（见 Logo.tsx），
@@ -584,6 +683,13 @@ body {
    间隔留短了的话 offset 推到 ±1 时下一段虚线会从另一头探进来，
    round linecap 就在笔画尾巴上留一个点。
    ------------------------------------------------------------ */
+/* 导航栏收起 / 展开时左下角那几颗按钮在跑（Sidebar 的 FootControls）：指针停在点下去的地方，
+   悬停的底色别跟着按钮一起跑走。不放进 layer，压得住 Tailwind 的 hover: 工具类 */
+[data-foot-moving] button:hover {
+  background-color: transparent;
+  color: var(--color-muted);
+}
+
 .otw-logo-stroke {
   stroke-dasharray: 1 3;
   /* 静止态 = 写完。动画被降级掉时落在这里，而不是空白 */
@@ -1088,6 +1194,18 @@ body {
 .otw-editor .cm-otw-wikilink:hover {
   background: color-mix(in srgb, var(--color-accent) 14%, transparent);
   border-bottom-color: var(--color-accent);
+}
+/* 链到还没有的笔记：没有底色、虚线、字退一档 —— 一眼看出点过去不是一篇已有的（Ctrl+点击新建）。
+   同样不加上下 padding、不改字号，行高不变 */
+.otw-editor .cm-otw-wikilink.is-missing {
+  color: var(--color-muted);
+  background: transparent;
+  border-bottom: 1px dashed var(--color-faint);
+}
+.otw-editor .cm-otw-wikilink.is-missing:hover {
+  color: var(--color-ink);
+  background: var(--color-raised);
+  border-bottom-color: var(--color-muted);
 }
 
 .otw-editor .cm-otw-html,
@@ -2612,7 +2730,6 @@ body {
   width: 400px;
   max-width: 100%;
   flex-direction: column;
-  gap: 6px;
   box-sizing: border-box;
   border: 1px solid var(--color-line-strong);
   border-radius: var(--radius-lg);
@@ -2624,7 +2741,11 @@ body {
   line-height: 1.4;
   letter-spacing: 0.01em;
   cursor: default;
-  animation: otw-search-in var(--duration-fast) var(--ease-out-quint) both;
+}
+/* 关掉时留在原处收回去的那一份副本（searchPanel.ts 的 leave）：不在 .cm-panels 里了，自己垫高 */
+.otw-editor .otw-search.is-leaving {
+  z-index: 45;
+  pointer-events: none;
 }
 .otw-editor .otw-search-row {
   display: flex;
@@ -2635,8 +2756,13 @@ body {
 .otw-editor .otw-search [hidden] {
   display: none;
 }
-/* 替换这一行和输入框左边对齐：让出展开按钮那一格 */
+/* 替换那一行：外层按高度展开（overflow 裁掉还没露出来的部分），和上一行之间的空也在里面，
+   一起展开，不会先蹦出 6px 的空。和输入框左边对齐：让出展开按钮那一格 */
 .otw-editor .otw-search-replace {
+  overflow: clip;
+  padding-top: 6px;
+}
+.otw-editor .otw-search-replace-row {
   gap: 4px;
   padding-left: 26px;
 }
@@ -2867,6 +2993,43 @@ body {
 .otw-editor .cm-dialog-close:hover {
   background: var(--color-raised);
   color: var(--color-ink);
+}
+
+/* 查找时文档区右边缘的刻度（searchPanel.ts 的 MatchMarks）：每个匹配项在全文里的位置。
+   挂在文档区里、不在编辑器里，所以不带 .otw-editor 前缀 */
+.otw-search-marks {
+  position: absolute;
+  top: 0;
+  right: 2px;
+  bottom: 0;
+  width: 8px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms var(--ease-out-quint);
+}
+.otw-search-marks.is-shown {
+  opacity: 1;
+}
+.otw-search-marks > i {
+  position: absolute;
+  right: 0;
+  width: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+/* 当前那个：实的、宽一点；换到下一个时沿着这一列滑过去 */
+.otw-search-marks > i.is-current {
+  z-index: 1;
+  width: 8px;
+  height: 3px;
+  border-radius: 1.5px;
+  background: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-canvas);
+  transition: top 240ms var(--ease-out-quint);
+}
+.otw-search-marks > i[hidden] {
+  display: none;
 }
 
 .otw-editor .cm-searchMatch {

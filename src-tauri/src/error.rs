@@ -55,3 +55,16 @@ impl From<tauri::Error> for AppError {
         AppError::Internal(e.to_string())
     }
 }
+
+/// 同步（git / GitHub / Gitee）的错误到前端：要登录、连不上、云端拒绝分开说
+impl From<crate::sync::repo::SyncError> for AppError {
+    fn from(e: crate::sync::repo::SyncError) -> Self {
+        use crate::sync::repo::SyncError;
+        match e {
+            SyncError::Auth => AppError::Invalid("登录失效了，重新登录一次".into()),
+            SyncError::Network(message) => AppError::Io(format!("连不上云端: {message}")),
+            SyncError::Remote(message) => AppError::Invalid(message),
+            SyncError::Local(message) => AppError::Internal(message),
+        }
+    }
+}

@@ -9,29 +9,37 @@ import type { ComponentProps, ReactNode } from "react";
  */
 export function ListColumn({
   title,
+  titleSlot,
   action,
   children,
   belowTitle,
+  overlay,
 }: {
   title: string;
+  /** 换掉默认的标题（笔记区的标题是文件夹切换器） */
+  titleSlot?: ReactNode;
   /** 标题右侧的按钮（排序、今天…） */
   action?: ReactNode;
   /** 标题下方、滚动区之上的固定内容（搜索框、月份选择器…） */
   belowTitle?: ReactNode;
+  /** 盖在整栏上面的浮层（笔记区的文件夹切换器），相对这一栏定位 */
+  overlay?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className="flex h-full w-[300px] shrink-0 flex-col border-r border-line-strong/60 bg-panel">
+    <div className="relative flex h-full w-[300px] shrink-0 flex-col border-r border-line-strong/60 bg-panel">
       <div className="shrink-0 px-6 pt-[42px]">
         <div className="flex items-center justify-between gap-3">
-          <motion.h2
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={tween.base}
-            className="truncate text-[25px] font-bold leading-tight tracking-[-0.02em] text-ink"
-          >
-            {title}
-          </motion.h2>
+          {titleSlot ?? (
+            <motion.h2
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={tween.base}
+              className="truncate text-[25px] font-bold leading-tight tracking-[-0.02em] text-ink"
+            >
+              {title}
+            </motion.h2>
+          )}
           {action && (
             // 只淡入不缩放：按钮里可能是字（日历的「今天」），缩放会让字先糊、停下时再跳清楚
             <motion.div
@@ -57,7 +65,10 @@ export function ListColumn({
         )}
       </div>
 
-      <div className="scroll-thin mt-3 min-h-0 flex-1 overflow-y-auto px-3 pb-6">{children}</div>
+      <div data-list-scroller className="scroll-thin mt-3 min-h-0 flex-1 overflow-y-auto px-3 pb-6">
+        {children}
+      </div>
+      {overlay}
     </div>
   );
 }

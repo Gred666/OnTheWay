@@ -1,7 +1,10 @@
+import { openDocument } from "@/app/navigate";
+import { useApp } from "@/app/store";
 import type { Task } from "@/data/types";
 import { cn } from "@/lib/cn";
-import { spring, tween } from "@/lib/motion";
-import { motion, useReducedMotion } from "motion/react";
+import { spring, tween, usePrefersReducedMotion } from "@/lib/motion";
+import { ArrowUpRight } from "lucide-react";
+import { motion } from "motion/react";
 
 /* ============================================================
    日历「当日安排」里的一条任务 —— 别的文档里写着这一天的 `- [ ] … @日期`。
@@ -12,6 +15,8 @@ import { motion, useReducedMotion } from "motion/react";
    2. 对勾：SVG pathLength 0→1 描边画出
    3. 文字：颜色过渡到 muted
    全部只动 transform / opacity / stroke-dashoffset，不触发重排。
+
+   右边的箭头打开写着这条任务的那篇文档，滚到那一行。
    ============================================================ */
 
 export function ActionItem({
@@ -24,7 +29,10 @@ export function ActionItem({
   onToggle: (id: string) => void;
 }) {
   const done = task.status === "done";
-  const reduce = useReducedMotion();
+  // 不用 motion 的 useReducedMotion()：应用内开过一次「减少动效」它就一直是 true（见 lib/motion.ts）
+  const appReduce = useApp((s) => s.reduceMotion);
+  const systemReduce = usePrefersReducedMotion();
+  const source = task.source;
 
   return (
     <motion.li
@@ -32,15 +40,15 @@ export function ActionItem({
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ ...tween.base, delay: Math.min(index, 8) * 0.03 }}
-      className="group border-b border-line last:border-b-0"
+      className="group flex items-start border-b border-line last:border-b-0"
     >
       <button
         type="button"
         onClick={() => onToggle(task.id)}
         aria-pressed={done}
-        className="flex w-full items-start gap-3 py-[11px] pr-2 text-left"
+        className="flex min-w-0 flex-1 items-start gap-3 py-[11px] pr-2 text-left"
       >
-        <Checkbox done={done} reduce={!!reduce} />
+        <Checkbox done={done} reduce={appReduce || systemReduce} />
 
         <span className="min-w-0 flex-1 pt-[1px]">
           <motion.span
@@ -66,6 +74,22 @@ export function ActionItem({
           )}
         </span>
       </button>
+
+      {source && (
+        <button
+          type="button"
+          aria-label={`打开出处：${task.meta ?? "原文"}`}
+          title="打开写着这条任务的地方"
+          onClick={() =>
+            openDocument(source, task.line != null ? { line: task.line + 1 } : undefined)
+          }
+          className="mt-[9px] grid h-7 w-7 shrink-0 place-items-center rounded-md text-faint opacity-0
+                     transition-[opacity,color,background-color] duration-[140ms] hover:bg-raised
+                     hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+        >
+          <ArrowUpRight size={14} strokeWidth={1.9} />
+        </button>
+      )}
     </motion.li>
   );
 }

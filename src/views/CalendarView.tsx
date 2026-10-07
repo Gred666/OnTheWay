@@ -1,9 +1,11 @@
 import { useApp } from "@/app/store";
 import { ColumnButton, ListColumn } from "@/components/ListColumn";
+import type { CalendarMarks } from "@/data/types";
 import { cn } from "@/lib/cn";
 import {
   type ISODate,
   addMonths,
+  formatDayEyebrowCN,
   formatDayNum,
   isSameMonth,
   isoWeekNumber,
@@ -28,12 +30,13 @@ const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"] as const;
  * 视觉上尽量安静：一行「2026年9月」+ 两个箭头，数字用正文字体（不是等宽）。
  * 两套语义各用一种颜色：
  *   - 主色 = 「时间光标」：今天是主色数字，选中是一个点绕着日期转一周画出的浅蓝圈；
- *   - 墨色 = 「有没有写」：写过的日子数字加深加粗、下面一粒墨点，没写的退成中灰。
- * 这样一眼扫过去，深色的数字就是这个月留下过东西的日子。
+ *   - 墨色 = 「有没有写」：写过的日子数字加深加粗、下面一粒实心墨点，没写的退成中灰。
+ *     还有没做完的待办的日子，下面是一个空心小圈（和实心墨点并排）。
+ * 这样一眼扫过去，深色的数字就是这个月留下过东西的日子，空心圈是还欠着事的日子。
  * 周数列和整周的底色留着 —— 周/GOAL 跟着选中日期所在的那一周走，
  * 这条底色就是「现在看的是哪一周」。
  */
-export function CalendarPanel({ marked }: { marked: Set<string> }) {
+export function CalendarPanel({ marks }: { marks: CalendarMarks }) {
   const selected = useApp((s) => s.selectedDate);
   const todayISO = useApp((s) => s.todayDate);
   const selectDate = useApp((s) => s.selectDate);
@@ -155,7 +158,7 @@ export function CalendarPanel({ marked }: { marked: Set<string> }) {
                   anchor={anchor}
                   selected={selected}
                   todayISO={todayISO}
-                  marked={marked}
+                  marks={marks}
                   highlighted={weekStart === selectedWeekStart}
                   onSelect={selectDate}
                 />
@@ -174,7 +177,7 @@ function WeekRow({
   anchor,
   selected,
   todayISO,
-  marked,
+  marks,
   highlighted,
   onSelect,
 }: {
@@ -183,7 +186,7 @@ function WeekRow({
   anchor: ISODate;
   selected: ISODate;
   todayISO: ISODate;
-  marked: Set<string>;
+  marks: CalendarMarks;
   highlighted: boolean;
   onSelect: (d: ISODate) => void;
 }) {
@@ -217,7 +220,8 @@ function WeekRow({
           outside={!isSameMonth(d, anchor)}
           selected={d === selected}
           isToday={d === todayISO}
-          marked={marked.has(d)}
+          written={marks.written.has(d)}
+          open={marks.open.has(d)}
           onSelect={onSelect}
         />
       ))}
@@ -230,18 +234,23 @@ function DayCell({
   outside,
   selected,
   isToday,
-  marked,
+  written,
+  open,
   onSelect,
 }: {
   date: ISODate;
   outside: boolean;
   selected: boolean;
   isToday: boolean;
-  marked: boolean;
+  /** 这天写过记录 / 做过事 */
+  written: boolean;
+  /** 这天还有没做完的待办 */
+  open: boolean;
   onSelect: (d: ISODate) => void;
 }) {
-  // 三层各管一件事：圈 = 选中、数字颜色 = 今天/有没有写、墨点 = 有没有写。
-  // 圈里的数字和墨点都跟着主色走，整格只有一种色相。
+  // 三层各管一件事：圈 = 选中、数字颜色 = 今天/有没有写、下面的记号 = 写过（实心）/ 欠着事（空心）。
+  // 圈里的数字和记号都跟着主色走，整格只有一种色相。
+  const marked = written || open;
   const accentTone = selected || isToday;
   const tone = accentTone
     ? "text-accent"
@@ -255,7 +264,7 @@ function DayCell({
     <button
       type="button"
       onClick={() => onSelect(date)}
-      aria-label={date}
+      aria-label={`${formatDayEyebrowCN(date)}${written ? "，有记录" : ""}${open ? "，有待办" : ""}`}
       aria-current={selected ? "date" : isToday ? "true" : undefined}
       className="group relative grid h-[40px] place-items-center"
     >
@@ -280,14 +289,26 @@ function DayCell({
           {formatDayNum(date)}
         </span>
 
-        {/* 写过的日子：数字下一粒墨点，落在圈内 */}
+        {/* 数字下面的记号，落在圈内：写过 = 实心墨点，还有待办 = 空心小圈，两个都有就并排 */}
         {marked && (
-          <span
-            className={cn(
-              "absolute bottom-[4px] z-10 h-[3.5px] w-[3.5px] rounded-full transition-colors duration-200",
-              accentTone ? "bg-accent/75" : outside ? "bg-faint/40" : "bg-ink/60",
+          <span className="absolute bottom-[3.5px] z-10 flex items-center gap-[2.5px]">
+            {written && (
+              <span
+                className={cn(
+                  "h-[3.5px] w-[3.5px] rounded-full transition-colors duration-200",
+                  accentTone ? "bg-accent/75" : outside ? "bg-faint/40" : "bg-ink/60",
+                )}
+              />
             )}
-          />
+            {open && (
+              <span
+                className={cn(
+                  "h-[4.5px] w-[4.5px] rounded-full border-[1.2px] transition-colors duration-200",
+                  accentTone ? "border-accent/80" : outside ? "border-faint/45" : "border-ink/55",
+                )}
+              />
+            )}
+          </span>
         )}
       </span>
     </button>

@@ -219,6 +219,13 @@ pub fn with_wikilinks(conn: &Connection) -> Result<Vec<DocRow>> {
     many(conn, "WHERE instr(content_md, '[[') > 0", [])
 }
 
+/// 所有笔记（含归档）的 id 和标题：改标题时看新、旧标题有没有别的笔记在用
+pub fn note_titles(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare("SELECT id, title FROM doc WHERE kind = 'note'")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// 扫描用：已索引的每个文件的 (路径, mtime, size)
 pub fn file_states(conn: &Connection) -> Result<Vec<(String, i64, i64)>> {
     let mut stmt = conn.prepare("SELECT rel_path, mtime, size FROM doc")?;
@@ -320,6 +327,25 @@ pub fn rename(conn: &Connection, id: &str, rel: &str) -> Result<()> {
         params![rel, id],
     )?;
     Ok(())
+}
+
+/// 整个目录改了名：底下每篇的路径一起换掉前缀。文件内容和修改时间都没变，指纹留着
+pub fn rename_dir(conn: &Connection, old_dir: &str, new_dir: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE doc SET rel_path = ?2 || substr(rel_path, length(?1) + 1)
+         WHERE substr(rel_path, 1, length(?1) + 1) = ?1 || '/'",
+        params![old_dir, new_dir],
+    )?;
+    Ok(())
+}
+
+/// 目录底下（任意深度）的笔记
+pub fn notes_under(conn: &Connection, dir: &str) -> Result<Vec<DocRow>> {
+    many(
+        conn,
+        "WHERE kind = 'note' AND substr(rel_path, 1, length(?1) + 1) = ?1 || '/' ORDER BY rel_path",
+        params![dir],
+    )
 }
 
 pub fn remove(conn: &Connection, id: &str) -> Result<()> {
@@ -434,19 +460,44 @@ pub fn task(conn: &Connection, id: &str) -> Result<Option<TaskRow>> {
         .optional()?)
 }
 
-/// 日历上要标小圆点的日期：写过东西的日子，和有任务的日子
-pub fn marked_dates(conn: &Connection, from: &str, to: &str) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
+/// 日历上的记号。written：写过记录的日子，和有做完了的任务的日子；
+/// open：还有没做完的任务的日子。归档里的文档不算
+pub fn calendar_marks(
+    conn: &Connection,
+    from: &str,
+    to: &str,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let dates = |sql: &str| -> Result<Vec<String>> {
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(params![from, to], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    };
+    let written = dates(
         "SELECT DISTINCT d FROM (
            SELECT day AS d FROM doc WHERE kind = 'day' AND (title != '' OR content_md != '')
            UNION
-           SELECT t.due_date AS d FROM task t JOIN doc x ON x.id = t.doc_id WHERE x.is_archived = 0
+           SELECT t.due_date AS d FROM task t JOIN doc x ON x.id = t.doc_id
+             WHERE x.is_archived = 0 AND t.done = 1
          )
          WHERE d BETWEEN ?1 AND ?2
          ORDER BY d",
     )?;
-    let rows = stmt.query_map(params![from, to], |r| r.get::<_, String>(0))?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let open = dates(
+        "SELECT DISTINCT t.due_date FROM task t JOIN doc x ON x.id = t.doc_id
+         WHERE x.is_archived = 0 AND t.done = 0 AND t.due_date BETWEEN ?1 AND ?2
+         ORDER BY t.due_date",
+    )?;
+    Ok((written, open))
+}
+
+/// 所有某一天、某个周期的目标（命令面板搜它们的正文）
+pub fn journal(conn: &Connection) -> Result<Vec<DocRow>> {
+    many(
+        conn,
+        "WHERE kind IN ('day', 'goal') AND (title != '' OR content_md != '')
+         ORDER BY updated_at DESC",
+        [],
+    )
 }
 
 pub struct Hit {

@@ -2,7 +2,7 @@
 文件开头的属性块（YAML front matter）。
 
 应用只认自己的几个键：id / title / created / pinned / archived / category /
-trashed-from。其余行（别的工具写的 tags、aliases…）一字不改地留着，写回时
+archived-from / trashed-from。其余行（别的工具写的 tags、aliases…）一字不改地留着，写回时
 放在应用的键后面 —— 用 Obsidian 之类打开同一个文件夹，谁也不吃掉谁的东西。
 
 这不是完整的 YAML 解析器，也不打算是：应用自己写的值都是单行标量，
@@ -25,6 +25,8 @@ pub struct FrontMatter {
     /// 归档时间，UTC 毫秒
     pub archived: Option<i64>,
     pub category: Option<String>,
+    /// 归档前在「笔记」的哪个子文件夹（仓库内相对路径，`笔记/工作`），恢复时放回去
+    pub archived_from: Option<String>,
     /// 回收站里的文件原来在哪（仓库内相对路径）
     pub trashed_from: Option<String>,
     /// 不认识的行，原样
@@ -39,6 +41,7 @@ impl FrontMatter {
             && !self.pinned
             && self.archived.is_none()
             && self.category.is_none()
+            && self.archived_from.is_none()
             && self.trashed_from.is_none()
             && self.extra.is_empty()
     }
@@ -87,6 +90,9 @@ pub fn render(meta: &FrontMatter, body: &str) -> String {
     }
     if let Some(category) = &meta.category {
         out.push_str(&format!("category: {}\n", quote(category)));
+    }
+    if let Some(from) = &meta.archived_from {
+        out.push_str(&format!("archived-from: {}\n", quote(from)));
     }
     if let Some(from) = &meta.trashed_from {
         out.push_str(&format!("trashed-from: {}\n", quote(from)));
@@ -198,6 +204,10 @@ fn parse_known(meta: &mut FrontMatter, line: &str) -> bool {
             Some(category) if meta.category.is_none() => meta.category = Some(category),
             _ => return false,
         },
+        "archived-from" => match unquote(value) {
+            Some(from) if meta.archived_from.is_none() => meta.archived_from = Some(from),
+            _ => return false,
+        },
         "trashed-from" => match unquote(value) {
             Some(from) if meta.trashed_from.is_none() => meta.trashed_from = Some(from),
             _ => return false,
@@ -306,6 +316,7 @@ mod tests {
             pinned: true,
             archived: Some(1_788_100_000_000),
             category: Some("工作笔记".into()),
+            archived_from: Some("笔记/工作/周报".into()),
             trashed_from: None,
             extra: vec![],
         };

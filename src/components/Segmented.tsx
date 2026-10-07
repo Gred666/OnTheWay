@@ -1,6 +1,7 @@
 import { cn } from "@/lib/cn";
 import { spring } from "@/lib/motion";
 import { motion } from "motion/react";
+import type { ReactNode } from "react";
 
 /**
  * 分段控件。原型里的 [周|月|年] 和 [日TODO|周/GOAL|月/GOAL|年/GOAL]。
@@ -16,7 +17,8 @@ export function Segmented<T extends string>({
 }: {
   /** layoutId 命名空间，同页面多个分段控件不能重名 */
   group: string;
-  options: { value: T; label: string }[];
+  /** label 可以是节点（窄的时候换成短字）；title 是悬停提示 */
+  options: { value: T; label: ReactNode; title?: string }[];
   value: T;
   onChange: (v: T) => void;
   size?: "sm" | "md";
@@ -37,6 +39,7 @@ export function Segmented<T extends string>({
             type="button"
             role="tab"
             aria-selected={active}
+            title={opt.title}
             onClick={() => onChange(opt.value)}
             className={cn(
               "relative h-full rounded-[7px] transition-colors duration-[140ms]",

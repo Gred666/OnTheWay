@@ -1,21 +1,33 @@
+import { NAV_TRANSITION, ZEN_TRANSITION } from "@/app/navMotion";
 import { openDocument } from "@/app/navigate";
 import { RAIL_WIDTH, useApp } from "@/app/store";
 import { attachFiles, attachPaths, documentFolder } from "@/data/attachments";
+import { folderLabel, folderOf } from "@/data/folders";
 import { NEW_NOTE_TITLE, saveKeyOf, useData } from "@/data/store";
 import type { DocumentModel, DocumentSaveTarget } from "@/data/types";
 import type { EditorOutlineHandle } from "@/editor/MarkdownEditor";
+import type { WikiCandidate } from "@/editor/suggest";
 import type { TemplateContext } from "@/editor/templates";
 import { cn } from "@/lib/cn";
 import { buildOutline, renderMarkdown } from "@/lib/markdown";
 import { spring, tween } from "@/lib/motion";
 import { MOD_KEY } from "@/lib/platform";
-import { AlertTriangle, Archive, FolderOpen, Maximize2, Minimize2, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Archive,
+  FolderOpen,
+  History,
+  Maximize2,
+  Minimize2,
+  Trash2,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DayTasks } from "./ActionItem";
 import { Backlinks } from "./Backlinks";
 import { ConflictBanner } from "./ConflictBanner";
 import { EmptyState } from "./EmptyArt";
+import { NotePath } from "./NotePath";
 import { Outline } from "./Outline";
 import { OverlayScrollbar } from "./OverlayScrollbar";
 import { Segmented } from "./Segmented";
@@ -94,17 +106,50 @@ export function DocumentView({
     setLiveMarkdown(markdown);
   }, []);
 
-  // Mod + 点击 [[双链]]：按标题找到那篇笔记就跳过去（归档里的也算），找不到就什么都不做。
+  // Mod + 点击 [[双链]]：按标题找到那篇笔记就跳过去（归档里的也算）。
   // `[[标题#小节]]` 再记一个待滚动的锚点，等那篇的编辑器挂上后滚过去。
+  // 还没有这篇（编辑器里画成虚线）：就地新建一篇这个标题的，放在当前这篇所在的文件夹，
+  // 打开它、光标在正文开头；底部提示条可以撤销
+  const noteIdRef = useRef<string | null>(null);
   const handleWikiLink = useCallback((title: string, heading?: string) => {
     const wanted = title.trim().toLowerCase();
+    if (!wanted) return;
     const { notes, archived } = useData.getState();
     const hit =
       notes.find((note) => note.title.trim().toLowerCase() === wanted) ??
       archived.find((note) => note.title.trim().toLowerCase() === wanted);
-    if (!hit) return;
-    openDocument({ kind: "note", id: hit.id }, heading ? { heading } : undefined);
+    if (hit) {
+      openDocument({ kind: "note", id: hit.id }, heading ? { heading } : undefined);
+      return;
+    }
+    const here = notes.find((note) => note.id === noteIdRef.current);
+    void useData
+      .getState()
+      .createLinkedNote(title.trim(), here ? folderOf(here) : "")
+      .then((id) => {
+        if (!id) return;
+        useApp.getState().setFocusRequest({ docKey: `note-${id}`, at: "body" });
+        openDocument({ kind: "note", id });
+      });
   }, []);
+
+  // `[[` 菜单能链过去的笔记（最近改过的在前），也用来认出链到不存在的笔记的双链。
+  // 只在标题集合变了时重算：自动保存每次都换一份 notes，不能每次都让编辑器重标一遍
+  const linkKey = useData((state) =>
+    [...state.notes, ...state.archived].map((note) => `${note.id}\u0001${note.title}`).join("\n"),
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: linkKey 就是标题集合的指纹
+  const linkTargets = useMemo<WikiCandidate[]>(() => {
+    const { notes, archived } = useData.getState();
+    return [...notes, ...archived]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((note) => ({
+        id: note.id,
+        title: note.title,
+        folder: folderOf(note) ? folderLabel(folderOf(note)) : "",
+        archived: note.isArchived,
+      }));
+  }, [linkKey]);
 
   const outlineSource = liveMarkdown ?? doc.bodyMd;
   const outline = useMemo(() => buildOutline(outlineSource), [outlineSource]);
@@ -136,8 +181,9 @@ export function DocumentView({
     return state.drafts[key] ? `有修改还没存进去，继续编辑或按 ${MOD_KEY}+S 重试` : null;
   });
 
-  // 切换文档时滚回顶部。用 instant 而不是 smooth ——
+  // 切换文档时先拨回顶部。用 instant 而不是 smooth ——
   // 换了一篇文档还看到旧位置平滑滚动，是错误的心智模型。
+  // 上次在这篇看到哪由编辑器挂上之后自己滚回去（lib/viewMemory.ts），在这之后跑。
   // layout effect：新一篇的第一帧就得在顶上。放在 useEffect 里的话，不是点击触发的
   // 切换（比如命令面板）可能先按旧的滚动位置画出一帧，再跳回顶部。
   // biome-ignore lint/correctness/useExhaustiveDependencies: 只应在 doc.key 变化时触发
@@ -169,6 +215,8 @@ export function DocumentView({
     if (target) useData.getState().markConflict(target);
   }, [target]);
   const handleReveal = target ? () => void useData.getState().revealDocument(target) : undefined;
+  // 历史版本：同步用的 git 仓库里每次改过这篇的提交（没开同步时对话框里说明、给开启的入口）
+  const handleHistory = target ? () => useApp.getState().setHistoryFor(target) : undefined;
 
   // 附件：粘贴 / 拖进来的文件存进仓库的「附件」，正文里的相对路径以这篇所在的文件夹为基准
   const vaultRoot = useData((s) => s.vaultRoot);
@@ -182,6 +230,27 @@ export function DocumentView({
     [target],
   );
   const noteId = target?.kind === "note" ? target.id : null;
+  noteIdRef.current = noteId;
+
+  // 新建完光标该去哪（app/store 的 FocusRequest）。标题的那种由标题框自己接（见下面）；
+  // 正文开头的要等这一篇的编辑器挂上
+  const focusRequest = useApp((s) => s.focusRequest);
+  useEffect(() => {
+    if (focusRequest?.docKey !== doc.key || focusRequest.at !== "body" || !editorOutline) return;
+    if (editorOutline.focusStart()) useApp.getState().setFocusRequest(null);
+  }, [focusRequest, doc.key, editorOutline]);
+
+  // 标题和正文之间用键盘来回：标题里回车 / ↓ 进正文开头，正文第一行按 ↑ 回标题末尾
+  const titleFieldRef = useRef<HTMLTextAreaElement>(null);
+  const enterBody = useCallback(() => {
+    editorOutline?.focusStart();
+  }, [editorOutline]);
+  const exitToTitle = useCallback(() => {
+    const field = titleFieldRef.current;
+    if (!field) return;
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
+  }, []);
 
   // 正常路径下 bootstrap 已经预载完，这里首帧就拿到组件。
   // 兜底：万一没走 bootstrap（比如单测直接渲染本组件），照旧异步加载后再补上。
@@ -216,19 +285,12 @@ export function DocumentView({
           ref={scrollRef}
           // 查找面板（editor/searchPanel.ts）按它的右边缘贴边
           data-doc-scroller
-          className="scroll-none h-full overflow-y-auto bg-canvas"
+          // @container：正文区多宽（容器查询量的是内容盒，多铺到 chrome 底下的那截内边距不算），
+          // 窄的时候左右留白、大标题、分段控件的字跟着收（窗口窄、列表栏开着的时候）
+          className="@container scroll-none h-full overflow-y-auto bg-canvas"
           style={{ marginLeft: -RAIL_WIDTH, paddingLeft: RAIL_WIDTH }}
         >
-          {/* layout="position" 让这一列在进出专注模式时「滑」到新的居中位置，
-              而不是瞬间跳过去。只动位置不动尺寸 —— 尺寸动画是 scale，会把文字
-              拉变形。layoutDependency={zen} 把重新测量限定在 zen 变化这一次，
-              换笔记、正文变长都不会触发多余的位移动画。 */}
-          <motion.div
-            layout="position"
-            layoutDependency={zen}
-            transition={{ duration: 0.46, ease: [0.22, 1, 0.36, 1] }}
-            className="mx-auto flex min-h-full w-full max-w-[860px] flex-col px-14 pb-6 pt-[52px]"
-          >
+          <CenteredColumn>
             {/* 换文档时整块交叉淡化：旧的一份快照原地淡出，新的一份淡入（见 SwapFade）。
                 标题、分隔线、正文、状态栏都在里面，一起换，不再各播各的入场动画。 */}
             <SwapFade swapKey={doc.key} exitLift={4} className="flex flex-1 flex-col">
@@ -244,7 +306,8 @@ export function DocumentView({
                   {/* ---------- 归档横幅 ----------
                   key 固定：在两篇归档笔记之间切换时横幅本身不动，文字跟着整块一起淡换。
                   原来按文字做 key，日期不同的两篇一切，旧条往上退、新条从上落，
-                  两条叠在一起错开几像素 —— 看起来就是在抖。 */}
+                  两条叠在一起错开几像素 —— 看起来就是在抖。
+                  中性色：归档不是出错，以前的红底看着像是这篇出了什么问题。 */}
                   <AnimatePresence mode="popLayout" initial={false}>
                     {doc.banner && (
                       <motion.div
@@ -253,10 +316,10 @@ export function DocumentView({
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -4 }}
                         transition={tween.base}
-                        className="mb-7 flex items-center gap-2 rounded-lg bg-danger/10 px-3.5 py-2.5"
+                        className="mb-7 flex items-center gap-2 rounded-lg bg-raised/70 px-3.5 py-2.5"
                       >
-                        <Archive size={12.5} strokeWidth={1.9} className="shrink-0 text-danger" />
-                        <span className="text-[12px] text-danger">{doc.banner.text}</span>
+                        <Archive size={12.5} strokeWidth={1.9} className="shrink-0 text-muted" />
+                        <span className="text-[12px] text-body">{doc.banner.text}</span>
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -268,7 +331,9 @@ export function DocumentView({
                     稍长就被它截掉。挪上来之后标题独占整行；这一行的高度钉在小字
                     的一行高，控件比它高出来的部分往上溢进顶部留白里（负外边距），
                     标题的位置不受影响，切「日TODO ↔ 周/GOAL」时控件也不挪窝。 */}
-                    {(doc.eyebrow || (doc.segments && onSegmentChange)) && (
+                    {(doc.eyebrow ||
+                      doc.folder !== undefined ||
+                      (doc.segments && onSegmentChange)) && (
                       <div className="mb-2 flex min-h-[20px] items-end justify-between gap-8">
                         {doc.eyebrow && (
                           <p
@@ -278,11 +343,30 @@ export function DocumentView({
                             {doc.eyebrow}
                           </p>
                         )}
+                        {/* 笔记：这篇在哪个文件夹（列表栏退回上层后，深处那篇在列表里看不见） */}
+                        {doc.folder !== undefined && (
+                          <NotePath folder={doc.folder} relPath={doc.relPath} />
+                        )}
                         {doc.segments && onSegmentChange && (
                           <div className="-mt-2.5 ml-auto shrink-0">
                             <Segmented
                               group={doc.segments.group}
-                              options={doc.segments.options.map((o) => ({ value: o, label: o }))}
+                              options={doc.segments.options.map((o, i) => {
+                                const short = doc.segments?.short?.[i];
+                                return {
+                                  value: o,
+                                  title: short ? o : undefined,
+                                  // 正文区窄的时候换成一个字，免得把左边那行日期挤没了
+                                  label: short ? (
+                                    <>
+                                      <span className="@min-[640px]:hidden">{short}</span>
+                                      <span className="hidden @min-[640px]:inline">{o}</span>
+                                    </>
+                                  ) : (
+                                    o
+                                  ),
+                                };
+                              })}
                               value={doc.segments.active}
                               onChange={onSegmentChange}
                               size={doc.segments.options.length > 3 ? "sm" : "md"}
@@ -298,16 +382,20 @@ export function DocumentView({
                     {doc.editor?.titleEditable && onSaveTitle ? (
                       <EditableDocumentTitle
                         key={doc.key}
+                        fieldRef={titleFieldRef}
                         title={doc.title}
                         // 占位标题（无标题笔记）不是真标题：输入框里留空，让用户直接起名
                         placeholder={doc.title === NEW_NOTE_TITLE}
+                        // 刚新建的这一篇：光标直接落在标题里
+                        autoFocus={focusRequest?.docKey === doc.key && focusRequest.at === "title"}
+                        onEnterBody={enterBody}
                         onSave={(title) => onSaveTitle(doc.editor!.target, title)}
                       />
                     ) : (
                       <h1
                         key={doc.key}
-                        className="selectable break-words text-[38px] font-bold leading-[1.25]
-                               tracking-[-0.02em] text-ink"
+                        className="selectable break-words text-[30px] font-bold leading-[1.25]
+                               tracking-[-0.02em] text-ink @min-[480px]:text-[38px]"
                       >
                         {doc.title}
                       </h1>
@@ -350,6 +438,9 @@ export function DocumentView({
                         imageBase={imageBase}
                         onAttachFiles={handleAttachFiles}
                         onAttachPaths={handleAttachPaths}
+                        linkTargets={linkTargets}
+                        linkSelf={noteId ?? undefined}
+                        onExitTop={doc.editor?.titleEditable ? exitToTitle : undefined}
                       />
                     ) : (
                       <DocumentPreview markdown={doc.bodyMd} />
@@ -368,13 +459,14 @@ export function DocumentView({
                     parts={doc.statusParts}
                     onDelete={doc.deletable ? onDelete : undefined}
                     onReveal={handleReveal}
+                    onHistory={handleHistory}
                     saving={saving}
                     saveError={saveError}
                   />
                 </>
               )}
             </SwapFade>
-          </motion.div>
+          </CenteredColumn>
         </div>
         <OverlayScrollbar targetRef={scrollRef} />
       </div>
@@ -389,6 +481,36 @@ export function DocumentView({
 
       {zenAvailable && <ZenToggle zen={zen} onToggle={() => setZen(!zen)} />}
     </div>
+  );
+}
+
+/**
+ * 正文那一列：居中、最宽 860。进出专注模式、导航栏收起 / 展开时，它「滑」到新的居中位置，
+ * 而不是瞬间跳过去（layout="position"，只动位置不动尺寸 —— 尺寸动画是 scale，会把文字拉变形）。
+ * layoutDependency 把重新测量限定在这两样变化的那一次，换笔记、正文变长都不会触发多余的位移动画。
+ * 节奏和导航栏底板同一条（app/navMotion.ts）。
+ *
+ * 单独成一个组件，是为了只让它自己订阅这两样：以前整个 DocumentView 订阅 navCollapsed，
+ * 一切换就把目录树、专注模式的刻度、编辑器外壳全部重渲染一遍 —— 长文档在 dev 构建里 68ms，
+ * 4 倍降速 370ms，动画开头卡一下。现在只有这一层重渲染，children 是上层给的同一份，React 直接复用。
+ */
+function CenteredColumn({ children }: { children: React.ReactNode }) {
+  const zen = useApp((s) => s.zen);
+  const navCollapsed = useApp((s) => s.navCollapsed);
+  // 这一次滑动是谁引起的，就跟谁的节奏走：专注模式和导航栏收起 / 展开的曲线不一样
+  const last = useRef({ zen, navCollapsed, by: "zen" as "zen" | "nav" });
+  if (last.current.zen !== zen) last.current = { zen, navCollapsed, by: "zen" };
+  else if (last.current.navCollapsed !== navCollapsed)
+    last.current = { zen, navCollapsed, by: "nav" };
+  return (
+    <motion.div
+      layout="position"
+      layoutDependency={`${zen}|${navCollapsed}`}
+      transition={last.current.by === "nav" ? NAV_TRANSITION : ZEN_TRANSITION}
+      className="mx-auto flex min-h-full w-full max-w-[860px] flex-col px-8 pb-6 pt-[52px] @min-[560px]:px-14"
+    >
+      {children}
+    </motion.div>
   );
 }
 
@@ -452,7 +574,9 @@ function EmptyDocument({ empty }: { empty: NonNullable<DocumentModel["empty"]> }
                 label: "新建笔记",
                 onClick: () =>
                   void createNote().then((id) => {
-                    if (id) selectNote(id);
+                    if (!id) return;
+                    useApp.getState().setFocusRequest({ docKey: `note-${id}`, at: "title" });
+                    selectNote(id);
                   }),
               }
             : undefined
@@ -517,23 +641,45 @@ function useFitHeight(ref: React.RefObject<HTMLTextAreaElement | null>, value: s
  *
  * 是 textarea 不是 input：input 只有一行，标题一长就在框里横着往后滚，
  * 开头那半截被推出去看不见。textarea 按宽度折行、跟着内容长高；
- * 标题本身仍然是一行文字 —— 回车是「写完了」，粘贴进来的换行直接去掉。
+ * 标题本身仍然是一行文字 —— 回车是「写完了」，接着进正文开头；粘贴进来的换行直接去掉。
+ * ↓ 也进正文：标题只有一行、或者光标已经在末尾时（折了好几行的话先在标题里往下走）。
  */
 function EditableDocumentTitle({
   title,
   placeholder,
+  autoFocus,
+  fieldRef: outerRef,
+  onEnterBody,
   onSave,
 }: {
   title: string;
   /** 当前标题只是占位（还没起名）：输入框留空、显示占位文字 */
   placeholder?: boolean;
+  /** 挂上就聚焦（刚新建的那一篇），接完把请求清掉 */
+  autoFocus?: boolean;
+  /** 上层要从正文回到标题时用 */
+  fieldRef?: React.RefObject<HTMLTextAreaElement | null>;
+  /** 回车 / ↓：光标进正文开头 */
+  onEnterBody?: () => void;
   onSave: (title: string) => Promise<void>;
 }) {
   const shown = placeholder ? "" : title;
   const [value, setValue] = useState(shown);
   const [saving, setSaving] = useState(false);
-  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const localRef = useRef<HTMLTextAreaElement>(null);
+  const fieldRef = outerRef ?? localRef;
   useFitHeight(fieldRef, value);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    fieldRef.current?.focus();
+    useApp.getState().setFocusRequest(null);
+  }, [autoFocus, fieldRef]);
+
+  const toBody = (field: HTMLTextAreaElement) => {
+    if (onEnterBody) onEnterBody();
+    else field.blur();
+  };
 
   const commit = async () => {
     const clean = value.trim();
@@ -567,18 +713,28 @@ function EditableDocumentTitle({
       onKeyDown={(event) => {
         // 输入法选字时的回车是在上屏，不是写完了
         if (event.nativeEvent.isComposing) return;
+        const field = event.currentTarget;
         if (event.key === "Enter") {
           event.preventDefault();
-          event.currentTarget.blur();
+          toBody(field);
+        }
+        if (event.key === "ArrowDown" && !event.shiftKey) {
+          const lineHeight = Number.parseFloat(getComputedStyle(field).lineHeight) || 0;
+          const oneLine = field.clientHeight < lineHeight * 1.5;
+          const atEnd = field.selectionStart === field.value.length;
+          if (oneLine || atEnd) {
+            event.preventDefault();
+            toBody(field);
+          }
         }
         if (event.key === "Escape") {
           setValue(shown);
-          event.currentTarget.blur();
+          field.blur();
         }
       }}
       className={cn(
         "block w-full min-w-0 resize-none overflow-hidden border-0 bg-transparent p-0",
-        "text-[38px] font-bold leading-[1.25] tracking-[-0.02em] text-ink outline-none",
+        "text-[30px] font-bold leading-[1.25] tracking-[-0.02em] text-ink outline-none @min-[480px]:text-[38px]",
         "transition-opacity duration-[160ms] [field-sizing:content] placeholder:text-faint",
         saving && "opacity-65",
       )}
@@ -586,10 +742,34 @@ function EditableDocumentTitle({
   );
 }
 
+/** on 持续超过 delay 才变成 true；一变回 false 立刻跟着变 */
+function useLingering(on: boolean, delay: number): boolean {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (!on) {
+      setShown(false);
+      return;
+    }
+    const timer = setTimeout(() => setShown(true), delay);
+    return () => clearTimeout(timer);
+  }, [on, delay]);
+  return shown;
+}
+
+/** 状态栏分段之间的点。整行往左多出一个点的宽度、外层裁掉：折到下一行时，行首那个点正好落在裁掉的地方 */
+function Dot() {
+  return (
+    <span aria-hidden="true" className="w-[18px] shrink-0 text-center text-faint/50">
+      ·
+    </span>
+  );
+}
+
 function StatusBar({
   parts,
   onDelete,
   onReveal,
+  onHistory,
   saving,
   saveError,
 }: {
@@ -597,42 +777,61 @@ function StatusBar({
   onDelete?: () => void;
   /** 在文件夹中显示这篇文档的文件（每篇都是仓库里的一个 .md） */
   onReveal?: () => void;
+  /** 打开这篇的历史版本 */
+  onHistory?: () => void;
   saving?: boolean;
   saveError?: string | null;
 }) {
+  // 本地保存一般几毫秒就完：每停一下笔就闪一次「保存中…」只是噪音。慢到看得出来才显示
+  const slowSave = useLingering(!!saving, 600);
   return (
     <footer className="mt-16 flex items-center gap-3 border-t border-line pt-3.5">
-      <motion.div
-        className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ ...tween.base, delay: 0.18 }}
-      >
-        {parts.map((p, i) => (
-          <span key={p} className="flex items-center gap-2.5">
-            {i > 0 && <span className="text-faint/50">·</span>}
-            <span className="font-mono text-[10.5px] leading-none text-faint">{p}</span>
-          </span>
-        ))}
-        {/* 保存状态。以前 store 里记了 error 却没人渲染，
-            自动保存失败时界面上完全看不出来。 */}
-        {saveError ? (
-          <span className="flex min-w-0 items-center gap-1.5" role="status">
-            <span className="text-faint/50">·</span>
-            <AlertTriangle size={11} strokeWidth={2} className="shrink-0 text-danger" />
-            <span className="truncate font-mono text-[10.5px] leading-none text-danger">
-              保存失败：{saveError}
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <motion.div
+          className="-ml-[18px] flex flex-wrap items-center gap-y-1"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ ...tween.base, delay: 0.18 }}
+        >
+          {parts.map((p) => (
+            <span key={p} className="flex items-center">
+              <Dot />
+              <span className="font-mono text-[10.5px] leading-none text-faint">{p}</span>
             </span>
-          </span>
-        ) : (
-          saving && (
-            <span className="flex items-center gap-2.5" role="status">
-              <span className="text-faint/50">·</span>
-              <span className="font-mono text-[10.5px] leading-none text-muted">保存中…</span>
+          ))}
+          {/* 保存状态。以前 store 里记了 error 却没人渲染，
+              自动保存失败时界面上完全看不出来。 */}
+          {saveError ? (
+            <span className="flex min-w-0 items-center" role="status">
+              <Dot />
+              <AlertTriangle size={11} strokeWidth={2} className="mr-1.5 shrink-0 text-danger" />
+              <span className="truncate font-mono text-[10.5px] leading-none text-danger">
+                保存失败：{saveError}
+              </span>
             </span>
-          )
-        )}
-      </motion.div>
+          ) : (
+            slowSave && (
+              <span className="flex items-center" role="status">
+                <Dot />
+                <span className="font-mono text-[10.5px] leading-none text-muted">保存中…</span>
+              </span>
+            )
+          )}
+        </motion.div>
+      </div>
+
+      {onHistory && (
+        <button
+          type="button"
+          onClick={onHistory}
+          aria-label="历史版本"
+          title="历史版本"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-faint
+                     transition-colors duration-[140ms] hover:bg-raised hover:text-ink"
+        >
+          <History size={13.5} strokeWidth={1.8} />
+        </button>
+      )}
 
       {onReveal && (
         <button
@@ -652,6 +851,7 @@ function StatusBar({
           type="button"
           onClick={onDelete}
           aria-label="删除"
+          title="删除（可以撤销）"
           className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-faint
                      transition-colors duration-[140ms] hover:bg-danger/10 hover:text-danger"
         >

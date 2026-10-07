@@ -40,6 +40,33 @@ pub struct Task {
     pub due_date: Option<String>,
     pub time_label: Option<String>,
     pub category: Option<String>,
+    /// 写着这条任务的那篇文档：日历里点「出处」跳过去
+    pub source: Option<DocTarget>,
+    /// 在那篇正文里的行号（从 0 开始）
+    pub line: Option<i64>,
+}
+
+/// 日历月网格上的两种记号
+#[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarMarks {
+    /// 留下过东西的日子：这一天的记录写过，或者有做完了的任务
+    pub written: Vec<String>,
+    /// 还有没做完的任务的日子
+    pub open: Vec<String>,
+}
+
+/// 某一天 / 某个周期的目标，连同正文：命令面板拿它搜日记和目标
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalDoc {
+    pub target: DocTarget,
+    /// day | goal
+    pub kind: String,
+    /// 给人看的标题：「10月6日 · 完成专注模式原型」「第 41 周目标」
+    pub title: String,
+    pub content_md: String,
+    pub updated_at: i64,
 }
 
 /// 某个周期（某一周 / 某个月 / 某一年）的目标。
@@ -142,6 +169,22 @@ pub struct VaultChange {
     pub conflicts: Vec<String>,
     /// 新出现的冲突副本（网盘同步时两边都改过，网盘另存的那一份）的标题
     pub found_copies: Vec<String>,
+    /// 「笔记」下面的文件夹变了（在资源管理器里建了、删了、改了名）
+    pub folders: bool,
+}
+
+/// 删掉一个文件夹的结果，原样交回 folder_undelete 就能撤销
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderDeletion {
+    /// 删掉的文件夹（相对「笔记」的路径）
+    pub folder: String,
+    /// 进了回收站的笔记 id
+    pub notes: Vec<String>,
+    /// 删掉的文件夹和它底下的子文件夹
+    pub folders: Vec<String>,
+    /// 文件夹里还有别的文件（图片、PDF），目录留着没删
+    pub kept: bool,
 }
 
 /// 反向链接：一篇正文里写了 `[[这篇的标题]]` 的文档
@@ -171,6 +214,55 @@ pub struct BacklinkLine {
     pub text: String,
 }
 
+/// 笔记改了标题之后，别处的 `[[旧标题]]` 改成了新标题（Vault::relink）
+#[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Relink {
+    /// 改了几处链接；没改（skipped）时是本来要改的处数
+    pub links: i64,
+    /// 改了的那几篇，给人看的标题
+    pub docs: Vec<String>,
+    /// 没改的原因（新标题写不进双链、和别的笔记重名……）。改了是 None
+    pub skipped: Option<String>,
+    /// 每篇改之前、之后的全文，原样交给 note_relink_undo 就能撤销
+    pub rewrites: Vec<LinkRewrite>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkRewrite {
+    pub rel_path: String,
+    pub before: String,
+    pub after: String,
+}
+
+/// 一篇文档的历史版本：同步用的 git 仓库里每次改过它的提交（技术方案 §5.9.11）
+#[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocHistory {
+    /// 为什么没有历史（还没开启同步）。有历史时是 None
+    pub unavailable: Option<String>,
+    /// 新的在前
+    pub versions: Vec<DocVersion>,
+    /// 更早的还有，没列出来
+    pub more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocVersion {
+    /// 这一版文件内容的 git 对象 id，交给 doc_version_text 取正文
+    pub blob: String,
+    /// 提交时间，UTC 毫秒
+    pub time: i64,
+    /// 哪台设备改的：同步提交署名「OnTheWay (设备名)」里的设备名；别的 git 工具提交的就是署名
+    pub device: String,
+    /// 这台设备自己改的
+    pub mine: bool,
+    /// 这一版时的标题（笔记改过标题才和现在不一样；某一天、目标是空串）
+    pub title: String,
+}
+
 /// 存进「附件」文件夹的一个文件
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -192,4 +284,99 @@ pub struct VaultInfo {
     pub days: i64,
     pub goals: i64,
     pub tasks: i64,
+}
+
+/* ---------------- 同步（技术方案 §5.9） ---------------- */
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncState {
+    /// 这个仓库没开同步
+    #[default]
+    Off,
+    /// 同步好了
+    Idle,
+    Syncing,
+    /// 连不上云端：改动都在本机，过一会儿再试
+    Offline,
+    /// 登录失效，要重新登录
+    Auth,
+    /// 别的错（云端拒绝、本地仓库出错），原因在 message 里
+    Error,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatus {
+    pub state: SyncState,
+    /// 给人看的云端仓库：`github.com/xxx/ontheway-notes`
+    pub remote: Option<String>,
+    /// 上一次同步成功的时间（UTC 毫秒）
+    pub last_synced_at: Option<i64>,
+    /// 本机还有几个提交没推上去
+    pub unpushed: u32,
+    /// 出错时的原因
+    pub message: Option<String>,
+    /// 太大、没有同步的文件
+    pub oversized: Vec<SyncOversized>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncOversized {
+    /// 仓库里的相对路径
+    pub rel: String,
+    pub bytes: f64,
+}
+
+/// 一个登录过的同步账号
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAccount {
+    /// github / gitee
+    pub provider: String,
+    pub login: String,
+}
+
+/// GitHub 设备码登录：给用户看的码，和去哪输入
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncDeviceCode {
+    pub user_code: String,
+    pub verification_uri: String,
+    /// 码多久过期（秒）
+    pub expires_in: u32,
+}
+
+/// 云端的一个仓库
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncRemoteRepo {
+    /// `owner/name`
+    pub full_name: String,
+    pub clone_url: String,
+    pub private: bool,
+    /// 最近一次推送 / 更新（云端给的时间字符串）
+    pub updated_at: Option<String>,
+}
+
+/// 同步用的代理：用户填的，和实际在用的（填的 > 环境变量 > 系统代理）
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncProxy {
+    pub configured: Option<String>,
+    pub effective: Option<String>,
+}
+
+/// 开启同步前看一眼云端（技术方案 §5.9.7）：接下来会发生什么
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPlan {
+    /// true：云端是空的（或者就是这个仓库以前连过的），在现在的仓库上接上、把这里的推上去。
+    /// false：云端已经有东西，clone 到 cloneTarget、换过去
+    pub connect_here: bool,
+    /// clone 到哪个文件夹（绝对路径）
+    pub clone_target: Option<String>,
+    /// 现在的仓库里有没有笔记：有的话问要不要「也合并进来」
+    pub local_notes: bool,
 }

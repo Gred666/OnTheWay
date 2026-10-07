@@ -1,8 +1,8 @@
 /* ============================================================
    正文里的 `[[双链]]`。
 
-   和 Rust 侧 src-tauri/src/vault/links.rs 同一套规则（桌面版的反向链接在那边算；
-   这里给浏览器 mock 和反向链接面板画行内小块用）：
+   和 Rust 侧 src-tauri/src/vault/links.rs 同一套规则（桌面版的反向链接、改标题时改写别处的
+   链接在那边算；这里给浏览器 mock 和反向链接面板画行内小块用）：
      [[标题]]  [[标题|别名]]  [[标题#小节]]  [[标题^块id]]
    目标按标题匹配，去掉首尾空白、不分大小写。围栏代码块和行内代码里的不算。
    ============================================================ */
@@ -16,10 +16,23 @@ export interface WikiLinkHit {
 
 /** 双链的目标标题：`标题|别名` → 标题，`标题#小节` / `标题^块` → 标题 */
 export function wikiTargetTitle(inner: string): string {
+  const [start, end] = titleRange(inner);
+  return inner.slice(start, end);
+}
+
+/** 目标标题在 `[[` `]]` 之间那段原文里的位置（去掉两头空白） */
+function titleRange(inner: string): [number, number] {
   const target = inner.split("|")[0] ?? "";
   const cuts = [target.indexOf("#"), target.indexOf("^")].filter((index) => index > 0);
-  const cut = cuts.length ? Math.min(...cuts) : -1;
-  return (cut >= 0 ? target.slice(0, cut) : target).trim();
+  const segment = target.slice(0, cuts.length ? Math.min(...cuts) : target.length);
+  const start = segment.length - segment.trimStart().length;
+  return [start, start + segment.trim().length];
+}
+
+/** 标题能不能原样写进 `[[…]]`：`[` `]` 会把链接拆断，`|` `#` `^` 会被当成别名、小节、块 */
+export function linkableTitle(title: string): boolean {
+  const clean = title.trim();
+  return !!clean && !/[[\]|#^\r\n]/.test(clean);
 }
 
 /** `[[目标|别名]]` 显示成什么：有别名显示别名，没有就是目标原文 */
@@ -35,9 +48,37 @@ export function sameTitle(a: string, b: string): boolean {
 
 /** 一篇正文里所有的双链，按出现顺序 */
 export function findWikiLinks(body: string): WikiLinkHit[] {
-  const out: WikiLinkHit[] = [];
+  return spans(body).map((span) => ({ line: span.line, title: body.slice(span.start, span.end) }));
+}
+
+/**
+ * 把正文里链到 `from` 的双链改成链到 `to`：只换标题那一段，`|别名`、`#小节`、`^块` 和两头的空白
+ * 原样留着；代码里的、转义的不动。一处都没有返回 null
+ */
+export function retargetWikiLinks(
+  body: string,
+  from: string,
+  to: string,
+): { body: string; count: number } | null {
+  const hits = spans(body).filter((span) => sameTitle(body.slice(span.start, span.end), from));
+  if (!hits.length) return null;
+  let out = "";
+  let at = 0;
+  for (const span of hits) {
+    out += body.slice(at, span.start) + to.trim();
+    at = span.end;
+  }
+  return { body: out + body.slice(at), count: hits.length };
+}
+
+/** 每处双链里标题那一段在正文里的位置 */
+function spans(body: string): { line: number; start: number; end: number }[] {
+  const out: { line: number; start: number; end: number }[] = [];
   let fence: { ch: string; len: number } | null = null;
+  let offset = 0;
   body.split("\n").forEach((line, index) => {
+    const lineStart = offset;
+    offset += line.length + 1;
     const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (marker) {
       const run = marker[1]!;
@@ -51,8 +92,32 @@ export function findWikiLinks(body: string): WikiLinkHit[] {
       }
     }
     if (fence || !line.includes("[[")) return;
-    for (const title of linksInLine(withoutCodeSpans(line))) out.push({ line: index, title });
+    // 行内代码换成了等长的空格，位置和原来那一行一一对应
+    for (const [start, end] of linkRanges(withoutCodeSpans(line))) {
+      out.push({ line: index, start: lineStart + start, end: lineStart + end });
+    }
   });
+  return out;
+}
+
+/** 一行里每处双链的标题在这一行里的位置 */
+function linkRanges(line: string): [number, number][] {
+  const out: [number, number][] = [];
+  let base = 0;
+  for (;;) {
+    const open = line.indexOf("[[", base);
+    if (open < 0) break;
+    const close = line.indexOf("]]", open + 2);
+    if (close < 0) break;
+    const inner = line.slice(open + 2, close);
+    // `[[a [b] c]]` 这类嵌套不是双链；`\[[` 是转义
+    const escaped = open > 0 && line[open - 1] === "\\";
+    if (!inner.includes("[") && !inner.includes("]") && !escaped) {
+      const [from, to] = titleRange(inner);
+      if (from < to) out.push([open + 2 + from, open + 2 + to]);
+    }
+    base = close + 2;
+  }
   return out;
 }
 
@@ -79,17 +144,6 @@ export function splitWikiSegments(
     rest = rest.slice(end + 2);
   }
   return out;
-}
-
-function linksInLine(line: string): string[] {
-  return splitWikiSegments(line)
-    .filter((part, index, parts) => {
-      if (part.kind !== "link") return false;
-      const before = parts[index - 1];
-      // `\[[` 是转义
-      return !(before?.kind === "text" && before.text.endsWith("\\"));
-    })
-    .map((part) => wikiTargetTitle((part as { inner: string }).inner));
 }
 
 /** 去掉行内代码（成对的反引号串之间的内容），换成空格，位置不变 */

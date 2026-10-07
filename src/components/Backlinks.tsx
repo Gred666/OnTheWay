@@ -52,8 +52,9 @@ export function Backlinks({ noteId, title }: { noteId: string; title: string }) 
     };
   }, [noteId, title, notes, archived, dayDocs, goals]);
 
-  // 第一次还没取回来：什么都不画，免得先闪一下「还没有」
-  if (!links) return null;
+  // 第一次还没取回来、或者没有别的文档链过来：什么都不画。以前没有时也画一块
+  // 「还没有别的文档链接到这里…」，每篇笔记底下都挂着同一段说明，只是噪音
+  if (!links || links.length === 0) return null;
 
   return (
     <motion.section
@@ -66,28 +67,16 @@ export function Backlinks({ noteId, title }: { noteId: string; title: string }) 
       <div className="mb-2.5 flex items-center gap-2">
         <Link2 size={13} strokeWidth={2} className="text-faint" />
         <h2 className="text-[12px] font-semibold tracking-[0.04em] text-muted">反向链接</h2>
-        {links.length > 0 && (
-          <span className="rounded-full bg-raised px-1.5 text-[10.5px] leading-[17px] text-muted tabular-nums">
-            {links.length}
-          </span>
-        )}
+        <span className="rounded-full bg-raised px-1.5 text-[10.5px] leading-[17px] text-muted tabular-nums">
+          {links.length}
+        </span>
       </div>
 
-      {links.length === 0 ? (
-        <p className="text-[12.5px] leading-[1.6] text-faint">
-          还没有别的文档链接到这里。在任意一篇里写
-          <span className="mx-1 rounded-[4px] bg-raised px-1 font-mono text-[11.5px] text-muted">
-            [[{title}]]
-          </span>
-          就能链过来。
-        </p>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {links.map((link) => (
-            <BacklinkCard key={keyOf(link)} link={link} title={title} />
-          ))}
-        </div>
-      )}
+      <div className="flex flex-col gap-2">
+        {links.map((link) => (
+          <BacklinkCard key={keyOf(link)} link={link} title={title} />
+        ))}
+      </div>
     </motion.section>
   );
 }

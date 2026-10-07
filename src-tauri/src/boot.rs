@@ -2,7 +2,7 @@
 启动时的准备：数据放哪、仓库在哪、第一次怎么建。
 
 应用数据目录（每台机器一份，不同步）：
-    config.json      仓库在哪、旧库搬过没有
+    config.json      仓库在哪、旧库搬过没有、同步的代理和登录过的账号（令牌在系统钥匙串里）
     index/<指纹>.db   每个仓库一份索引，删了能重建
     ontheway.db      旧版的数据库。搬完留在原地当备份，不再读写
 
@@ -29,6 +29,12 @@ pub struct Config {
     /// 旧库（ontheway.db）已经搬过了，或者已经有过一个仓库、不该再搬
     #[serde(default)]
     pub legacy_imported: bool,
+    /// 同步用的代理，用户自己填的（技术方案 §5.9.4）。没填就按环境变量、系统代理找
+    #[serde(default)]
+    pub sync_proxy: Option<String>,
+    /// 登录过的同步账号：托管方（github / gitee）→ login。令牌在钥匙串里，这里不放
+    #[serde(default)]
+    pub sync_accounts: std::collections::BTreeMap<String, String>,
 }
 
 impl Config {
@@ -191,6 +197,7 @@ mod tests {
         let config = Config {
             vault_root: Some(PathBuf::from("D:/笔记")),
             legacy_imported: true,
+            ..Config::default()
         };
         config.save(dir.path()).unwrap();
         let back = Config::load(dir.path());

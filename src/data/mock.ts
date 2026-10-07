@@ -1,17 +1,41 @@
 import { formatMonthDayCN, goalTitle, periodStartOf } from "@/lib/date";
 import { countWords, makeExcerpt } from "@/lib/plainText";
-import { contextLine, findWikiLinks, sameTitle } from "@/lib/wikilinks";
+import {
+  contextLine,
+  findWikiLinks,
+  linkableTitle,
+  retargetWikiLinks,
+  sameTitle,
+} from "@/lib/wikilinks";
 import type { Backend } from "./backend";
+import {
+  cleanFolderName,
+  folderOf,
+  parentOf,
+  relPathIn,
+  renamedPath,
+  renamedRelPath,
+  uniqueChild,
+  within,
+} from "./folders";
 import { seedArchivedRaw, seedDayNotes, seedGoalsRaw, seedNotesRaw, seedTasksRaw } from "./seed";
 import {
   type Backlink,
   type DayDoc,
+  type DocHistory,
+  type DocumentSaveTarget,
+  type FolderDeletion,
   type Goal,
   type GoalHorizon,
+  type JournalDoc,
+  type LinkRewrite,
   type Note,
   type NoteInput,
+  type Relink,
+  SYNC_OFF,
   type SearchResult,
   type Task,
+  type VaultChange,
   type VaultInfo,
   goalKey,
 } from "./types";
@@ -40,6 +64,8 @@ interface MockState {
   goals: Record<string, Goal>;
   /** 删掉的笔记。和 Rust 侧的软删除一样可以撤销；旧版存档里没有这一项 */
   trash?: Note[];
+  /** 「笔记」下面的文件夹（相对「笔记」的路径）；旧版存档里没有这一项 */
+  folders?: string[];
 }
 
 function load(): MockState {
@@ -125,6 +151,19 @@ function save(s: MockState) {
 
 const state: MockState = load();
 
+/** 文件夹在不在（空串是「笔记」本身，总在） */
+const hasFolder = (folder: string) => folder === "" || (state.folders ?? []).includes(folder);
+
+/** 把文件夹连同它的上层都建上（恢复 / 撤销删除时原来的文件夹可能没了） */
+function ensureFolder(folder: string) {
+  const folders = new Set(state.folders ?? []);
+  for (let path = folder; path; path = parentOf(path)) folders.add(path);
+  state.folders = [...folders].sort();
+}
+
+const uniqueFolder = (parent: string, name: string, keep?: string) =>
+  uniqueChild(state.folders ?? [], parent, name, keep);
+
 /** 模拟一点 IPC 往返延迟，免得开发时对真机性能有错觉 */
 const tick = () => new Promise<void>((r) => setTimeout(r, 8));
 
@@ -144,8 +183,163 @@ function notFound(what: string): never {
 }
 
 /** 浏览器预览里没有仓库文件夹：跟文件打交道的操作只在桌面版里有 */
+function syncDesktopOnly(): never {
+  throw { kind: "Invalid", message: "浏览器预览里没有笔记文件夹，桌面版里才能开启同步" };
+}
+
 function desktopOnly(): never {
   throw { kind: "Invalid", message: "浏览器预览里没有本地文件，桌面版里才能打开笔记文件夹" };
+}
+
+/* ---------------- 别处的改动 ----------------
+   浏览器里没有别的程序会改文件；只有改标题时改写别处的双链会动到别的文档，照桌面版的样子通知前端 */
+
+const vaultListeners = new Set<(change: VaultChange) => void>();
+
+function announce(change: Partial<VaultChange>) {
+  const full: VaultChange = {
+    notes: [],
+    days: [],
+    goals: [],
+    tasks: false,
+    conflicts: [],
+    foundCopies: [],
+    folders: false,
+    ...change,
+  };
+  setTimeout(() => {
+    for (const listener of vaultListeners) listener(full);
+  }, 0);
+}
+
+/** 正文里可能写着双链的每一篇（笔记、某一天、目标），改写别处的链接时用 */
+function linkSources() {
+  const notes = state.notes.map((note) => ({
+    kind: "note" as const,
+    id: note.id,
+    relPath: present(note).relPath,
+    title: note.title,
+    get: () => note.contentMd,
+    set: (body: string) => {
+      note.contentMd = body;
+      note.excerpt = makeExcerpt(body, 60);
+      note.wordCount = countWords(body);
+      note.updatedAt = Date.now();
+      recordVersion(`note:${note.id}`, body, note.title);
+    },
+  }));
+  const days = Object.entries(state.days).map(([date, day]) => ({
+    kind: "day" as const,
+    id: date,
+    relPath: dayRelPath(date),
+    title: day.title ? `${formatMonthDayCN(date)} · ${day.title}` : formatMonthDayCN(date),
+    get: () => day.noteMd,
+    set: (body: string) => {
+      day.noteMd = body;
+      day.updatedAt = Date.now();
+      recordVersion(`day:${date}`, body);
+    },
+  }));
+  const goals = Object.entries(state.goals).map(([key, goal]) => ({
+    kind: "goal" as const,
+    id: key,
+    relPath: goalRelPath(goal.periodStart),
+    title: goalTitle(goal.horizon, goal.periodStart),
+    get: () => goal.contentMd,
+    set: (body: string) => {
+      goal.contentMd = body;
+      goal.updatedAt = Date.now();
+      recordVersion(`goal:${key}`, body);
+    },
+  }));
+  return [...notes, ...days, ...goals];
+}
+
+type LinkSource = ReturnType<typeof linkSources>[number];
+
+function announceSources(sources: LinkSource[]) {
+  announce({
+    notes: sources.filter((s) => s.kind === "note").map((s) => s.id),
+    days: sources.filter((s) => s.kind === "day").map((s) => s.id),
+    goals: sources.filter((s) => s.kind === "goal").map((s) => s.id),
+  });
+}
+
+/* ---------------- 历史版本 ----------------
+   浏览器里没有 git：每次保存记一版，停笔一分钟以内的算同一版（和同步停笔一分钟提交一次差不多）。
+   示例内容第一次看历史时编出两版更早的，好看效果。只在内存里，刷新就没了 */
+
+interface MockVersion {
+  blob: string;
+  time: number;
+  device: string;
+  mine: boolean;
+  title: string;
+  body: string;
+}
+
+const versionLog = new Map<string, MockVersion[]>();
+let blobSeq = 0;
+
+function recordVersion(key: string, body: string, title = "") {
+  const list = versionLog.get(key) ?? [];
+  const last = list[0];
+  if (last?.body === body && last.title === title) return;
+  const now = Date.now();
+  const version = {
+    blob: `mock-${++blobSeq}`,
+    time: now,
+    device: "这台电脑",
+    mine: true,
+    title,
+    body,
+  };
+  if (last?.mine && now - last.time < 60_000) {
+    // 一分钟里又改回了上一版的样子：等于没改（同步那边也只会在停笔一分钟后提交一次）
+    const previous = list[1];
+    if (previous?.body === body && previous.title === title) list.shift();
+    else list[0] = version;
+  } else {
+    list.unshift(version);
+  }
+  versionLog.set(key, list);
+}
+
+function historyOf(key: string, body: string, title: string): MockVersion[] {
+  if (!versionLog.has(key) && body.trim()) {
+    const paragraphs = body.split(/\n{2,}/);
+    const earlier = (drop: number) =>
+      paragraphs.slice(0, Math.max(1, paragraphs.length - drop)).join("\n\n");
+    const hour = 3_600_000;
+    const now = Date.now();
+    versionLog.set(key, [
+      {
+        blob: `mock-${++blobSeq}`,
+        time: now - 2 * hour,
+        device: "这台电脑",
+        mine: true,
+        title,
+        body,
+      },
+      {
+        blob: `mock-${++blobSeq}`,
+        time: now - 29 * hour,
+        device: "书房的电脑",
+        mine: false,
+        title,
+        body: earlier(1),
+      },
+      {
+        blob: `mock-${++blobSeq}`,
+        time: now - 74 * hour,
+        device: "这台电脑",
+        mine: true,
+        title,
+        body: `${earlier(2)}\n\n（草稿，还没想好）`,
+      },
+    ]);
+  }
+  return versionLog.get(key) ?? [];
 }
 
 const emptyGoal = (horizon: GoalHorizon, periodStart: string): Goal => ({
@@ -182,13 +376,15 @@ export const mockBackend: Backend = {
 
     if (current) {
       if (current.title !== input.title) {
-        current.relPath = `${current.isArchived ? "归档" : "笔记"}/${input.title}.md`;
+        const dir = current.relPath.slice(0, current.relPath.lastIndexOf("/"));
+        current.relPath = `${dir}/${input.title}.md`;
       }
       current.title = input.title;
       current.contentMd = contentMd;
       current.excerpt = excerpt;
       current.wordCount = countWords(contentMd);
       current.updatedAt = now;
+      recordVersion(`note:${id}`, contentMd, input.title);
     } else {
       state.notes.unshift({
         id,
@@ -235,6 +431,8 @@ export const mockBackend: Backend = {
     await tick();
     const n = state.notes.find((x) => x.id === id);
     if (!n) notFound(`note ${id}`);
+    // relPath 归档时没动：恢复回原来的文件夹，文件夹没了就建上（和 Rust 侧一样）
+    ensureFolder(folderOf(n));
     n.isArchived = false;
     n.archivedAt = null;
     n.updatedAt = Date.now();
@@ -256,8 +454,101 @@ export const mockBackend: Backend = {
     const i = trash.findIndex((x) => x.id === id);
     if (i < 0) notFound(`deleted note ${id}`);
     const [restored] = trash.splice(i, 1);
+    ensureFolder(folderOf(restored!));
     state.notes.push(restored!);
     save(state);
+  },
+
+  async noteCreate(folder, title) {
+    await tick();
+    if (!hasFolder(folder)) notFound(`文件夹「${folder}」不在了`);
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    state.notes.unshift({
+      id,
+      title,
+      contentMd: "",
+      excerpt: "",
+      wordCount: 0,
+      isPinned: false,
+      isArchived: false,
+      archiveCategory: null,
+      archivedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      relPath: relPathIn({ relPath: "", title }, folder),
+      conflictOf: null,
+    });
+    save(state);
+    return id;
+  },
+
+  async noteMove(id, folder) {
+    await tick();
+    const n = state.notes.find((x) => x.id === id);
+    if (!n) notFound(`note ${id}`);
+    if (n.isArchived) throw { kind: "Invalid", message: "归档里的笔记先恢复再移动" };
+    if (!hasFolder(folder)) notFound(`文件夹「${folder}」不在了`);
+    n.relPath = relPathIn(n, folder);
+    save(state);
+    return present(n);
+  },
+
+  async folderList() {
+    await tick();
+    return [...(state.folders ?? [])].sort();
+  },
+
+  async folderCreate(parent, name) {
+    await tick();
+    if (!hasFolder(parent)) notFound(`文件夹「${parent}」不在了`);
+    const clean = cleanFolderName(name);
+    if (!clean) throw { kind: "Invalid", message: "文件夹名不能是空的" };
+    const path = uniqueFolder(parent, clean);
+    ensureFolder(path);
+    save(state);
+    return path;
+  },
+
+  async folderRename(folder, name) {
+    await tick();
+    if (!folder || !hasFolder(folder)) notFound(`文件夹「${folder}」不在了`);
+    const clean = cleanFolderName(name);
+    if (!clean) throw { kind: "Invalid", message: "文件夹名不能是空的" };
+    const next = uniqueFolder(parentOf(folder), clean, folder);
+    if (next === folder) return folder;
+    state.folders = (state.folders ?? []).map((path) => renamedPath(path, folder, next)).sort();
+    for (const note of [...state.notes, ...(state.trash ?? [])]) {
+      note.relPath = renamedRelPath(note.relPath, folder, next);
+    }
+    save(state);
+    return next;
+  },
+
+  async folderDelete(folder): Promise<FolderDeletion> {
+    await tick();
+    if (!folder || !hasFolder(folder)) notFound(`文件夹「${folder}」不在了`);
+    const gone = state.notes.filter((n) => !n.isArchived && within(folderOf(n), folder));
+    state.notes = state.notes.filter((n) => !gone.includes(n));
+    state.trash = [...(state.trash ?? []), ...gone];
+    const folders = (state.folders ?? []).filter((path) => within(path, folder));
+    state.folders = (state.folders ?? []).filter((path) => !within(path, folder));
+    save(state);
+    return { folder, notes: gone.map((n) => n.id), folders, kept: false };
+  },
+
+  async folderUndelete(deletion) {
+    await tick();
+    for (const path of deletion.folders) ensureFolder(path);
+    const ids = new Set(deletion.notes);
+    const back = (state.trash ?? []).filter((n) => ids.has(n.id));
+    state.trash = (state.trash ?? []).filter((n) => !ids.has(n.id));
+    state.notes.push(...back);
+    save(state);
+  },
+
+  async folderReveal() {
+    desktopOnly();
   },
 
   async noteBacklinks(id): Promise<Backlink[]> {
@@ -309,6 +600,101 @@ export const mockBackend: Backend = {
       out.push({ ...source, lines, count: hits.length });
     });
     return out.sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  /** 规则和 Rust 侧 Vault::relink 一样 */
+  async noteRelink(id, oldTitle): Promise<Relink> {
+    await tick();
+    const note = state.notes.find((x) => x.id === id);
+    if (!note) notFound(`note ${id}`);
+    const from = oldTitle.trim();
+    const to = note.title.trim();
+    const result: Relink = { links: 0, docs: [], skipped: null, rewrites: [] };
+    if (!from || sameTitle(from, to)) return result;
+    const sources = linkSources().filter(
+      (source) =>
+        !(source.kind === "note" && source.id === id) &&
+        findWikiLinks(source.get()).some((hit) => sameTitle(hit.title, from)),
+    );
+    if (!sources.length) return result;
+
+    const taken = (title: string) =>
+      state.notes.some((other) => other.id !== id && sameTitle(other.title, title));
+    result.skipped = !linkableTitle(to)
+      ? `新标题里有 [ ] | # ^，写不进双链：别处的 [[${from}]] 没有改`
+      : taken(from)
+        ? `还有一篇也叫「${from}」，别处的 [[${from}]] 仍然指向它，没有改`
+        : taken(to)
+          ? `已经有一篇叫「${to}」了，别处的 [[${from}]] 没有改，免得分不清链到哪篇`
+          : null;
+    if (result.skipped) {
+      result.links = sources.reduce(
+        (sum, source) =>
+          sum + findWikiLinks(source.get()).filter((hit) => sameTitle(hit.title, from)).length,
+        0,
+      );
+      return result;
+    }
+
+    for (const source of sources) {
+      const before = source.get();
+      const rewritten = retargetWikiLinks(before, from, to);
+      if (!rewritten) continue;
+      source.set(rewritten.body);
+      result.links += rewritten.count;
+      result.docs.push(source.title);
+      result.rewrites.push({ relPath: source.relPath, before, after: rewritten.body });
+    }
+    save(state);
+    announceSources(sources);
+    return result;
+  },
+
+  async noteRelinkUndo(rewrites: LinkRewrite[]) {
+    await tick();
+    const sources = linkSources();
+    const touched: LinkSource[] = [];
+    for (const rewrite of rewrites) {
+      const source = sources.find((s) => s.relPath === rewrite.relPath);
+      if (!source || source.get() !== rewrite.after) continue;
+      source.set(rewrite.before);
+      touched.push(source);
+    }
+    save(state);
+    announceSources(touched);
+    return touched.length;
+  },
+
+  async docHistory(target: DocumentSaveTarget): Promise<DocHistory> {
+    await tick();
+    let key: string;
+    let body = "";
+    let title = "";
+    if (target.kind === "note") {
+      const note = state.notes.find((x) => x.id === target.id);
+      if (!note) notFound(`note ${target.id}`);
+      key = `note:${note.id}`;
+      body = note.contentMd;
+      title = note.title;
+    } else if (target.kind === "day") {
+      key = `day:${target.id}`;
+      body = state.days[target.id]?.noteMd ?? "";
+    } else {
+      const goal = goalKey(target.horizon, target.periodStart);
+      key = `goal:${goal}`;
+      body = state.goals[goal]?.contentMd ?? "";
+    }
+    const versions = historyOf(key, body, title).map(({ body: _body, ...version }) => version);
+    return { unavailable: null, versions, more: false };
+  },
+
+  async docVersionText(blob) {
+    await tick();
+    for (const list of versionLog.values()) {
+      const found = list.find((version) => version.blob === blob);
+      if (found) return found.body;
+    }
+    notFound(`version ${blob}`);
   },
 
   async searchNotes(query, limit): Promise<SearchResult> {
@@ -368,6 +754,7 @@ export const mockBackend: Backend = {
           createdAt: now,
           updatedAt: now,
         };
+    recordVersion(`goal:${key}`, contentMd);
     save(state);
     return this.goalGet(horizon, periodStart);
   },
@@ -404,16 +791,46 @@ export const mockBackend: Backend = {
   async calendarDaySave(date, title, noteMd): Promise<DayDoc> {
     await tick();
     state.days[date] = { title, noteMd, updatedAt: Date.now() };
+    recordVersion(`day:${date}`, noteMd);
     save(state);
     return this.calendarDay(date, false);
   },
 
-  async calendarMarked(from, to) {
+  async calendarMarks(from, to) {
     await tick();
-    const set = new Set<string>();
-    for (const t of Object.values(state.tasks)) if (t.dueDate) set.add(t.dueDate);
-    for (const [d, v] of Object.entries(state.days)) if (v.noteMd || v.title) set.add(d);
-    return [...set].filter((d) => d >= from && d <= to).sort();
+    const inRange = (date: string) => date >= from && date <= to;
+    const written = new Set<string>();
+    const open = new Set<string>();
+    for (const t of Object.values(state.tasks)) {
+      if (!t.dueDate || !inRange(t.dueDate)) continue;
+      (t.status === "done" ? written : open).add(t.dueDate);
+    }
+    for (const [d, v] of Object.entries(state.days))
+      if ((v.noteMd || v.title) && inRange(d)) written.add(d);
+    return { written, open };
+  },
+
+  async journalList(): Promise<JournalDoc[]> {
+    await tick();
+    const days: JournalDoc[] = Object.entries(state.days)
+      .filter(([, day]) => day.noteMd || day.title)
+      .map(([date, day]) => ({
+        target: { kind: "day", id: date },
+        kind: "day",
+        title: day.title ? `${formatMonthDayCN(date)} · ${day.title}` : formatMonthDayCN(date),
+        contentMd: day.noteMd,
+        updatedAt: day.updatedAt,
+      }));
+    const goals: JournalDoc[] = Object.values(state.goals)
+      .filter((goal) => goal.contentMd)
+      .map((goal) => ({
+        target: { kind: "goal", horizon: goal.horizon, periodStart: goal.periodStart },
+        kind: "goal",
+        title: goalTitle(goal.horizon, goal.periodStart),
+        contentMd: goal.contentMd,
+        updatedAt: goal.updatedAt,
+      }));
+    return [...days, ...goals].sort((a, b) => b.updatedAt - a.updatedAt);
   },
 
   async vaultInfo(): Promise<VaultInfo> {
@@ -473,8 +890,60 @@ export const mockBackend: Backend = {
     desktopOnly();
   },
 
-  // 浏览器里没有别的程序会改这些数据
-  async onVaultChanged() {
+  // 浏览器里没有别的程序会改这些数据；只有改写别处双链时会通知（announce）
+  async onVaultChanged(listener) {
+    vaultListeners.add(listener);
+    return () => {
+      vaultListeners.delete(listener);
+    };
+  },
+
+  // 浏览器里没有仓库文件夹，也就没有同步
+  async syncStatus() {
+    return SYNC_OFF;
+  },
+  async syncNow() {
+    return false;
+  },
+  async onSyncStatus() {
     return () => {};
+  },
+  async onSyncNotice() {
+    return () => {};
+  },
+  async syncAccounts() {
+    return [];
+  },
+  async syncGithubLoginStart() {
+    syncDesktopOnly();
+  },
+  async syncGithubLoginWait() {
+    syncDesktopOnly();
+  },
+  async syncLoginCancel() {},
+  async syncGiteeLogin() {
+    syncDesktopOnly();
+  },
+  async syncLogout() {},
+  async syncRepos() {
+    syncDesktopOnly();
+  },
+  async syncCreateRepo() {
+    syncDesktopOnly();
+  },
+  async syncProxy() {
+    return { configured: null, effective: null };
+  },
+  async syncSetProxy(proxy) {
+    return { configured: proxy, effective: proxy };
+  },
+  async syncInspect() {
+    syncDesktopOnly();
+  },
+  async syncEnable() {
+    syncDesktopOnly();
+  },
+  async syncDisable() {
+    return SYNC_OFF;
   },
 };

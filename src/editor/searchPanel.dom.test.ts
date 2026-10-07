@@ -255,7 +255,13 @@ describe("查找面板", () => {
     const { find } = open(view);
     press(find, { key: "Escape" });
     expect(searchPanelOpen(view.state)).toBe(false);
-    expect(view.dom.querySelector(".otw-search")).toBeNull();
+    expect(view.dom.querySelector(".otw-search:not(.is-leaving)")).toBeNull();
+    // 原处只留一份收回去的副本：读屏、键盘都碰不到它
+    const leaving = view.dom.querySelector<HTMLElement>(".otw-search.is-leaving");
+    if (leaving) {
+      expect(leaving.getAttribute("aria-hidden")).toBe("true");
+      expect(leaving.inert).toBe(true);
+    }
   });
 
   it("follows a query set from outside (Mod-F on a selection)", () => {

@@ -10,7 +10,12 @@ import { describe, expect, it } from "vitest";
  * 主线程先卡在找字体上（4 倍降速时约 100ms，只有 ↵ 一个字）。命令面板一直用的是图标。
  */
 
-const POPUPS = ["EmojiPicker.tsx", "TemplatePicker.tsx", "../components/CommandPalette.tsx"];
+const POPUPS = [
+  "EmojiPicker.tsx",
+  "TemplatePicker.tsx",
+  "SuggestMenu.tsx",
+  "../components/CommandPalette.tsx",
+];
 
 /** 箭头（U+2190–21FF）、杂项技术符号（U+2300–23FF，⌘ ⌫ ⏎） */
 const RARE_GLYPH = /[←-⇿⌀-⏿]/u;

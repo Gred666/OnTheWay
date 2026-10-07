@@ -11,6 +11,8 @@ import {
   periodStartOf,
   toISODate,
 } from "@/lib/date";
+import { conflictOriginalTitle, conflictTarget } from "./conflicts";
+import { folderOf } from "./folders";
 import { NEW_NOTE_TITLE, saveKeyOf, useData } from "./store";
 import {
   type DayDoc,
@@ -72,12 +74,9 @@ export function useCurrentDocument(): DocumentModel {
         title: note.title,
         conflict: conflictOf(note, notes, archived),
         relPath: note.relPath,
+        folder: folderOf(note),
         bodyMd: draftOr({ kind: "note", id: note.id }, note.contentMd),
-        statusParts: [
-          `${note.wordCount} 字`,
-          `创建时间 ${formatTimestampFull(note.createdAt)}`,
-          `上次更新 ${formatRelativeTime(note.updatedAt)}`,
-        ],
+        statusParts: noteStatus(note, "上次更新"),
         deletable: true,
         editor: { target: { kind: "note", id: note.id }, titleEditable: true },
       };
@@ -111,6 +110,7 @@ export function useCurrentDocument(): DocumentModel {
       const segments = {
         group: "calendar",
         options: ["日TODO", "周/GOAL", "月/GOAL", "年/GOAL"],
+        short: ["日", "周", "月", "年"],
         active: scopeLabel(calendarScope),
       };
 
@@ -145,11 +145,9 @@ export function useCurrentDocument(): DocumentModel {
           text: `已归档 · ${formatFullCN(toISODate(new Date(note.archivedAt ?? note.updatedAt)))}`,
         },
         bodyMd: draftOr({ kind: "note", id: note.id }, note.contentMd),
-        statusParts: [
-          `${note.wordCount} 字`,
-          `创建时间 ${formatTimestampFull(note.createdAt)}`,
-          `最后编辑于 ${formatRelativeTime(note.updatedAt)}`,
-        ],
+        statusParts: noteStatus(note, "最后编辑于"),
+        // 归档里的也能直接删（进回收站，可以撤销），不用先恢复出来
+        deletable: true,
         editor: { target: { kind: "note", id: note.id }, titleEditable: true },
       };
     }
@@ -236,17 +234,29 @@ function goalDocument(
 
 /* ---------------- 辅助 ---------------- */
 
+/**
+ * 笔记的状态栏：字数、创建时间、上次更新。刚建的、建完还没过一分钟就改的，
+ * 「创建」和「更新」是同一刻，只写一个
+ */
+function noteStatus(note: Note, updatedLabel: string): string[] {
+  const parts = [`${note.wordCount} 字`, `创建时间 ${formatTimestampFull(note.createdAt)}`];
+  if (note.updatedAt - note.createdAt >= 60_000) {
+    parts.push(`${updatedLabel} ${formatRelativeTime(note.updatedAt)}`);
+  }
+  return parts;
+}
+
 function emptyDoc(empty: NonNullable<DocumentModel["empty"]>): DocumentModel {
   return { key: `empty-${empty.title}`, title: empty.title, bodyMd: "", statusParts: [], empty };
 }
 
-/** 这篇是冲突副本、原文还在：冲突横幅要的东西 */
+/** 这篇是冲突副本、原文还在：冲突横幅要的东西。原文是某一天 / 目标时，正文由横幅按需去取 */
 function conflictOf(note: Note, notes: Note[], archived: Note[]): DocumentModel["conflict"] {
   if (!note.conflictOf) return undefined;
-  const original =
-    notes.find((n) => n.id === note.conflictOf) ?? archived.find((n) => n.id === note.conflictOf);
-  if (!original) return undefined;
-  return { copyId: note.id, originalId: original.id, originalTitle: original.title };
+  const original = conflictTarget(note.conflictOf);
+  const originalTitle = conflictOriginalTitle(original, { notes, archived });
+  if (originalTitle === undefined) return undefined;
+  return { copyId: note.id, original, originalTitle };
 }
 
 function horizonLabel(h: GoalHorizon): string {

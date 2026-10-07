@@ -1,5 +1,6 @@
 import type { Attachment, OutlineItem } from "@/data/types";
 import { MOD_KEY } from "@/lib/platform";
+import { rememberSpot, spotOf } from "@/lib/viewMemory";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
@@ -11,6 +12,7 @@ import {
   EditorSelection,
   EditorState,
   type Extension,
+  Facet,
   Prec,
   StateField,
 } from "@codemirror/state";
@@ -25,10 +27,12 @@ import {
   placeholder,
 } from "@codemirror/view";
 import type { SyntaxNode, Tree } from "@lezer/common";
+import { Link2, Plus } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { EmojiPicker, type EmojiPickerAnchor } from "./EmojiPicker";
+import { SuggestMenu, type SuggestMenuHandle, type SuggestRow } from "./SuggestMenu";
 import { TemplatePicker, type TemplatePickerHandle } from "./TemplatePicker";
 import { type AnimatedEmoji, animatedEmojiFor, primeIntro } from "./animatedEmoji";
 import { type AttachHooks, attachmentHandlers, watchDesktopFileDrops } from "./attachments";
@@ -74,6 +78,17 @@ import { MathWidget } from "./math";
 import { registerEditorFlush } from "./saveBus";
 import { createSearchPanel, scrollToMatch } from "./searchPanel";
 import { smoothCaret } from "./smoothCaret";
+import {
+  type SlashItem,
+  type SuggestKind,
+  type SuggestTrigger,
+  type WikiCandidate,
+  type WikiItem,
+  slashItems,
+  suggestTrigger,
+  wikiIcon,
+  wikiItems,
+} from "./suggest";
 import { TableWidget } from "./tableWidget";
 import {
   type DocTemplate,
@@ -134,6 +149,21 @@ const externalSync = Annotation.define<boolean>();
 const session = new Compartment();
 /** 这篇文档所在的文件夹（相对图片路径的基准）：改名、仓库路径晚到时单独换掉 */
 const imageBaseSlot = new Compartment();
+/** 有哪些笔记标题：新建、改名、删掉笔记时单独换掉 */
+const wikiTitlesSlot = new Compartment();
+
+/**
+ * 所有笔记的标题（trim + 小写，和 lib/wikilinks 的 sameTitle 同一个口径）。
+ * 链到不存在的笔记的 `[[双链]]` 画成虚线，提示 Ctrl+点击新建。null 是不知道，都当存在。
+ */
+export const knownWikiTitles = Facet.define<ReadonlySet<string> | null, ReadonlySet<string> | null>(
+  { combine: (values) => values[0] ?? null },
+);
+
+const wikiKey = (title: string) => title.trim().toLowerCase();
+
+/** 笔记的空白正文里显示的提示（某一天 / 某个周期的用 templatePlaceholder） */
+const NOTE_PLACEHOLDER = "写点什么…　输入 / 插入标题、待办、表格，[[ 链接到别的笔记";
 /** 最近切走的这么多篇留着。大文档一篇的状态有几 MB，不能无限留 */
 const STATE_CACHE_LIMIT = 12;
 const stateCache = new Map<string, EditorState>();
@@ -197,6 +227,9 @@ export function MarkdownEditor({
   imageBase = null,
   onAttachFiles,
   onAttachPaths,
+  linkTargets,
+  linkSelf,
+  onExitTop,
 }: {
   initialMarkdown: string;
   onSave: (markdown: string) => Promise<void>;
@@ -239,6 +272,15 @@ export function MarkdownEditor({
   onAttachFiles?: (files: File[]) => Promise<Attachment[]>;
   /** 桌面端从系统拖进窗口的文件（只有路径） */
   onAttachPaths?: (paths: string[]) => Promise<Attachment[]>;
+  /**
+   * 能用 `[[` 链过去的笔记，最近改过的在前。也用来认出链到不存在的笔记的双链。
+   * 不给（单测）就不弹 `[[` 菜单、也不标虚线
+   */
+  linkTargets?: WikiCandidate[];
+  /** 这一篇自己（是笔记的话）：`[[` 菜单里不列它 */
+  linkSelf?: string;
+  /** 光标在第一行时按 ↑：回到标题（只有能改标题的文档给） */
+  onExitTop?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -281,6 +323,50 @@ export function MarkdownEditor({
     setTemplateMenu(null);
   }, []);
 
+  /** `/` 插入菜单、`[[` 笔记链接菜单（见 suggest.ts）：开着时是触发词和它的视口坐标 */
+  const [suggest, setSuggest] = useState<SuggestMenuState | null>(null);
+  /** 给按键和 updateListener 同步读，不用等 React 提交 */
+  const suggestRef = useRef<SuggestMenuState | null>(null);
+  const suggestHandleRef = useRef<SuggestMenuHandle | null>(null);
+  const suggestSessionRef = useRef(0);
+  /** 按 Esc 关掉的那个触发词（起点）：接着打字不再弹，换一处再打才弹 */
+  const suggestDismissedRef = useRef<number | null>(null);
+  const linkTargetsRef = useRef(linkTargets);
+  linkTargetsRef.current = linkTargets;
+  const onExitTopRef = useRef(onExitTop);
+  onExitTopRef.current = onExitTop;
+  const closeSuggest = useCallback(() => {
+    suggestRef.current = null;
+    setSuggest(null);
+  }, []);
+  const knownTitles = useMemo(
+    () => (linkTargets ? new Set(linkTargets.map((note) => wikiKey(note.title))) : null),
+    [linkTargets],
+  );
+  const knownTitlesRef = useRef(knownTitles);
+
+  /** 打开动态表情选择器：Mod-E，或者 `/` 菜单里的「动态表情」 */
+  const openEmojiPicker = useCallback((view: EditorView) => {
+    // 光标带着折行方向（assoc，按 End 或点在折行处会有）时，编辑器一失焦
+    // CodeMirror 就会在下一次测量里 enforceCursorAssoc：改写 DOM 选区，
+    // 顺手把焦点抢回正文 —— 选择器的输入框刚聚焦就丢了。先把方向清掉，
+    // Esc 关闭时再还原。
+    const main = view.state.selection.main;
+    savedSelectionRef.current = null;
+    if (main.empty && main.assoc) {
+      savedSelectionRef.current = view.state.selection;
+      view.dispatch({ selection: EditorSelection.cursor(main.head) });
+    }
+    // 光标坐标在 CodeMirror 的测量周期里量，也让已经排下的测量先跑完
+    view.requestMeasure({
+      read: caretAnchor,
+      write: (anchor) => {
+        setEmojiSession((session) => session + 1);
+        setEmojiAnchor(anchor);
+      },
+    });
+  }, []);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -288,6 +374,8 @@ export function MarkdownEditor({
     const saver = createDebouncedSaver((markdown) => onSaveRef.current(markdown), 400);
     const unregisterFlush = registerEditorFlush(saver.flush);
     saverRef.current = saver;
+    /** 这篇文档的键：缓存编辑器状态、记住看到哪都用它 */
+    const key = cacheKeyRef.current;
 
     // 目录树不需要逐帧精确。每次按键都往上抛正文的话，
     // 上层要对整篇文档重扫一遍标题，长文档下这笔开销比排版本身还大。
@@ -372,11 +460,151 @@ export function MarkdownEditor({
         ]
       : [];
 
+    // `/` 插入菜单、`[[` 笔记链接菜单（suggest.ts）。同模板选择器：只认打字弹出（撤销回来、
+    // 外部回填的不算），接着打字是在筛选；触发词不在了、筛不出东西了、点到别处就收起。
+    // 坐标在 CodeMirror 的测量周期里量，量的时候再核对一次触发词还在不在
+    const openSuggest = (view: EditorView, trigger: SuggestTrigger) => {
+      view.requestMeasure({
+        read: (current) => {
+          const now = suggestTrigger(current.state);
+          if (!now || now.kind !== trigger.kind || now.from !== trigger.from) return null;
+          return { ...now, anchor: caretAnchor(current, now.from) };
+        },
+        write: (measured) => {
+          if (!measured || suggestRef.current) return;
+          suggestSessionRef.current += 1;
+          const next: SuggestMenuState = {
+            kind: measured.kind,
+            from: measured.from,
+            query: measured.query,
+            anchor: measured.anchor,
+            session: suggestSessionRef.current,
+          };
+          suggestRef.current = next;
+          setSuggest(next);
+        },
+      });
+    };
+    /** `/` 后面打的字一项都对不上，就是在写普通文字；没有笔记列表（单测）不弹 `[[` */
+    const hasSuggestions = (trigger: SuggestTrigger) =>
+      trigger.kind === "wiki"
+        ? !!linkTargetsRef.current
+        : slashItems(trigger.query, !!templateContextRef.current).length > 0;
+    /** 菜单开着时，把方向键 / 回车 / Tab / Esc 转给它；输入法组字时的按键是给候选框的 */
+    const forwardToSuggest =
+      (action: (menu: SuggestMenuHandle) => boolean) => (view: EditorView) => {
+        const menu = suggestHandleRef.current;
+        if (!suggestRef.current || !menu || view.composing) return false;
+        return action(menu);
+      };
+
+    const suggestExtensions: Extension[] = [
+      EditorView.updateListener.of((update) => {
+        const open = suggestRef.current;
+        if (open && update.focusChanged && !update.view.hasFocus) {
+          closeSuggest();
+          return;
+        }
+        if (!update.docChanged && !update.selectionSet) return;
+        const typed = update.transactions.some((transaction) =>
+          transaction.isUserEvent("input.type"),
+        );
+
+        // 中文输入法下 `[` 是 `【`：连着打两个就当是 `[[`
+        const head = update.state.selection.main.head;
+        if (typed && !update.view.composing && update.state.sliceDoc(head - 2, head) === "【【") {
+          const view = update.view;
+          queueMicrotask(() => {
+            if (view.state.sliceDoc(head - 2, head) !== "【【") return;
+            view.dispatch({
+              changes: { from: head - 2, to: head, insert: "[[" },
+              userEvent: "input.type",
+            });
+          });
+          return;
+        }
+
+        const trigger = suggestTrigger(update.state);
+        if (open) {
+          const same = trigger && trigger.kind === open.kind && trigger.from === open.from;
+          if (same && hasSuggestions(trigger)) {
+            if (trigger.query !== open.query) {
+              const next = { ...open, query: trigger.query };
+              suggestRef.current = next;
+              setSuggest(next);
+            }
+            return;
+          }
+          closeSuggest();
+        }
+        if (!trigger) {
+          suggestDismissedRef.current = null;
+          return;
+        }
+        if (!update.docChanged || !typed || templateOpenRef.current) return;
+        if (suggestDismissedRef.current === trigger.from || !hasSuggestions(trigger)) return;
+        openSuggest(update.view, trigger);
+      }),
+      // 比模板选择器之外的一切按键（列表续行、缩进…）都先拿到
+      Prec.highest(
+        keymap.of([
+          {
+            key: "ArrowDown",
+            run: forwardToSuggest((menu) => {
+              menu.move(1);
+              return true;
+            }),
+          },
+          {
+            key: "ArrowUp",
+            run: forwardToSuggest((menu) => {
+              menu.move(-1);
+              return true;
+            }),
+          },
+          { key: "Enter", run: forwardToSuggest((menu) => menu.pick()) },
+          { key: "Tab", run: forwardToSuggest((menu) => menu.pick()) },
+          {
+            key: "Escape",
+            run: forwardToSuggest(() => {
+              suggestDismissedRef.current = suggestRef.current?.from ?? null;
+              closeSuggest();
+              return true;
+            }),
+          },
+        ]),
+      ),
+      // 光标在第一行（折行的话是最上面那一截）时按 ↑：回到标题，和标题里按 ↓ 进正文对称
+      Prec.high(
+        keymap.of([
+          {
+            key: "ArrowUp",
+            run: (view) => {
+              const exit = onExitTopRef.current;
+              const main = view.state.selection.main;
+              if (!exit || !main.empty || view.state.doc.lineAt(main.head).number !== 1) {
+                return false;
+              }
+              const here = view.coordsAtPos(main.head);
+              const top = view.coordsAtPos(0);
+              if (here && top && here.top - top.top > 2) return false;
+              exit();
+              return true;
+            },
+          },
+        ]),
+      ),
+    ];
+
     // 这个编辑器实例自己的那一截：闭包里握着这次的保存器和 React 状态。
     // 复用缓存的状态时，换掉的就是这一截（见文件开头的说明）。
     const sessionExtensions: Extension[] = [
       ...templateExtensions,
+      // 笔记的空白正文：告诉人 `/` 和 `[[` 能做什么（某一天 / 某个周期的提示在 templateExtensions 里）
+      ...(templateContextRef.current ? [] : [placeholder(NOTE_PLACEHOLDER)]),
+      ...suggestExtensions,
       imageBaseSlot.of(imageBaseDir.of(imageBaseRef.current)),
+      wikiTitlesSlot.of(knownWikiTitles.of(knownTitlesRef.current)),
       attachmentHandlers(() => attachRef.current),
       linkClickHandler((title, heading) => onWikiLinkRef.current?.(title, heading)),
       EditorView.updateListener.of((update) => {
@@ -395,7 +623,10 @@ export function MarkdownEditor({
         if (update.focusChanged && !update.view.hasFocus) saver.flushQuietly();
       }),
       EditorView.updateListener.of((update) => {
-        if (update.selectionSet) notifyActive(update.state);
+        if (!update.selectionSet) return;
+        notifyActive(update.state);
+        // 光标在哪记下来：切回这篇、下次打开都回到这里（lib/viewMemory.ts）
+        if (key) rememberSpot(key, { head: update.state.selection.main.head });
       }),
       keymap.of([
         {
@@ -411,40 +642,27 @@ export function MarkdownEditor({
           key: "Mod-e",
           preventDefault: true,
           run: (view) => {
-            // 光标带着折行方向（assoc，按 End 或点在折行处会有）时，编辑器一失焦
-            // CodeMirror 就会在下一次测量里 enforceCursorAssoc：改写 DOM 选区，
-            // 顺手把焦点抢回正文 —— 选择器的输入框刚聚焦就丢了。先把方向清掉，
-            // Esc 关闭时再还原。
-            const main = view.state.selection.main;
-            savedSelectionRef.current = null;
-            if (main.empty && main.assoc) {
-              savedSelectionRef.current = view.state.selection;
-              view.dispatch({ selection: EditorSelection.cursor(main.head) });
-            }
-            // 光标坐标在 CodeMirror 的测量周期里量，也让已经排下的测量先跑完
-            view.requestMeasure({
-              read: caretAnchor,
-              write: (anchor) => {
-                setEmojiSession((session) => session + 1);
-                setEmojiAnchor(anchor);
-              },
-            });
+            openEmojiPicker(view);
             return true;
           },
         },
       ]),
     ];
 
-    const key = cacheKeyRef.current;
     const cached = key ? takeState(key, initialMarkdownRef.current) : null;
+    // 上次在这篇看到哪、光标在哪（切回来、重新打开应用都回到那里）
+    const spot = key ? spotOf(key) : undefined;
+    const docLength = initialMarkdownRef.current.length;
+    const restoredHead = spot ? Math.min(spot.head, docLength) : 0;
     const state = cached
-      ? // 解析好的语法树、装饰、撤销历史原样沿用；光标回到开头（切换文档时正文滚回顶部）
+      ? // 解析好的语法树、装饰、撤销历史原样沿用
         cached.update({
           effects: session.reconfigure(sessionExtensions),
-          selection: EditorSelection.cursor(0),
+          selection: EditorSelection.cursor(restoredHead),
         }).state
       : EditorState.create({
           doc: initialMarkdownRef.current,
+          selection: EditorSelection.cursor(restoredHead),
           extensions: [
             // 围栏代码按语言名懒加载对应的解析器，配合 codeHighlight 上色
             markdownSupport(languages),
@@ -471,6 +689,39 @@ export function MarkdownEditor({
     viewRef.current = view;
     // 切走时开着查找面板：回来时不该还开着（和以前每次新建编辑器一样）
     if (searchPanelOpen(view.state)) closeSearchPanel(view);
+
+    // 回到上次看到的地方。上层换篇时已经把滚动容器拨回了顶上（DocumentView），
+    // 这里在它之后跑。标题还露着时记的是 scrollTop（上面只有标题，高度是确定的）；
+    // 滚进正文之后按行定位，交给 CodeMirror 量好了再滚（没画过的行只有估计高度）
+    const scroller = host.closest<HTMLElement>("[data-doc-scroller]");
+    if (spot && scroller) {
+      if (spot.scrollTop !== null) {
+        const top = spot.scrollTop;
+        view.requestMeasure({ read: () => null, write: () => scroller.scrollTo({ top }) });
+      } else if (spot.pos <= view.state.doc.length) {
+        view.dispatch({
+          effects: EditorView.scrollIntoView(spot.pos, { y: "start", yMargin: -spot.offset }),
+        });
+      }
+    }
+    // 滚到哪记下来。换篇的那一下上层把容器拨回顶上，那时这个编辑器已经从页面上摘下来了，
+    // 不能把「顶上」记成这一篇的位置
+    let spotFrame = 0;
+    const recordScroll = () => {
+      cancelAnimationFrame(spotFrame);
+      spotFrame = requestAnimationFrame(() => {
+        if (!key || !scroller || !host.isConnected || viewRef.current !== view) return;
+        const above = scroller.getBoundingClientRect().top - view.documentTop;
+        if (above <= 0) {
+          rememberSpot(key, { scrollTop: scroller.scrollTop });
+          return;
+        }
+        const block = view.lineBlockAtHeight(above);
+        rememberSpot(key, { scrollTop: null, pos: block.from, offset: above - block.top });
+      });
+    };
+    scroller?.addEventListener("scroll", recordScroll, { passive: true });
+
     const handle: EditorOutlineHandle = {
       scrollTo(id) {
         // 编辑器已经卸载（切换文档的那一帧上层还握着旧句柄）就当没这回事
@@ -499,6 +750,15 @@ export function MarkdownEditor({
         glideTo(view, line.from, { y: "center" });
         return true;
       },
+      focusStart() {
+        if (viewRef.current !== view) return false;
+        // 属性块折着放在最前面：落到它后面，不然一聚焦整块 YAML 就展开了
+        const front = frontMatterRange(view.state.doc);
+        const at = front ? Math.min(view.state.doc.length, front.to + 1) : 0;
+        view.dispatch({ selection: { anchor: at }, scrollIntoView: true });
+        view.focus();
+        return true;
+      },
     };
     onOutlineHandle(handle);
     host.dataset.editorReady = "true";
@@ -506,8 +766,12 @@ export function MarkdownEditor({
 
     return () => {
       stopFileDrops();
+      scroller?.removeEventListener("scroll", recordScroll);
+      cancelAnimationFrame(spotFrame);
+      if (key) rememberSpot(key, { head: view.state.selection.main.head });
       setEmojiAnchor(null);
       closeTemplateMenu();
+      closeSuggest();
       unregisterFlush();
       if (outlineTimer) clearTimeout(outlineTimer);
       saver.flushQuietly();
@@ -518,7 +782,7 @@ export function MarkdownEditor({
       if (key) rememberState(key, view.state);
       view.destroy();
     };
-  }, [onOutlineHandle, closeTemplateMenu]);
+  }, [onOutlineHandle, closeTemplateMenu, closeSuggest, openEmojiPicker]);
 
   // 文档所在的文件夹变了（改名挪了位置、仓库路径刚取回来）：相对路径的图片按新基准重画
   useEffect(() => {
@@ -527,6 +791,14 @@ export function MarkdownEditor({
     if (!view || view.state.facet(imageBaseDir) === imageBase) return;
     view.dispatch({ effects: imageBaseSlot.reconfigure(imageBaseDir.of(imageBase)) });
   }, [imageBase]);
+
+  // 笔记新建、改名、删掉了：链到不存在的笔记的双链重新标
+  useEffect(() => {
+    knownTitlesRef.current = knownTitles;
+    const view = viewRef.current;
+    if (!view || view.state.facet(knownWikiTitles) === knownTitles) return;
+    view.dispatch({ effects: wikiTitlesSlot.reconfigure(knownWikiTitles.of(knownTitles)) });
+  }, [knownTitles]);
 
   // 外部正文变化时回填。
   //
@@ -600,6 +872,62 @@ export function MarkdownEditor({
     [templateScope],
   );
 
+  // `/` 菜单、`[[` 菜单里现在列着的项（和按键 pick 时取的是同一份）
+  const withTemplates = !!templateContext;
+  const suggestItems = useMemo((): SuggestEntry[] => {
+    if (!suggest) return [];
+    if (suggest.kind === "slash") {
+      return slashItems(suggest.query, withTemplates).map(({ item, ranges }) => ({
+        kind: "slash",
+        item,
+        row: { id: item.id, icon: item.icon, label: item.label, ranges, hint: item.hint },
+      }));
+    }
+    const candidates = (linkTargets ?? []).filter((note) => note.id !== linkSelf);
+    return wikiItems(suggest.query, candidates).map(({ item, ranges }) => ({
+      kind: "wiki",
+      item,
+      row:
+        item.kind === "note"
+          ? {
+              id: item.note.id,
+              icon: wikiIcon(item),
+              label: item.note.title,
+              ranges,
+              hint: item.note.archived ? "归档" : item.note.folder || undefined,
+            }
+          : {
+              id: "new",
+              icon: wikiIcon(item),
+              label: `链接到「${item.title}」`,
+              hint: "还没有这篇",
+              muted: true,
+            },
+    }));
+  }, [suggest, withTemplates, linkTargets, linkSelf]);
+  const suggestItemsRef = useRef(suggestItems);
+  suggestItemsRef.current = suggestItems;
+
+  /** 选了 `/` 或 `[[` 菜单里的一项：换掉触发词。是一次普通的编辑，撤销一下就回到触发词 */
+  const pickSuggestion = useCallback(
+    (index: number) => {
+      const open = suggestRef.current;
+      const entry = suggestItemsRef.current[index];
+      const view = viewRef.current;
+      closeSuggest();
+      if (!open || !entry || !view) return;
+      const trigger = suggestTrigger(view.state);
+      if (!trigger || trigger.kind !== open.kind || trigger.from !== open.from) return;
+      if (entry.kind === "wiki") insertWikiLink(view, trigger, entry.item);
+      else if (entry.item.action.type === "emoji") {
+        view.dispatch({ changes: { from: trigger.from, to: trigger.to }, userEvent: "delete" });
+        openEmojiPicker(view);
+      } else insertSlashItem(view, trigger, entry.item);
+      view.focus();
+    },
+    [closeSuggest, openEmojiPicker],
+  );
+
   return (
     <>
       <div
@@ -634,11 +962,84 @@ export function MarkdownEditor({
               />
             )}
           </AnimatePresence>
+          <AnimatePresence>
+            {suggest && (
+              <SuggestMenu
+                key={suggest.session}
+                anchor={suggest.anchor}
+                title={suggest.kind === "slash" ? "插入" : "链接到笔记"}
+                icon={suggest.kind === "slash" ? Plus : Link2}
+                rows={suggestItems.map((entry) => entry.row)}
+                empty={suggest.kind === "slash" ? "没有这一项" : "还没有别的笔记"}
+                handleRef={suggestHandleRef}
+                onPick={pickSuggestion}
+                onClose={closeSuggest}
+              />
+            )}
+          </AnimatePresence>
         </>,
         document.body,
       )}
     </>
   );
+}
+
+/** 开着的 `/` / `[[` 菜单 */
+interface SuggestMenuState {
+  kind: SuggestKind;
+  /** 触发词起点：菜单只认这一处，换了地方就是另一个菜单 */
+  from: number;
+  query: string;
+  anchor: EmojiPickerAnchor;
+  /** 每次打开换一个 key：上一个还在退场时又打开，得到的是全新的菜单 */
+  session: number;
+}
+
+/** 菜单里的一项和它那一行怎么画 */
+type SuggestEntry =
+  | { kind: "slash"; item: SlashItem; row: SuggestRow }
+  | { kind: "wiki"; item: WikiItem; row: SuggestRow };
+
+/**
+ * `/` 菜单里选的那一块换掉 `/筛选词`。块级的（表格、分隔线、代码…）上一行有字时先空一行：
+ * 不然 `---` 会把上一段变成二级标题、表格会被当成上一段的续行。
+ */
+function insertSlashItem(view: EditorView, trigger: SuggestTrigger, item: SlashItem) {
+  const action = item.action;
+  const replace = { from: trigger.from, to: trigger.to };
+  if (action.type === "wiki" || action.type === "template") {
+    // 换成 `[[` / `/模板`，当作是打出来的：笔记链接菜单、模板选择器接着弹出来
+    const insert = action.type === "wiki" ? "[[" : "/模板";
+    view.dispatch({
+      changes: { ...replace, insert },
+      selection: { anchor: trigger.from + insert.length },
+      userEvent: "input.type",
+    });
+    return;
+  }
+  if (action.type !== "snippet") return;
+  const line = view.state.doc.lineAt(trigger.from);
+  const previous = line.number > 1 ? view.state.doc.line(line.number - 1).text : "";
+  const gap = action.block && previous.trim() ? "\n" : "";
+  const start = trigger.from + gap.length;
+  view.dispatch({
+    changes: { ...replace, insert: gap + action.text },
+    selection: { anchor: start + action.select[0], head: start + action.select[1] },
+    userEvent: "input.complete",
+    scrollIntoView: true,
+  });
+}
+
+/** `[[筛选词` 补全成 `[[标题]]`，光标落在后面。后面已经有 `]]` 了就不再补 */
+function insertWikiLink(view: EditorView, trigger: SuggestTrigger, item: WikiItem) {
+  const title = item.kind === "note" ? item.note.title : item.title.trim();
+  const closed = view.state.sliceDoc(trigger.to, trigger.to + 2) === "]]";
+  const insert = `[[${title}${closed ? "" : "]]"}`;
+  view.dispatch({
+    changes: { from: trigger.from, to: trigger.to, insert },
+    selection: { anchor: trigger.from + insert.length + (closed ? 2 : 0) },
+    userEvent: "input.complete",
+  });
 }
 
 /**
@@ -695,6 +1096,8 @@ export interface EditorOutlineHandle {
   subscribe: (listener: (id: string) => void) => () => void;
   /** 滚到第几行（从 1 开始）并把光标放在行尾；行号不存在或编辑器已卸载时返回 false */
   scrollToLine: (line: number) => boolean;
+  /** 光标放到正文开头并聚焦（标题里按回车 / ↓、新建了带标题的笔记）；编辑器已卸载时返回 false */
+  focusStart: () => boolean;
 }
 
 /* ============================================================
@@ -1196,6 +1599,7 @@ function buildInlineDecorations(view: EditorView, changes: ChangeSet | null): Ty
   const abbreviations = block?.abbreviations;
   const abbreviationLines = block?.abbreviationLines;
   const footnotes = block?.footnotes;
+  const knownTitles = state.facet(knownWikiTitles);
   const ranges: DecorationRange[] = [];
   const atomicRanges: DecorationRange[] = [];
   const lineRanges = new Set<string>();
@@ -1716,9 +2120,18 @@ function buildInlineDecorations(view: EditorView, changes: ChangeSet | null): Ty
                 : target.block
                   ? `${target.title} › ^${target.block}`
                   : target.title;
-              addMark(displayFrom, node.to - 1, "cm-otw-wikilink", {
-                title: `${where}\n${MOD_KEY}+点击打开`,
-              });
+              // 链到还没有的笔记：画成虚线，Ctrl+点击新建（DocumentView 的 handleWikiLink）
+              const missing = !!knownTitles && !knownTitles.has(wikiKey(target.title));
+              addMark(
+                displayFrom,
+                node.to - 1,
+                missing ? "cm-otw-wikilink is-missing" : "cm-otw-wikilink",
+                {
+                  title: missing
+                    ? `还没有「${target.title}」这篇笔记\n${MOD_KEY}+点击新建`
+                    : `${where}\n${MOD_KEY}+点击打开`,
+                },
+              );
               return false;
             }
 
@@ -1884,7 +2297,8 @@ const typoraInlineDecorations = ViewPlugin.fromClass(
         update.viewportChanged ||
         update.selectionSet ||
         syntaxTree(update.startState) !== syntaxTree(update.state) ||
-        update.startState.facet(imageBaseDir) !== update.state.facet(imageBaseDir)
+        update.startState.facet(imageBaseDir) !== update.state.facet(imageBaseDir) ||
+        update.startState.facet(knownWikiTitles) !== update.state.facet(knownWikiTitles)
       ) {
         // 只动了光标 / 视口时 changes 是空的：这时重建出来的替身不再重放入场动画
         const built = buildInlineDecorations(update.view, update.changes);

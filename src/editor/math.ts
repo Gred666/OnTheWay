@@ -85,6 +85,20 @@ function fitToWidth(node: HTMLElement): boolean {
 }
 
 const resizeObservers = new WeakMap<HTMLElement, ResizeObserver>();
+/** 块级公式的外层 → 重新缩一次 */
+const refitters = new WeakMap<Element, () => void>();
+
+/*
+ * KaTeX 的字体用到哪款才拉哪款。第一次渲染时量的是后备字体，偏窄，以为放得下；
+ * 字体拉到后公式变宽，列宽没变，ResizeObserver 不会响 —— 右边一截就被截掉了
+ * （冷启动打开语法全览，那条泰勒展开式截掉 47px）。所以每拉完一批字体，
+ * 屏幕上的块级公式都重新缩一次。
+ */
+if (typeof document !== "undefined" && "fonts" in document) {
+  document.fonts.addEventListener("loadingdone", () => {
+    for (const block of document.querySelectorAll(".cm-otw-math-block")) refitters.get(block)?.();
+  });
+}
 
 export class MathWidget extends OtwWidget {
   constructor(
@@ -143,6 +157,7 @@ export class MathWidget extends OtwWidget {
     const block = document.createElement("div");
     block.className = "cm-otw-math-block";
     block.append(node);
+    refitters.set(block, fit);
     // 正文列宽变了（窗口缩放、开关目录栏）重新算一次。只看宽度：缩字号会改高度，
     // 高度变化再触发一轮就成了死循环。
     if (typeof ResizeObserver !== "undefined") {

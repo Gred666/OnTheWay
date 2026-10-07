@@ -37,7 +37,29 @@ import { cancelGlide, glideTo, scrollParent } from "./glide";
    - 不在视口里的匹配平滑地滑过去（glide.ts：每一帧重新量目标位置，路上画出来的内容
      变高了终点跟着挪），到了之后再把匹配项「钉」在屏幕上那个位置（见 SearchPanel.hold）：
      上面还没画过的表格、图表、公式、图片画出来会变高，以前刚找到就被挤出视口
+   - 文档区右边缘一列小刻度：所有匹配项在全文里的位置，当前那个是实的、换的时候滑过去
+     （MatchMarks）。几十个匹配分布在哪，一眼就看到
+   - 打开时从窗口顶边落下来、关掉时收回去；展开替换那一行按高度展开。动的都是 top / height
+     （主线程排版），不是 transform，也不淡入：合成层上位移的字在动画里是灰阶抗锯齿、停下那一帧
+     才变回清晰的（「先糊再抖一下」）；半透明的面板压在正文上，看着像正文在跳
    ============================================================ */
+
+const EASE_OUT = "cubic-bezier(0.22, 1, 0.36, 1)";
+const EASE_IN = "cubic-bezier(0.55, 0, 0.75, 0.2)";
+/** 面板停在离窗口顶边多远（和 CSS 的 top 一致） */
+const PANEL_TOP = 4;
+
+function motionReduced(doc: Document): boolean {
+  return (
+    doc.documentElement.dataset.reduceMotion === "true" ||
+    doc.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+  );
+}
+
+/** 能不能做动画：关了动效、或者环境没有 Web Animations（单测的 DOM）就直接到位 */
+function canAnimate(node: HTMLElement): boolean {
+  return typeof node.animate === "function" && !motionReduced(node.ownerDocument);
+}
 
 /** 钉住多久：图表、公式是异步画的，网络图片可能要一两秒才加载完 */
 const HOLD_MS = 4000;
@@ -226,6 +248,8 @@ class SearchPanel implements Panel {
   private readonly replaceToggle: HTMLButtonElement;
   private readonly replaceRow: HTMLElement;
   private matches: Array<{ from: number; to: number }> = [];
+  private readonly marks: MatchMarks | null;
+  private replaceMotion: Animation | null = null;
   private recount: ReturnType<typeof setTimeout> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private readonly onResize = () => this.place();
@@ -355,9 +379,13 @@ class SearchPanel implements Panel {
     const replaceBox = document.createElement("div");
     replaceBox.className = "otw-search-box";
     replaceBox.append(this.replaceField);
+    // 外面一层负责按高度展开 / 收起（里面那一行的内容一直钉在原位，只是被一点点露出来）
     this.replaceRow = document.createElement("div");
-    this.replaceRow.className = "otw-search-row otw-search-replace";
-    this.replaceRow.append(
+    this.replaceRow.className = "otw-search-replace";
+    const replaceInner = document.createElement("div");
+    replaceInner.className = "otw-search-row otw-search-replace-row";
+    this.replaceRow.append(replaceInner);
+    replaceInner.append(
       replaceBox,
       button("otw-search-text", `${state.phrase("replace")} (Enter)`, state.phrase("replace"), () =>
         this.go(replaceNext),
@@ -375,12 +403,50 @@ class SearchPanel implements Panel {
     this.dom.addEventListener("keydown", (event) => this.keydown(event));
     this.dom.append(findRow, this.replaceRow);
 
+    const host = this.frame().parentElement;
+    this.marks = this.frame() !== view.dom && host ? new MatchMarks(host, this.frame()) : null;
+
     this.syncOptions();
     this.refresh();
   }
 
+  /** 所有匹配项在文档区右边那一列刻度上的位置：要量布局，放在 CodeMirror 的测量阶段 */
+  private readonly marksRequest = {
+    key: "otw-search-marks",
+    read: (view: EditorView) => {
+      const scroller = this.frame();
+      const total = scroller.scrollHeight;
+      const track = scroller.clientHeight;
+      if (!this.marks || !total || !track) return null;
+      // 正文顶端在滚动内容里的位置：编辑器上面还有标题、分隔线
+      const docTop = view.documentTop - scroller.getBoundingClientRect().top + scroller.scrollTop;
+      const at = (pos: number) => {
+        const block = view.lineBlockAt(Math.min(pos, view.state.doc.length));
+        return ((docTop + block.top + block.height / 2) / total) * track;
+      };
+      const current = matchIndex(this.matches, view.state.selection.main);
+      return {
+        ticks: this.matches.slice(0, MATCH_COUNT_LIMIT).map((match) => at(match.from)),
+        current: current ? at(this.matches[current - 1]!.from) : null,
+        track,
+      };
+    },
+    write: (measured: { ticks: number[]; current: number | null; track: number } | null) => {
+      if (measured) this.marks?.render(measured.ticks, measured.current, measured.track);
+    },
+  };
+
   mount() {
     this.place();
+    // 从窗口顶边落下来（见文件头：动 top，不动 transform、不淡入）
+    if (canAnimate(this.dom)) {
+      this.dom.animate([{ top: `${-this.dom.offsetHeight - 12}px` }, { top: `${PANEL_TOP}px` }], {
+        duration: 260,
+        easing: EASE_OUT,
+      });
+    }
+    this.marks?.show();
+    this.view.requestMeasure(this.marksRequest);
     // 文档区宽度会变：拖窗口、进出专注模式、目录栏出现消失，都要跟着重新贴边
     window.addEventListener("resize", this.onResize);
     if (typeof ResizeObserver !== "undefined") {
@@ -448,9 +514,14 @@ class SearchPanel implements Panel {
       this.renderCount();
     }
     if (update.geometryChanged) this.place();
+    // 正文边画边量出真实高度、窗口变了：刻度跟着挪
+    if (update.heightChanged || update.geometryChanged) this.view.requestMeasure(this.marksRequest);
   }
 
   destroy() {
+    this.leave();
+    this.marks?.dispose();
+    this.replaceMotion?.cancel();
     if (this.recount) clearTimeout(this.recount);
     window.removeEventListener("resize", this.onResize);
     this.resizeObserver?.disconnect();
@@ -461,6 +532,31 @@ class SearchPanel implements Panel {
     this.pin = null;
     panelViews.delete(this.view);
     cancelGlide(this.view);
+  }
+
+  /**
+   * 关掉：CodeMirror 这时就要把面板从 DOM 里拿走了，留一份副本在原处收回窗口顶边外面。
+   */
+  private leave() {
+    if (!this.dom.isConnected || !canAnimate(this.dom)) return;
+    const { top, height } = this.dom.getBoundingClientRect();
+    const ghost = this.dom.cloneNode(true) as HTMLElement;
+    ghost.classList.add("is-leaving");
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.inert = true;
+    // 输入框里的字在属性之外，cloneNode 带不过去
+    const fields = this.dom.querySelectorAll("input");
+    ghost.querySelectorAll("input").forEach((input, index) => {
+      input.value = fields[index]?.value ?? "";
+    });
+    this.view.dom.append(ghost);
+    const out = ghost.animate([{ top: `${top}px` }, { top: `${-height - 12}px` }], {
+      duration: 190,
+      easing: EASE_IN,
+      fill: "forwards",
+    });
+    out.onfinish = () => ghost.remove();
+    out.oncancel = () => ghost.remove();
   }
 
   /**
@@ -528,6 +624,7 @@ class SearchPanel implements Panel {
     );
     this.dom.style.right = `${right}px`;
     this.dom.style.maxWidth = `${maxWidth}px`;
+    this.view.requestMeasure(this.marksRequest);
   }
 
   private keydown(event: KeyboardEvent) {
@@ -624,11 +721,31 @@ class SearchPanel implements Panel {
     }
   }
 
+  /** 展开 / 收起替换那一行：按高度，里面的内容钉在原位一点点露出来 */
   private showReplace(show: boolean) {
-    this.replaceRow.hidden = !show;
+    const row = this.replaceRow;
     this.replaceToggle.classList.toggle("is-open", show);
     this.replaceToggle.setAttribute("aria-expanded", String(show));
+    // 打断上一段（连点两下）：从它当时的高度接着走
+    const from = row.hidden ? 0 : row.getBoundingClientRect().height;
+    this.replaceMotion?.cancel();
+    this.replaceMotion = null;
+    row.hidden = false;
     (show ? this.replaceField : this.searchField).focus();
+    if (!canAnimate(row)) {
+      row.hidden = !show;
+      return;
+    }
+    const full = row.scrollHeight;
+    const motion = row.animate([{ height: `${from}px` }, { height: `${show ? full : 0}px` }], {
+      duration: show ? 220 : 170,
+      easing: show ? EASE_OUT : EASE_IN,
+    });
+    this.replaceMotion = motion;
+    motion.onfinish = () => {
+      if (this.replaceMotion === motion) this.replaceMotion = null;
+      row.hidden = !show;
+    };
   }
 
   /** 重新数一遍匹配项并刷新计数 */
@@ -644,6 +761,60 @@ class SearchPanel implements Panel {
     const label = matchLabel(this.view.state, this.query, this.matches, current);
     this.count.textContent = label.text;
     this.searchBox.classList.toggle("is-empty", label.empty);
+    this.view.requestMeasure(this.marksRequest);
+  }
+}
+
+/**
+ * 文档区右边缘的一列刻度：每个匹配项在全文里的位置（按滚动区的比例），当前那个是实的。
+ * 挂在文档区（DocumentView 的 data-swap-host）里、滚动区后面、覆盖式滚动条前面 ——
+ * 滚动条滑块盖在刻度上面，拖起来不受影响。刻度本身不接鼠标。
+ */
+class MatchMarks {
+  private readonly dom: HTMLElement;
+  private readonly current: HTMLElement;
+  private key = "";
+
+  constructor(host: HTMLElement, scroller: HTMLElement) {
+    this.dom = document.createElement("div");
+    this.dom.className = "otw-search-marks";
+    this.dom.setAttribute("aria-hidden", "true");
+    this.current = document.createElement("i");
+    this.current.className = "is-current";
+    this.current.hidden = true;
+    host.insertBefore(this.dom, scroller.nextSibling);
+  }
+
+  show() {
+    // 下一帧再加上：先以透明的样子画出来一次，过渡才有起点
+    requestAnimationFrame(() => this.dom.classList.add("is-shown"));
+  }
+
+  render(ticks: number[], current: number | null, track: number) {
+    const clamp = (y: number) => Math.round(Math.min(track - 4, Math.max(3, y)));
+    // 同一个像素上的只画一个：长文档里搜「的」也就几百个点
+    const rows = [...new Set(ticks.map(clamp))];
+    const key = rows.join(",");
+    if (key !== this.key) {
+      this.key = key;
+      const nodes = rows.map((y) => {
+        const tick = document.createElement("i");
+        tick.style.top = `${y - 1}px`;
+        return tick;
+      });
+      this.dom.replaceChildren(...nodes, this.current);
+    }
+    this.current.hidden = current === null;
+    if (current !== null) this.current.style.top = `${clamp(current) - 1.5}px`;
+  }
+
+  dispose() {
+    this.dom.classList.remove("is-shown");
+    if (!canAnimate(this.dom)) {
+      this.dom.remove();
+      return;
+    }
+    setTimeout(() => this.dom.remove(), 220);
   }
 }
 

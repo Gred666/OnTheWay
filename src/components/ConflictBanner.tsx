@@ -1,12 +1,15 @@
 import { openDocument } from "@/app/navigate";
+import { conflictOriginalContent } from "@/data/conflicts";
 import { useData } from "@/data/store";
 import type { DocumentModel, Note } from "@/data/types";
 import { cn } from "@/lib/cn";
-import { type DiffLine, diffHunks, diffLines, diffStats } from "@/lib/lineDiff";
+import { today } from "@/lib/date";
+import { diffLines, diffStats } from "@/lib/lineDiff";
 import { tween } from "@/lib/motion";
 import { ChevronRight, Copy } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { DiffView } from "./DiffView";
 
 /* ============================================================
    冲突副本的横幅（标题上方）。
@@ -15,6 +18,9 @@ import { useMemo, useState } from "react";
    另存成了这一篇（或者本应用自己另存的 ——外部改动撞上了没存的修改）。
    给四个动作：看两版差在哪、打开原文、用这一版替换原文、删掉这份副本。
    删掉的副本进回收站，撤销提示条照常能撤。
+
+   原文也可以是某一天 / 某个周期的目标（两台设备都改了今日TODO，同步里最常见的冲突）：
+   它们是按需取的，横幅挂上时没取过就去取一次，取回来之前「查看差异」说正在读。
    ============================================================ */
 
 export function ConflictBanner({
@@ -22,15 +28,29 @@ export function ConflictBanner({
 }: {
   conflict: NonNullable<DocumentModel["conflict"]>;
 }) {
+  const target = conflict.original;
   const copy = useData((s) => findNote(s, conflict.copyId));
-  const original = useData((s) => findNote(s, conflict.originalId));
+  const original = useData((s) => conflictOriginalContent(target, s));
   const resolveConflict = useData((s) => s.resolveConflict);
+  const loadDay = useData((s) => s.loadDay);
+  const loadGoal = useData((s) => s.loadGoal);
+
+  // 原文是某一天 / 目标、还没取过：取一次（target 每次渲染都是新对象，按里面的值认）
+  const loaded = original !== undefined;
+  const dayId = target.kind === "day" ? target.id : null;
+  const goalHorizon = target.kind === "goal" ? target.horizon : null;
+  const goalStart = target.kind === "goal" ? target.periodStart : null;
+  useEffect(() => {
+    if (loaded) return;
+    if (dayId) void loadDay(dayId, dayId === today());
+    else if (goalHorizon && goalStart) void loadGoal(goalHorizon, goalStart);
+  }, [loaded, dayId, goalHorizon, goalStart, loadDay, loadGoal]);
   const [showDiff, setShowDiff] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const diff = useMemo(
-    () => (copy && original ? diffLines(original.contentMd, copy.contentMd) : null),
+    () => (copy && original !== undefined ? diffLines(original, copy.contentMd) : null),
     [copy, original],
   );
   const stats = diff ? diffStats(diff) : null;
@@ -40,8 +60,8 @@ export function ConflictBanner({
     if (busy) return;
     setBusy(true);
     try {
-      const id = await resolveConflict(conflict.copyId, keep);
-      if (id) openDocument({ kind: "note", id });
+      const opened = await resolveConflict(conflict.copyId, keep);
+      if (opened) openDocument(opened);
     } finally {
       setBusy(false);
       setConfirming(false);
@@ -81,9 +101,7 @@ export function ConflictBanner({
                 )}
               </BannerButton>
             )}
-            <BannerButton onClick={() => openDocument({ kind: "note", id: conflict.originalId })}>
-              打开原文
-            </BannerButton>
+            <BannerButton onClick={() => openDocument(target)}>打开原文</BannerButton>
             {confirming ? (
               <span className="flex items-center gap-1.5 rounded-md bg-warning/10 py-0.5 pl-2 pr-0.5">
                 <span className="text-[11.5px] text-body">原文现在的内容会被这一版覆盖</span>
@@ -112,69 +130,22 @@ export function ConflictBanner({
                 exit={{ opacity: 0 }}
                 transition={tween.fast}
               >
-                <DiffView lines={diff} />
+                {loaded ? (
+                  <DiffView
+                    lines={diff}
+                    removedLabel="只在原文里"
+                    addedLabel="只在这一版里"
+                    tooLong="两版都很长，没法逐行对比。打开原文，两篇并排看吧。"
+                    className="mt-3 max-h-[300px]"
+                  />
+                ) : (
+                  <p className="mt-3 text-[12px] text-faint">正在读原文…</p>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
         </div>
       </div>
-    </div>
-  );
-}
-
-function DiffView({ lines }: { lines: DiffLine[] | null }) {
-  if (!lines) {
-    return (
-      <p className="mt-3 text-[12px] text-faint">
-        两版都很长，没法逐行对比。打开原文，两篇并排看吧。
-      </p>
-    );
-  }
-  const hunks = diffHunks(lines);
-  return (
-    <div
-      className="scroll-thin mt-3 max-h-[300px] overflow-y-auto rounded-lg border border-line
-                 bg-canvas py-1.5 font-mono text-[11.5px] leading-[1.7]"
-    >
-      <div className="flex gap-3 px-3 pb-1.5 text-[10.5px] text-faint">
-        <span>
-          <span className="text-danger">−</span> 只在原文里
-        </span>
-        <span>
-          <span className="text-success">+</span> 只在这一版里
-        </span>
-      </div>
-      {hunks.map((hunk, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: 差异段按位置排，不会重排
-        <div
-          key={index}
-          className={cn(index > 0 && "mt-1.5 border-t border-dashed border-line pt-1.5")}
-        >
-          {hunk.lines.map((line, lineIndex) => (
-            <div
-              // biome-ignore lint/suspicious/noArrayIndexKey: 同上
-              key={lineIndex}
-              className={cn(
-                "flex gap-2 whitespace-pre-wrap break-words px-3",
-                line.kind === "added" && "bg-success/10 text-body",
-                line.kind === "removed" && "bg-danger/10 text-body",
-                line.kind === "same" && "text-faint",
-              )}
-            >
-              <span
-                className={cn(
-                  "w-2 shrink-0 select-none",
-                  line.kind === "added" && "text-success",
-                  line.kind === "removed" && "text-danger",
-                )}
-              >
-                {line.kind === "added" ? "+" : line.kind === "removed" ? "−" : ""}
-              </span>
-              <span className="min-w-0">{line.text || " "}</span>
-            </div>
-          ))}
-        </div>
-      ))}
     </div>
   );
 }

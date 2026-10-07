@@ -8,7 +8,7 @@ import type { ISODate } from "@/lib/date";
    命名保持 camelCase（Rust 侧用 #[serde(rename_all = "camelCase")]）。
    ============================================================ */
 
-/** 五个导航区。「一切皆文档」——每个区最终都渲染成 DocumentView。 */
+/** 导航区。「一切皆文档」——每个区最终都渲染成 DocumentView。扩展页还没有运行时，先不进导航 */
 export type WorkspaceId = "notes" | "today" | "goal" | "calendar" | "archive" | "extensions";
 
 /* ---------------- 笔记 ---------------- */
@@ -29,7 +29,10 @@ export interface Note {
   updatedAt: number;
   /** 在仓库里的相对路径（正斜杠）。正文里的相对图片路径以它所在的文件夹为基准 */
   relPath: string;
-  /** 这篇是另一篇的冲突副本（网盘同步撞车、或本应用另存的）：原文的 id */
+  /**
+   * 这篇是另一篇的冲突副本（同步撞车、或本应用另存的）：原文的 id。原文也可以是
+   * 某一天（`day:2026-10-07`）或某个周期的目标（`goal:week:2026-09-21`），见 data/conflicts.ts
+   */
   conflictOf: string | null;
 }
 
@@ -60,6 +63,28 @@ export interface Task {
   timeLabel: string | null;
   /** 分类：任务里的第一个 #标签 */
   category: string | null;
+  /** 写着这条任务的那篇文档（日历里点「出处」跳过去）；浏览器预览里的演示任务没有 */
+  source?: DocumentSaveTarget | null;
+  /** 在那篇正文里的行号（从 0 开始） */
+  line?: number | null;
+}
+
+/** 日历月网格上的两种记号 */
+export interface CalendarMarks {
+  /** 留下过东西的日子：这一天的记录写过，或者有做完了的任务 */
+  written: Set<ISODate>;
+  /** 还有没做完的任务的日子 */
+  open: Set<ISODate>;
+}
+
+/** 某一天 / 某个周期的目标，连同正文：命令面板拿它搜日记和目标 */
+export interface JournalDoc {
+  target: DocumentSaveTarget;
+  kind: "day" | "goal";
+  /** 「10月6日 · 完成专注模式原型」「第 41 周目标」 */
+  title: string;
+  contentMd: string;
+  updatedAt: number;
 }
 
 /* ---------------- 目标 ---------------- */
@@ -151,8 +176,103 @@ export interface VaultChange {
   tasks: boolean;
   /** 这次产生的冲突副本的标题（编辑器里有没存的修改时外部改动到了，另存的那一份） */
   conflicts: string[];
-  /** 新出现的冲突副本（网盘同步时两边都改过，网盘另存的那一份）的标题 */
+  /** 新出现的冲突副本（同步时两边都改过，网盘或另一台设备另存的那一份）的标题 */
   foundCopies: string[];
+  /** 「笔记」下面的文件夹变了（在资源管理器里建了、删了、改了名） */
+  folders: boolean;
+}
+
+/* ---------------- 同步（技术方案 §5.9） ---------------- */
+
+/**
+ * off：这个仓库没开同步；idle：同步好了；offline：连不上云端，改动都在本机；
+ * auth：登录失效；error：别的错，原因在 message 里
+ */
+export type SyncState = "off" | "idle" | "syncing" | "offline" | "auth" | "error";
+
+/** 太大、没有同步的文件 */
+export interface SyncOversized {
+  rel: string;
+  bytes: number;
+}
+
+/** 由 Rust 的 sync-status-changed 事件送来 */
+export interface SyncStatus {
+  state: SyncState;
+  /** 给人看的云端仓库：`github.com/xxx/ontheway-notes` */
+  remote: string | null;
+  /** 上一次同步成功的时间（UTC 毫秒） */
+  lastSyncedAt: number | null;
+  /** 本机还有几个提交没推上去 */
+  unpushed: number;
+  message: string | null;
+  oversized: SyncOversized[];
+}
+
+/** 同步托管方（技术方案 §5.9.4） */
+export type SyncProviderKey = "github" | "gitee";
+
+/** 一个登录过的同步账号 */
+export interface SyncAccount {
+  provider: SyncProviderKey;
+  login: string;
+}
+
+/** GitHub 设备码登录：给用户看的码，和去哪输入 */
+export interface SyncDeviceCode {
+  userCode: string;
+  verificationUri: string;
+  /** 码多久过期（秒） */
+  expiresIn: number;
+}
+
+/** 云端的一个仓库 */
+export interface SyncRemoteRepo {
+  /** `owner/name` */
+  fullName: string;
+  cloneUrl: string;
+  private: boolean;
+  updatedAt: string | null;
+}
+
+/** 同步用的代理：用户填的，和实际在用的（填的 > 环境变量 > 系统代理） */
+export interface SyncProxy {
+  configured: string | null;
+  effective: string | null;
+}
+
+/** 开启同步前看一眼云端：接下来会发生什么 */
+export interface SyncPlan {
+  /** true：云端是空的（或这个仓库以前连过），把这里的推上去；false：clone 到 cloneTarget、换过去 */
+  connectHere: boolean;
+  cloneTarget: string | null;
+  /** 现在的仓库里有笔记：问要不要「也合并进来」 */
+  localNotes: boolean;
+}
+
+export const SYNC_OFF: SyncStatus = {
+  state: "off",
+  remote: null,
+  lastSyncedAt: null,
+  unpushed: 0,
+  message: null,
+  oversized: [],
+};
+
+/* ---------------- 文件夹 ----------------
+   笔记的文件夹就是仓库里「笔记」下面的子目录（src-tauri/src/vault/folders.rs）。
+   路径相对「笔记」、正斜杠分隔：`工作/周报`；空串是「笔记」本身（全部笔记）。
+*/
+
+/** 删掉一个文件夹的结果，原样交回 folderUndelete 就能撤销 */
+export interface FolderDeletion {
+  folder: string;
+  /** 进了回收站的笔记 id */
+  notes: string[];
+  /** 删掉的文件夹和它底下的子文件夹 */
+  folders: string[];
+  /** 文件夹里还有别的文件（图片、PDF），目录留着没删 */
+  kept: boolean;
 }
 
 /* ---------------- 反向链接 ---------------- */
@@ -170,6 +290,50 @@ export interface Backlink {
   lines: { line: number; text: string }[];
   /** 这篇里一共链了几次 */
   count: number;
+}
+
+/** 笔记改了标题之后，别处的 `[[旧标题]]` 改成了新标题 */
+export interface Relink {
+  /** 改了几处链接；没改（skipped）时是本来要改的处数 */
+  links: number;
+  /** 改了的那几篇，给人看的标题 */
+  docs: string[];
+  /** 没改的原因（新标题写不进双链、和别的笔记重名……）。改了是 null */
+  skipped: string | null;
+  /** 每篇改之前、之后的全文，原样交给 noteRelinkUndo 就能撤销 */
+  rewrites: LinkRewrite[];
+}
+
+export interface LinkRewrite {
+  relPath: string;
+  before: string;
+  after: string;
+}
+
+/* ---------------- 历史版本 ----------------
+   同步用的 git 仓库里，每次改过这篇的提交就是一版（技术方案 §5.9.11）。
+*/
+
+export interface DocHistory {
+  /** 为什么没有历史（还没开启同步）。有历史时是 null */
+  unavailable: string | null;
+  /** 新的在前 */
+  versions: DocVersion[];
+  /** 更早的还有，没列出来 */
+  more: boolean;
+}
+
+export interface DocVersion {
+  /** 这一版内容的 id，交给 docVersionText 取正文 */
+  blob: string;
+  /** 什么时候改的（同步提交的时间） */
+  time: number;
+  /** 哪台设备改的 */
+  device: string;
+  /** 这台设备自己改的 */
+  mine: boolean;
+  /** 这一版时的标题（笔记改过标题才和现在不一样；某一天、目标是空串） */
+  title: string;
 }
 
 /* ---------------- 附件 ---------------- */
@@ -217,7 +381,8 @@ export interface DocumentModel {
   /** 标题上方的横幅，如归档视图的「已归档 · 2026年8月18日」 */
   banner?: { icon: "archive"; text: string };
   /** 这篇是另一篇的冲突副本：标题上方换成冲突横幅（打开原文 / 留这一版 / 删掉这份） */
-  conflict?: { copyId: string; originalId: string; originalTitle: string };
+  /** 这篇是冲突副本：原文是哪篇（笔记、某一天或某个周期的目标，见 data/conflicts.ts） */
+  conflict?: { copyId: string; original: DocumentSaveTarget; originalTitle: string };
   /**
    * 没有内容可显示（一篇笔记都没有、归档是空的）：正文区换成插画 + 一句话，
    * 不再假装是一篇标题叫「还没有笔记」的文档
@@ -225,14 +390,16 @@ export interface DocumentModel {
   empty?: { art: "notes" | "archive"; title: string; hint: string; action?: "createNote" };
   /** 在仓库里的相对路径：正文里的相对图片路径（附件）以它所在的文件夹为基准 */
   relPath?: string;
-  /** 标题右侧的分段控件 */
-  segments?: { group: string; options: string[]; active: string };
+  /** 标题上方的分段控件。short：正文区窄的时候每一项换成的短字（日历那四段） */
+  segments?: { group: string; options: string[]; short?: string[]; active: string };
   /** 统一的 Markdown 正文 */
   bodyMd: string;
   /** 日历某一天的「当日安排」：别的文档里写着这一天的任务，列在正文后面 */
   dayTasks?: Task[];
   /** 标题上方的一行小字，如日历某天的「9月15日 · 周二」 */
   eyebrow?: string;
+  /** 笔记所在的文件夹（相对「笔记」，空串是最上层）：标题上方显示成一行路径。只有笔记有 */
+  folder?: string;
   /** 底部状态栏的分段文字 */
   statusParts: string[];
   /** 是否显示删除按钮（原型里笔记视图右下角有个红色垃圾桶） */

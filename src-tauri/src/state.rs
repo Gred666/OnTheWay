@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::sync::account::LoginSlot;
+use crate::sync::engine::SyncHub;
 use crate::vault::watch::VaultWatcher;
 use crate::vault::Vault;
 
@@ -11,4 +13,8 @@ pub struct AppState {
     pub watcher: Mutex<Option<VaultWatcher>>,
     /// 应用数据目录：配置、索引、旧库
     pub data_dir: PathBuf,
+    /// 同步线程的遥控器（技术方案 §5.9）。仓库没开同步时里面是空的
+    pub sync: Arc<SyncHub>,
+    /// 正在进行的 GitHub 设备码登录（开始、等待、取消是三个命令）
+    pub sync_login: Mutex<LoginSlot>,
 }

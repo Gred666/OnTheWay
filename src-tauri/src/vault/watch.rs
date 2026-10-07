@@ -7,6 +7,8 @@
 - 一批里全是 .md 文件：只重读这几个；有目录或别的东西（整个文件夹被挪走、改名）：
   整个仓库增量扫一遍（按修改时间和大小，没变的不读）。
 - 应用自己写的文件扫描时指纹对得上，不会被当成外部改动，也不会发通知。
+- 每处理完一批就调一下 on_batch（不管是谁写的）：同步线程据此知道「有文件变了」，
+  停笔一会儿后提交（技术方案 §5.9.6）。.git/ 以点开头，同步自己的 git 操作戳不到这里。
 - 监听对象被丢掉（换了仓库）时通道断开，线程自己退出。
 ============================================================ */
 
@@ -27,7 +29,10 @@ pub struct VaultWatcher {
     _watcher: RecommendedWatcher,
 }
 
-pub fn start(vault: Arc<Mutex<Vault>>) -> Result<VaultWatcher> {
+/// 每处理完一批文件事件调一次
+pub type OnBatch = Arc<dyn Fn() + Send + Sync>;
+
+pub fn start(vault: Arc<Mutex<Vault>>, on_batch: Option<OnBatch>) -> Result<VaultWatcher> {
     let root = vault
         .lock()
         .map_err(|_| AppError::Internal("仓库锁坏了".into()))?
@@ -72,8 +77,12 @@ pub fn start(vault: Arc<Mutex<Vault>>) -> Result<VaultWatcher> {
                 } else {
                     vault.rescan_paths_and_announce(&work.files)
                 };
+                drop(vault);
                 if let Err(error) = result {
                     eprintln!("同步外部改动失败: {error}");
+                }
+                if let Some(on_batch) = &on_batch {
+                    on_batch();
                 }
             }
         })
@@ -175,7 +184,13 @@ mod tests {
             .set_announcer(Arc::new(move |change| {
                 let _ = tx.lock().unwrap().send(change);
             }));
-        let _watcher = start(vault.clone()).unwrap();
+        // 同步线程靠它知道「有文件变了」
+        let batches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = batches.clone();
+        let on_batch: OnBatch = Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let _watcher = start(vault.clone(), Some(on_batch)).unwrap();
 
         let wait = || rx.recv_timeout(Duration::from_secs(10)).expect("没等到通知");
 
@@ -207,7 +222,8 @@ mod tests {
         // 改名可能分几批到，等它们都过去
         while rx.recv_timeout(Duration::from_millis(800)).is_ok() {}
 
-        // 应用自己写的不算外部改动：写完之后不该再收到通知
+        // 应用自己写的不算外部改动：写完之后不该再收到通知 —— 但同步线程照样要被戳到
+        let before = batches.load(std::sync::atomic::Ordering::SeqCst);
         vault
             .lock()
             .unwrap()
@@ -217,6 +233,7 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(1500)).is_err(),
             "自己写的文件被当成了外部改动"
         );
+        assert!(batches.load(std::sync::atomic::Ordering::SeqCst) > before, "自己写的文件没戳到同步");
 
         std::fs::remove_file(root.join("笔记").join("改了名.md")).unwrap();
         let mut gone = false;

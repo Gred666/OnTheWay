@@ -12,6 +12,8 @@ export const commands = {
  * 
  * tauri.conf.json 里 `visible: false`，等前端首帧渲染完再 show() ——
  * 否则用户会先看到一个空窗口闪一下，这是桌面应用最常见的廉价感来源。
+ * 
+ * 这时前端也订阅好了事件：开着同步的话，第一轮从这里开始（技术方案 §5.9.6）。
  */
 async ready() : Promise<void> {
     await TAURI_INVOKE("ready");
@@ -27,10 +29,16 @@ async winClose() : Promise<void> {
 },
 /**
  * 保存完成后真正销毁窗口。只由前端的 close guard 调用，避免再次触发
- * `onCloseRequested` 形成递归。
+ * `onCloseRequested` 形成递归。开着同步时先提交、推送，最多等 3 秒（技术方案 §5.9.6）——
+ * 窗口先藏起来，用户不用看着一个点不动的窗口等。
  */
-async winForceClose() : Promise<void> {
-    await TAURI_INVOKE("win_force_close");
+async winForceClose() : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("win_force_close") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async winIsMaximized() : Promise<boolean> {
     return await TAURI_INVOKE("win_is_maximized");
@@ -108,6 +116,88 @@ async noteUndelete(id: string) : Promise<Result<null, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 在某个文件夹里新建一篇空笔记（folder 相对「笔记」，空串是「笔记」本身），返回新 id
+ */
+async noteCreate(folder: string, title: string) : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_create", { folder, title }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 挪到另一个文件夹，返回挪完的笔记（relPath 变了，正文里的相对链接可能也改了）
+ */
+async noteMove(id: string, folder: string) : Promise<Result<Note, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_move", { id, folder }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async folderList() : Promise<Result<string[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("folder_list") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 返回新文件夹的路径（重名时加了序号）
+ */
+async folderCreate(parent: string, name: string) : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("folder_create", { parent, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 返回改名后的路径（重名时加了序号）
+ */
+async folderRename(folder: string, name: string) : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("folder_rename", { folder, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 里面的笔记进回收站；返回值原样交给 folder_undelete 就能撤销
+ */
+async folderDelete(folder: string) : Promise<Result<FolderDeletion, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("folder_delete", { folder }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async folderUndelete(deletion: FolderDeletion) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("folder_undelete", { deletion }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 在系统的文件管理器里打开这个文件夹
+ */
+async folderReveal(folder: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("folder_reveal", { folder }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async searchNotes(query: string, limit: number) : Promise<Result<SearchResult, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("search_notes", { query, limit }) };
@@ -166,9 +256,23 @@ async calendarDaySave(date: string, title: string, noteMd: string) : Promise<Res
     else return { status: "error", error: e  as any };
 }
 },
-async calendarMarked(from: string, to: string) : Promise<Result<string[], AppError>> {
+/**
+ * 月网格上的记号：写过记录 / 做过事的日子，和还有待办的日子
+ */
+async calendarMarks(from: string, to: string) : Promise<Result<CalendarMarks, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("calendar_marked", { from, to }) };
+    return { status: "ok", data: await TAURI_INVOKE("calendar_marks", { from, to }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 所有写过的某一天、某个周期的目标，连同正文（命令面板搜它们）
+ */
+async journalList() : Promise<Result<JournalDoc[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("journal_list") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -229,6 +333,50 @@ async noteBacklinks(id: string) : Promise<Result<Backlink[], AppError>> {
 }
 },
 /**
+ * 笔记改了标题之后，别处的 `[[旧标题]]` 改成新标题（Vault::relink）
+ */
+async noteRelink(id: string, oldTitle: string) : Promise<Result<Relink, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_relink", { id, oldTitle }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 撤销 note_relink：返回换回了几篇
+ */
+async noteRelinkUndo(rewrites: LinkRewrite[]) : Promise<Result<number, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_relink_undo", { rewrites }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 一篇文档的历史版本，新的在前。没开启同步（仓库根上没有 .git）时说一声
+ */
+async docHistory(target: DocTarget) : Promise<Result<DocHistory, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("doc_history", { target }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 某一版的正文（不含属性块）
+ */
+async docVersionText(blob: string) : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("doc_version_text", { blob }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * 粘贴进来的文件（剪贴板里的图片）存进「附件」文件夹。内容以 base64 传过来 ——
  * 一个字节一个数字的 JSON 数组，几 MB 的截图要序列化成几千万个字符。
  */
@@ -262,6 +410,168 @@ async vaultChangeRoot() : Promise<Result<VaultInfo | null, AppError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async syncStatus() : Promise<Result<SyncStatus, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 立即同步一轮。没开同步返回 false
+ */
+async syncNow() : Promise<Result<boolean, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_now") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 登录过、钥匙串里还有令牌的同步账号
+ */
+async syncAccounts() : Promise<Result<SyncAccount[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_accounts") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * GitHub 设备码登录第一步：领一个码给用户看。接着调 sync_github_login_wait 等用户确认
+ */
+async syncGithubLoginStart() : Promise<Result<SyncDeviceCode, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_github_login_start") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 等用户在浏览器里确认（sync_login_cancel 能叫停）。成功后令牌进钥匙串，返回账号
+ */
+async syncGithubLoginWait() : Promise<Result<SyncAccount, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_github_login_wait") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async syncLoginCancel() : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_login_cancel") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Gitee：用私人令牌登录（先问一下令牌是谁的，顺便验证能用）
+ */
+async syncGiteeLogin(token: string) : Promise<Result<SyncAccount, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_gitee_login", { token }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 退出这个托管方的账号：删掉钥匙串里的令牌
+ */
+async syncLogout(provider: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_logout", { provider }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 这个账号自己的仓库，最近更新的在前
+ */
+async syncRepos(provider: string) : Promise<Result<SyncRemoteRepo[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_repos", { provider }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 新建一个空的私有仓库
+ */
+async syncCreateRepo(provider: string, name: string) : Promise<Result<SyncRemoteRepo, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_create_repo", { provider, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 同步用的代理：用户填的，和实际在用的
+ */
+async syncProxy() : Promise<Result<SyncProxy, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_proxy") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 填一个代理（空的 = 不填，按环境变量、系统代理找）
+ */
+async syncSetProxy(proxy: string | null) : Promise<Result<SyncProxy, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_set_proxy", { proxy }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 开启同步前先看一眼云端：在这里接上，还是要 clone 到新文件夹（放在哪）
+ */
+async syncInspect(provider: string, cloneUrl: string) : Promise<Result<SyncPlan, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_inspect", { provider, cloneUrl }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 开启同步（技术方案 §5.9.7）。云端仓库是空的（或者就是这个仓库以前连过的）：
+ * 在现在的仓库上接上，同步线程第一轮把这里的推上去，返回 false。
+ * 云端已经有东西：clone 到旁边的新文件夹、换过去（`bring_local` = 把现在仓库里的也拷过去），
+ * 返回 true —— 前端整页重载
+ */
+async syncEnable(provider: string, cloneUrl: string, bringLocal: boolean) : Promise<Result<boolean, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_enable", { provider, cloneUrl, bringLocal }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 断开同步：不再自动同步，忘掉这个仓库用哪个账号。.git 留着（历史都在，能再连上），账号不退出
+ */
+async syncDisable() : Promise<Result<SyncStatus, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_disable") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -269,8 +579,12 @@ async vaultChangeRoot() : Promise<Result<VaultInfo | null, AppError>> {
 
 
 export const events = __makeEvents__<{
+syncNotice: SyncNotice,
+syncStatusChanged: SyncStatusChanged,
 vaultChanged: VaultChanged
 }>({
+syncNotice: "sync-notice",
+syncStatusChanged: "sync-status-changed",
 vaultChanged: "vault-changed"
 })
 
@@ -332,6 +646,18 @@ line: number;
  * 去掉列表符号之类、截过长度的那一行，双链原样保留（前端再画成小块）
  */
 text: string }
+/**
+ * 日历月网格上的两种记号
+ */
+export type CalendarMarks = { 
+/**
+ * 留下过东西的日子：这一天的记录写过，或者有做完了的任务
+ */
+written: string[]; 
+/**
+ * 还有没做完的任务的日子
+ */
+open: string[] }
 export type DayDoc = { date: string; title: string; tasks: Task[]; noteMd: string; updatedAt: number; 
 /**
  * 这一天还没写过、内容是从之前最近一天延续来的：那一天的日期。
@@ -343,6 +669,22 @@ carriedFrom: string | null;
  */
 relPath: string }
 /**
+ * 一篇文档的历史版本：同步用的 git 仓库里每次改过它的提交（技术方案 §5.9.11）
+ */
+export type DocHistory = { 
+/**
+ * 为什么没有历史（还没开启同步）。有历史时是 None
+ */
+unavailable: string | null; 
+/**
+ * 新的在前
+ */
+versions: DocVersion[]; 
+/**
+ * 更早的还有，没列出来
+ */
+more: boolean }
+/**
  * 指向一篇文档：和前端的 DocumentSaveTarget 同形
  */
 export type DocTarget = { kind: "note"; id: string } | 
@@ -350,6 +692,47 @@ export type DocTarget = { kind: "note"; id: string } |
  * id 是日期 YYYY-MM-DD
  */
 { kind: "day"; id: string } | { kind: "goal"; horizon: string; periodStart: string }
+export type DocVersion = { 
+/**
+ * 这一版文件内容的 git 对象 id，交给 doc_version_text 取正文
+ */
+blob: string; 
+/**
+ * 提交时间，UTC 毫秒
+ */
+time: number; 
+/**
+ * 哪台设备改的：同步提交署名「OnTheWay (设备名)」里的设备名；别的 git 工具提交的就是署名
+ */
+device: string; 
+/**
+ * 这台设备自己改的
+ */
+mine: boolean; 
+/**
+ * 这一版时的标题（笔记改过标题才和现在不一样；某一天、目标是空串）
+ */
+title: string }
+/**
+ * 删掉一个文件夹的结果，原样交回 folder_undelete 就能撤销
+ */
+export type FolderDeletion = { 
+/**
+ * 删掉的文件夹（相对「笔记」的路径）
+ */
+folder: string; 
+/**
+ * 进了回收站的笔记 id
+ */
+notes: string[]; 
+/**
+ * 删掉的文件夹和它底下的子文件夹
+ */
+folders: string[]; 
+/**
+ * 文件夹里还有别的文件（图片、PDF），目录留着没删
+ */
+kept: boolean }
 /**
  * 某个周期（某一周 / 某个月 / 某一年）的目标。
  * 一个周期一篇；还没写过的周期返回空文档（id 为空、updated_at 为 0），
@@ -372,6 +755,19 @@ periodStart: string; contentMd: string; createdAt: number; updatedAt: number;
  * 在仓库里的相对路径；还没写过的周期是它将来的位置
  */
 relPath: string }
+/**
+ * 某一天 / 某个周期的目标，连同正文：命令面板拿它搜日记和目标
+ */
+export type JournalDoc = { target: DocTarget; 
+/**
+ * day | goal
+ */
+kind: string; 
+/**
+ * 给人看的标题：「10月6日 · 完成专注模式原型」「第 41 周目标」
+ */
+title: string; contentMd: string; updatedAt: number }
+export type LinkRewrite = { relPath: string; before: string; after: string }
 export type Note = { id: string; title: string; contentMd: string; excerpt: string; wordCount: number; isPinned: boolean; isArchived: boolean; archiveCategory: string | null; archivedAt: number | null; createdAt: number; updatedAt: number; 
 /**
  * 在仓库里的相对路径（正斜杠）。正文里的相对图片路径以它所在的文件夹为基准
@@ -386,6 +782,26 @@ conflictOf: string | null }
  * id 为 None 表示新建。
  */
 export type NoteInput = { id: string | null; title: string; contentMd: string }
+/**
+ * 笔记改了标题之后，别处的 `[[旧标题]]` 改成了新标题（Vault::relink）
+ */
+export type Relink = { 
+/**
+ * 改了几处链接；没改（skipped）时是本来要改的处数
+ */
+links: number; 
+/**
+ * 改了的那几篇，给人看的标题
+ */
+docs: string[]; 
+/**
+ * 没改的原因（新标题写不进双链、和别的笔记重名……）。改了是 None
+ */
+skipped: string | null; 
+/**
+ * 每篇改之前、之后的全文，原样交给 note_relink_undo 就能撤销
+ */
+rewrites: LinkRewrite[] }
 export type SearchHit = { id: string; title: string; excerpt: string; isArchived: boolean; updatedAt: number; 
 /**
  * bm25 分数，越小越相关
@@ -396,6 +812,110 @@ export type SearchResult = { hits: SearchHit[];
  * 前端拿它在原始正文上做高亮（不能用 SQLite 的 snippet，见 search.rs）
  */
 tokens: string[] }
+/**
+ * 一个登录过的同步账号
+ */
+export type SyncAccount = { 
+/**
+ * github / gitee
+ */
+provider: string; login: string }
+/**
+ * GitHub 设备码登录：给用户看的码，和去哪输入
+ */
+export type SyncDeviceCode = { userCode: string; verificationUri: string; 
+/**
+ * 码多久过期（秒）
+ */
+expiresIn: number }
+/**
+ * 同步要告诉用户的一句话：冲突副本、超限的文件没同步、仓库快满了
+ */
+export type SyncNotice = string
+export type SyncOversized = { 
+/**
+ * 仓库里的相对路径
+ */
+rel: string; bytes: number }
+/**
+ * 开启同步前看一眼云端（技术方案 §5.9.7）：接下来会发生什么
+ */
+export type SyncPlan = { 
+/**
+ * true：云端是空的（或者就是这个仓库以前连过的），在现在的仓库上接上、把这里的推上去。
+ * false：云端已经有东西，clone 到 cloneTarget、换过去
+ */
+connectHere: boolean; 
+/**
+ * clone 到哪个文件夹（绝对路径）
+ */
+cloneTarget: string | null; 
+/**
+ * 现在的仓库里有没有笔记：有的话问要不要「也合并进来」
+ */
+localNotes: boolean }
+/**
+ * 同步用的代理：用户填的，和实际在用的（填的 > 环境变量 > 系统代理）
+ */
+export type SyncProxy = { configured: string | null; effective: string | null }
+/**
+ * 云端的一个仓库
+ */
+export type SyncRemoteRepo = { 
+/**
+ * `owner/name`
+ */
+fullName: string; cloneUrl: string; private: boolean; 
+/**
+ * 最近一次推送 / 更新（云端给的时间字符串）
+ */
+updatedAt: string | null }
+export type SyncState = 
+/**
+ * 这个仓库没开同步
+ */
+"off" | 
+/**
+ * 同步好了
+ */
+"idle" | "syncing" | 
+/**
+ * 连不上云端：改动都在本机，过一会儿再试
+ */
+"offline" | 
+/**
+ * 登录失效，要重新登录
+ */
+"auth" | 
+/**
+ * 别的错（云端拒绝、本地仓库出错），原因在 message 里
+ */
+"error"
+export type SyncStatus = { state: SyncState; 
+/**
+ * 给人看的云端仓库：`github.com/xxx/ontheway-notes`
+ */
+remote: string | null; 
+/**
+ * 上一次同步成功的时间（UTC 毫秒）
+ */
+lastSyncedAt: number | null; 
+/**
+ * 本机还有几个提交没推上去
+ */
+unpushed: number; 
+/**
+ * 出错时的原因
+ */
+message: string | null; 
+/**
+ * 太大、没有同步的文件
+ */
+oversized: SyncOversized[] }
+/**
+ * 同步状态变了
+ */
+export type SyncStatusChanged = SyncStatus
 /**
  * 日历「当日安排」里的一条：某篇文档正文里带日期的 `- [ ]`（见 vault/tasks.rs）
  */
@@ -411,7 +931,15 @@ status: string;
 /**
  * 灰色小字：分类 · 时间 · 出处
  */
-meta: string | null; dueDate: string | null; timeLabel: string | null; category: string | null }
+meta: string | null; dueDate: string | null; timeLabel: string | null; category: string | null; 
+/**
+ * 写着这条任务的那篇文档：日历里点「出处」跳过去
+ */
+source: DocTarget | null; 
+/**
+ * 在那篇正文里的行号（从 0 开始）
+ */
+line: number | null }
 /**
  * 仓库里别处发生的变化：文件被外部程序改了，或者一次操作连带改了别的文档
  * （在日历里勾任务，改的是任务所在的那篇）。前端据此刷新缓存。
@@ -440,7 +968,11 @@ conflicts: string[];
 /**
  * 新出现的冲突副本（网盘同步时两边都改过，网盘另存的那一份）的标题
  */
-foundCopies: string[] }
+foundCopies: string[]; 
+/**
+ * 「笔记」下面的文件夹变了（在资源管理器里建了、删了、改了名）
+ */
+folders: boolean }
 /**
  * 仓库里别处发生的变化（外部程序改了文件、勾任务改了别的文档），前端据此刷新
  */

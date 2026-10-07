@@ -80,6 +80,43 @@ pub fn join(dir: &str, name: &str) -> String {
     }
 }
 
+/// 笔记的文件夹（相对「笔记」的路径，`工作/周报`；空串是「笔记」本身）→ 仓库里的目录。
+/// 路径是前端传来的，逐段检查：不能是空的、`.`、`..`，不能以点开头（会被当成隐藏目录跳过）。
+pub fn folder_dir(folder: &str) -> Result<String> {
+    if folder.is_empty() {
+        return Ok(NOTES_DIR.to_string());
+    }
+    let ok = folder.split('/').all(|part| {
+        !part.is_empty() && !part.starts_with('.') && !part.contains('\\') && part.trim() == part
+    });
+    if !ok {
+        return Err(AppError::Invalid(format!("文件夹路径不对: {folder}")));
+    }
+    Ok(format!("{NOTES_DIR}/{folder}"))
+}
+
+/// 反过来：仓库里的目录 → 笔记的文件夹。不在「笔记」底下的返回 None
+pub fn folder_of_dir(dir: &str) -> Option<&str> {
+    if dir == NOTES_DIR {
+        return Some("");
+    }
+    dir.strip_prefix(NOTES_DIR)?.strip_prefix('/')
+}
+
+/// 用户起的文件夹名 → 磁盘上的目录名：和笔记文件名同一套规矩（非法字符换成相近的全角字符）。
+/// 空的返回 None
+pub fn folder_name(raw: &str) -> Option<String> {
+    // file_stem_for_title 会把空名字换成「无标题笔记」；文件夹名空着就是没起名
+    let blank = raw
+        .trim()
+        .trim_start_matches('.')
+        .trim_end_matches(['.', ' '])
+        .trim()
+        .is_empty();
+    // 开头的点去掉之后可能露出空格：目录名两头不留空白（folder_dir 不收）
+    (!blank).then(|| file_stem_for_title(raw).trim().to_string())
+}
+
 fn parse_date(s: &str) -> Option<NaiveDate> {
     (s.len() == 10)
         .then(|| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())

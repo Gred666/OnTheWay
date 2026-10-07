@@ -7,7 +7,7 @@ import type { DayDoc, Note, VaultChange } from "./types";
 const api = {
   calendarDay: vi.fn(),
   calendarDaySave: vi.fn(),
-  calendarMarked: vi.fn(),
+  calendarMarks: vi.fn(),
   goalGet: vi.fn(),
   goalSave: vi.fn(),
   noteUpsert: vi.fn(),
@@ -15,7 +15,20 @@ const api = {
   noteListFull: vi.fn(),
   noteDelete: vi.fn(),
   noteUndelete: vi.fn(),
+  noteArchive: vi.fn(),
+  noteRestore: vi.fn(),
+  noteCreate: vi.fn(),
+  taskToggle: vi.fn(),
+  noteMove: vi.fn(),
+  folderList: vi.fn(),
+  folderCreate: vi.fn(),
+  folderRename: vi.fn(),
+  folderDelete: vi.fn(),
+  folderUndelete: vi.fn(),
   onVaultChanged: vi.fn(),
+  onSyncStatus: vi.fn(),
+  onSyncNotice: vi.fn(),
+  syncStatus: vi.fn(),
   vaultKeepConflictCopy: vi.fn(),
   vaultReveal: vi.fn(),
 };
@@ -70,7 +83,7 @@ beforeEach(() => {
     drafts: {},
     externalRevisions: {},
     conflicts: new Set(),
-    markedDates: new Set(),
+    marks: { written: new Set(), open: new Set() },
   });
 });
 
@@ -81,6 +94,7 @@ const change = (extra: Partial<VaultChange>): VaultChange => ({
   tasks: false,
   conflicts: [],
   foundCopies: [],
+  folders: false,
   ...extra,
 });
 
@@ -112,7 +126,7 @@ describe("saveDocument", () => {
     await useData.getState().saveDocument({ kind: "day", id: "2026-08-29" }, "- [x] 跑步");
     expect(api.calendarDaySave).toHaveBeenCalledWith("2026-08-29", "周四的 TODO", "- [x] 跑步");
     expect(useData.getState().dayDocs[0]?.carriedFrom).toBeNull();
-    expect(useData.getState().markedDates.has("2026-08-29")).toBe(true);
+    expect(useData.getState().marks.written.has("2026-08-29")).toBe(true);
   });
 
   it("refuses to write a goal period that has not loaded yet", async () => {
@@ -343,7 +357,7 @@ describe("initialize", () => {
   it("loads each list with one round trip instead of one per note", async () => {
     const notes = [1, 2, 3].map((n) => ({ ...note(`正文${n}`), id: `n-${n}` }));
     api.noteListFull.mockImplementation(async (archived: boolean) => (archived ? [] : notes));
-    api.calendarMarked.mockResolvedValue([]);
+    api.calendarMarks.mockResolvedValue({ written: new Set(), open: new Set() });
 
     await useData.getState().initialize();
     expect(api.noteListFull).toHaveBeenCalledTimes(2);
@@ -422,6 +436,53 @@ describe("deleteNote / undoDelete", () => {
 
     expect(await useData.getState().undoDelete()).toBeNull();
     expect(api.noteUndelete).not.toHaveBeenCalled();
+  });
+});
+
+describe("归档里的笔记", () => {
+  const archivedNote = (id: string): Note => ({
+    ...note(id),
+    id,
+    title: id.toUpperCase(),
+    isArchived: true,
+    archivedAt: 1,
+    relPath: `归档/${id}.md`,
+  });
+
+  it("can be deleted without restoring first, and the undo puts it back into the archive", async () => {
+    useData.setState({ notes: [], archived: [archivedNote("x"), archivedNote("y")] });
+    api.noteDelete.mockResolvedValue(undefined);
+    api.noteUndelete.mockResolvedValue(undefined);
+    api.noteGet.mockResolvedValue(archivedNote("y"));
+
+    await useData.getState().deleteNote("y");
+    expect(api.noteDelete).toHaveBeenCalledWith("y");
+    expect(useData.getState().archived.map((item) => item.id)).toEqual(["x"]);
+    expect(useData.getState().lastDeleted).toMatchObject({ index: 1, archived: true });
+
+    expect(await useData.getState().undoDelete()).toBe("y");
+    expect(useData.getState().archived.map((item) => item.id)).toEqual(["x", "y"]);
+    expect(useData.getState().notes).toEqual([]);
+  });
+
+  it("archiving and restoring both offer an undo that does not offer another one", async () => {
+    useData.setState({ notes: [{ ...note("a"), id: "a", title: "A" }], archived: [], folders: [] });
+    api.noteArchive.mockResolvedValue(undefined);
+    api.noteRestore.mockResolvedValue(undefined);
+    api.folderList.mockResolvedValue([]);
+    api.noteGet.mockResolvedValue(archivedNote("a"));
+
+    await useData.getState().archiveNote("a");
+    const archived = useData.getState().undoable;
+    expect(archived).toMatchObject({ kind: "archive", message: "已归档「A」", reopen: "a" });
+
+    api.noteGet.mockResolvedValue({ ...note("a"), id: "a", title: "A" });
+    useData.getState().dismissUndoable();
+    await archived?.undo();
+    expect(api.noteRestore).toHaveBeenCalledWith("a");
+    expect(useData.getState().notes.map((item) => item.id)).toEqual(["a"]);
+    // 撤销本身不再弹一条「已恢复 · 撤销」
+    expect(useData.getState().undoable).toBeNull();
   });
 });
 
@@ -513,14 +574,18 @@ describe("applyVaultChange（别的程序改了仓库里的文件）", () => {
       category: null,
     };
     api.calendarDay.mockResolvedValue(day("磁盘上的正文", { tasks: [task] }));
-    api.calendarMarked.mockResolvedValue(["2026-08-29", "2026-09-04"]);
+    api.calendarMarks.mockResolvedValue({
+      written: new Set(["2026-09-04"]),
+      open: new Set(["2026-08-29"]),
+    });
 
     await useData.getState().applyVaultChange(change({ tasks: true }));
     const state = useData.getState();
     expect(state.dayDocs[0]?.noteMd).toBe("编辑器里的正文");
     expect(state.dayDocs[0]?.tasks).toEqual([task]);
     expect(state.tasks["n-1#2"]).toEqual(task);
-    expect([...state.markedDates]).toEqual(["2026-08-29", "2026-09-04"]);
+    expect([...state.marks.open]).toEqual(["2026-08-29"]);
+    expect([...state.marks.written]).toEqual(["2026-09-04"]);
   });
 
   it("leaves days and goals that were never opened alone", async () => {
@@ -572,5 +637,156 @@ describe("revealDocument", () => {
     api.vaultReveal.mockRejectedValue({ kind: "Io", message: "打开文件夹失败: 没有这个文件" });
     await useData.getState().revealDocument({ kind: "note", id: "n-1" });
     expect(useData.getState().error).toBe("打开文件夹失败: 没有这个文件");
+  });
+});
+
+describe("folders", () => {
+  const inFolder = (id: string, relPath: string): Note => ({ ...note(id), id, title: id, relPath });
+
+  beforeEach(() => {
+    useData.setState({ folders: [], undoable: null, lastDeleted: null });
+  });
+
+  it("moves a note, refreshes the editor when its links were rewritten, and can undo", async () => {
+    const before = { ...inFolder("周报", "笔记/周报.md"), contentMd: "![图](../附件/图.png)" };
+    useData.setState({ notes: [before], folders: ["工作"] });
+    const moved = {
+      ...before,
+      relPath: "笔记/工作/周报.md",
+      contentMd: "![图](../../附件/图.png)",
+    };
+    api.noteMove.mockResolvedValueOnce(moved).mockResolvedValueOnce(before);
+
+    await useData.getState().moveNote("周报", "工作");
+    expect(api.noteMove).toHaveBeenCalledWith("周报", "工作");
+    expect(useData.getState().notes[0]).toEqual(moved);
+    // 正文里的相对链接改了：编辑器要换上新正文，不然下一次自动保存会把旧链接写回去
+    expect(useData.getState().externalRevisions["note:周报"]).toBe(1);
+    const undoable = useData.getState().undoable;
+    expect(undoable?.message).toBe("已移到「工作」");
+
+    await undoable?.undo();
+    expect(api.noteMove).toHaveBeenLastCalledWith("周报", "");
+    expect(useData.getState().notes[0]?.relPath).toBe("笔记/周报.md");
+    expect(useData.getState().undoable).toBeNull();
+  });
+
+  it("puts a note back when the move fails", async () => {
+    const before = inFolder("周报", "笔记/周报.md");
+    useData.setState({ notes: [before], folders: ["工作"] });
+    api.noteMove.mockRejectedValue({ kind: "NotFound", message: "文件夹「工作」不在了" });
+
+    await useData.getState().moveNote("周报", "工作");
+    expect(useData.getState().notes[0]).toEqual(before);
+    expect(useData.getState().error).toBe("文件夹「工作」不在了");
+    expect(useData.getState().undoable).toBeNull();
+  });
+
+  it("renames a folder and every path under it", async () => {
+    useData.setState({
+      folders: ["工作", "工作/周报", "生活"],
+      notes: [inFolder("a", "笔记/工作/周报/a.md"), inFolder("b", "笔记/生活/b.md")],
+    });
+    api.folderRename.mockResolvedValue("项目");
+
+    expect(await useData.getState().renameFolder("工作", "项目")).toBe("项目");
+    expect(useData.getState().folders).toEqual(["生活", "项目", "项目/周报"]);
+    expect(useData.getState().notes.map((n) => n.relPath)).toEqual([
+      "笔记/项目/周报/a.md",
+      "笔记/生活/b.md",
+    ]);
+  });
+
+  it("deletes a folder with its notes and brings everything back on undo", async () => {
+    const notes = [
+      inFolder("a", "笔记/读书/a.md"),
+      inFolder("b", "笔记/读书/小说/b.md"),
+      inFolder("c", "笔记/c.md"),
+    ];
+    useData.setState({ notes, folders: ["读书", "读书/小说"] });
+    const deletion = {
+      folder: "读书",
+      notes: ["a", "b"],
+      folders: ["读书", "读书/小说"],
+      kept: false,
+    };
+    api.folderDelete.mockResolvedValue(deletion);
+
+    await useData.getState().deleteFolder("读书");
+    expect(useData.getState().notes.map((n) => n.id)).toEqual(["c"]);
+    expect(useData.getState().folders).toEqual([]);
+    expect(useData.getState().undoable?.message).toBe("已删除「读书」和里面的 2 篇笔记");
+
+    api.folderUndelete.mockResolvedValue(undefined);
+    api.noteListFull.mockResolvedValue(notes);
+    api.folderList.mockResolvedValue(["读书", "读书/小说"]);
+    await useData.getState().undoable?.undo();
+    expect(api.folderUndelete).toHaveBeenCalledWith(deletion);
+    expect(useData.getState().notes).toHaveLength(3);
+    expect(useData.getState().folders).toEqual(["读书", "读书/小说"]);
+  });
+
+  it("shows a new folder before the backend answers, then follows what it says", async () => {
+    useData.setState({ folders: ["工作"] });
+    let answer: (path: string) => void = () => {};
+    api.folderCreate.mockReturnValueOnce(new Promise<string>((resolve) => (answer = resolve)));
+
+    // 名字按后端的规矩先算好：非法字符换成全角、重名加序号
+    const created = useData.getState().createFolder("", "工作");
+    expect(useData.getState().folders).toEqual(["工作", "工作 2"]);
+    // 后端那边磁盘上还有个同名的文件，给的是「工作 3」：跟着改
+    answer("工作 3");
+    expect(await created).toBe("工作 3");
+    expect(useData.getState().folders).toEqual(["工作", "工作 3"]);
+
+    api.folderCreate.mockRejectedValueOnce({ kind: "Io", message: "没有权限" });
+    expect(await useData.getState().createFolder("", "a/b")).toBeNull();
+    expect(useData.getState().folders).toEqual(["工作", "工作 3"]);
+    expect(useData.getState().error).toBe("没有权限");
+  });
+
+  it("refreshes the folder list when folders change outside the app", async () => {
+    api.folderList.mockResolvedValue(["资源管理器里建的"]);
+    await useData.getState().applyVaultChange(change({ folders: true }));
+    expect(useData.getState().folders).toEqual(["资源管理器里建的"]);
+  });
+});
+
+describe("resolveConflict（冲突副本的原文是某一天 / 目标）", () => {
+  // 两台设备都改了今日TODO：副本「2026-08-29 (冲突 …)」落在「日记」里当一篇笔记
+  const copyOf = (conflictOf: string, contentMd: string): Note => ({
+    ...note(contentMd),
+    id: "copy",
+    title: "2026-08-29 (冲突 2026-08-29 1030)",
+    relPath: "日记/2026/2026-08-29 (冲突 2026-08-29 1030).md",
+    conflictOf,
+  });
+
+  it("loads the day first, writes the copy's version into it, then deletes the copy", async () => {
+    useData.setState({ notes: [copyOf("day:2026-08-29", "- [x] 另一台的")] });
+    api.calendarDay.mockResolvedValue(day("- [ ] 本机的", { title: "周六" }));
+    api.calendarDaySave.mockResolvedValue(day("- [x] 另一台的", { title: "周六" }));
+    api.noteDelete.mockResolvedValue(undefined);
+
+    const opened = await useData.getState().resolveConflict("copy", "copy");
+
+    expect(opened).toEqual({ kind: "day", id: "2026-08-29" });
+    // 当天的标题不动，只换正文
+    expect(api.calendarDaySave).toHaveBeenCalledWith("2026-08-29", "周六", "- [x] 另一台的");
+    expect(api.noteDelete).toHaveBeenCalledWith("copy");
+    expect(useData.getState().notes).toEqual([]);
+    expect(useData.getState().externalRevisions["day:2026-08-29"]).toBe(1);
+  });
+
+  it("keeping the original only deletes the copy", async () => {
+    useData.setState({ notes: [copyOf("goal:week:2026-09-21", "另一台的目标")] });
+    api.noteDelete.mockResolvedValue(undefined);
+
+    const opened = await useData.getState().resolveConflict("copy", "original");
+
+    expect(opened).toEqual({ kind: "goal", horizon: "week", periodStart: "2026-09-21" });
+    expect(api.goalGet).not.toHaveBeenCalled();
+    expect(api.goalSave).not.toHaveBeenCalled();
+    expect(api.noteDelete).toHaveBeenCalledWith("copy");
   });
 });

@@ -252,6 +252,8 @@ function watchTheme(): void {
     if (currentPalette() === before) return;
     stillUrls.clear();
     for (const still of document.querySelectorAll<SVGSVGElement>("svg.otw-ae-still")) {
+      // 换主题时盖在上面的旧主题副本（lib/themeTransition.ts）：留着旧颜色
+      if (still.closest(".otw-theme-ghost")) continue;
       const emoji = byName.get(`${SHORTCODE_PREFIX}${still.dataset.emoji}`);
       const url = emoji && stillUrl(emoji);
       if (url) still.firstElementChild?.setAttribute("href", url);

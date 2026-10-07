@@ -1,45 +1,80 @@
+import { openDocument } from "@/app/navigate";
 import { useApp } from "@/app/store";
+import { backend } from "@/data/backend";
+import { folderLabel, folderOf } from "@/data/folders";
 import { useData } from "@/data/store";
-import type { DocumentSaveTarget, WorkspaceId } from "@/data/types";
+import type { DocumentSaveTarget, JournalDoc, Note, WorkspaceId } from "@/data/types";
 import { cn } from "@/lib/cn";
-import { animatedEmojiText } from "@/lib/emojiText";
+import { formatRelativeTime } from "@/lib/date";
 import { popoverCard, spring, tween } from "@/lib/motion";
+import { type Range, matchKeywords, matchText, snippetAround } from "@/lib/paletteSearch";
 import {
   Archive,
-  Bell,
+  ArrowDown,
+  ArrowUp,
   CalendarDays,
-  Copy,
+  Cloud,
   CornerDownLeft,
+  FileText,
   FolderInput,
   FolderOpen,
   FolderSearch,
+  History,
   Monitor,
   Moon,
-  Puzzle,
+  NotebookPen,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  RefreshCw,
   Search,
   Sparkles,
+  SquareCheckBig,
   Sun,
   Target,
-  Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-interface Cmd {
+type Group = "最近" | "笔记" | "日记与目标" | "操作" | "跳转" | "外观" | "文件" | "同步" | "新建";
+
+interface Item {
   id: string;
-  label: string;
-  hint: string;
+  group: Group;
   icon: LucideIcon;
-  group: "跳转" | "笔记" | "文件" | "外观";
+  label: string;
+  /** 右边的小字（所在文件夹、多久前改的、「当前」） */
+  hint?: string;
+  /** 搜得到、但不显示的别名 */
+  keywords?: string;
+  /** 标题里命中的字 */
+  ranges?: Range[];
+  /** 正文命中：标题下面一行，命中的字标出来 */
+  snippet?: { text: string; range: Range };
   run: () => void;
 }
 
 /** 输入框那一栏的高度（和下面的 h-[52px] 一致）：面板展开的第一帧露出它 */
 const INPUT_BAR_HEIGHT = 52;
+/** 列表最高多少：加上底栏，整个面板和以前一样高（以前列表 336，没有底栏） */
+const LIST_MAX = 304;
+const RECENT_COUNT = 5;
+/** 搜笔记时最多列多少篇：再多就该换个更准的词了 */
+const NOTE_RESULTS = 40;
 
 /**
  * 命令面板（⌘K / Ctrl+K）。
+ *
+ * - 一打开先是「最近」改过的几篇和「新建笔记」，然后才是跳转、外观、文件 ——
+ *   跳转侧栏上就有，最常用的是回到刚才那几篇
+ * - 搜索：标题连续命中 > 几个词都出现 > 按顺序跳着命中；命令还认别名（「深色」「dark」都能找到
+ *   「切换到暗色」）；笔记的正文也搜，命中的那一行显示在标题下面。命中的字标成强调色
+ * - 日记（某一天）和目标也搜：打开面板时取一次它们的正文（data/store 的 loadJournal）
+ * - 打了字就一定有最后一项「新建笔记「…」」：什么都没搜到也不是死路
+ * - 结果多少变了，列表的高度跟着平滑地变，不会一下缩成一截
+ * - 输入法选字时的回车 / 上下键是在选字，不执行、不挪高亮
+ *
  * 遮罩用静态 backdrop-blur、只动 opacity —— 动画化 backdrop-filter
  * 会让每帧重新采样模糊，是最贵的一类动画（技术方案 §10.1）。
  */
@@ -51,15 +86,24 @@ export function CommandPalette({
 }) {
   const open = useApp((s) => s.paletteOpen);
   const setOpen = useApp((s) => s.setPaletteOpen);
+  const workspace = useApp((s) => s.workspace);
   const setWorkspace = useApp((s) => s.setWorkspace);
-  const selectNote = useApp((s) => s.selectNote);
+  const theme = useApp((s) => s.theme);
   const setTheme = useApp((s) => s.setTheme);
   const reduceMotion = useApp((s) => s.reduceMotion);
   const setReduceMotion = useApp((s) => s.setReduceMotion);
+  const noteFolder = useApp((s) => s.noteFolder);
   const notes = useData((s) => s.notes);
+  const archived = useData((s) => s.archived);
+  const journal = useData((s) => s.journal);
+  const navCollapsed = useApp((s) => s.navCollapsed);
+  const setNavCollapsed = useApp((s) => s.setNavCollapsed);
   const revealDocument = useData((s) => s.revealDocument);
   const openVaultFolder = useData((s) => s.openVaultFolder);
   const changeVaultRoot = useData((s) => s.changeVaultRoot);
+  const syncState = useData((s) => s.syncStatus.state);
+  const setSyncOpen = useApp((s) => s.setSyncOpen);
+  const setHistoryFor = useApp((s) => s.setHistoryFor);
 
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -73,7 +117,7 @@ export function CommandPalette({
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setOpen(!useApp.getState().paletteOpen);
-      } else if (e.key === "Escape" && useApp.getState().paletteOpen) {
+      } else if (e.key === "Escape" && useApp.getState().paletteOpen && !e.isComposing) {
         e.preventDefault();
         setOpen(false);
       }
@@ -86,6 +130,8 @@ export function CommandPalette({
 
   useEffect(() => {
     if (open) {
+      // 日记和目标不常驻内存：每次打开取一份最新的（一次往返，几百篇也只是几百段文字）
+      void useData.getState().loadJournal();
       setQuery("");
       setCursor(0);
       // 等入场动画的第一帧过去再聚焦，避免 iOS/WebKit 上的滚动跳动
@@ -93,119 +139,236 @@ export function CommandPalette({
     }
   }, [open]);
 
-  const commands = useMemo<Cmd[]>(() => {
-    const nav = (id: WorkspaceId, label: string, icon: LucideIcon): Cmd => ({
+  /* ---- 固定的命令：操作、跳转、外观、文件 ---- */
+  const commands = useMemo<Item[]>(() => {
+    const here = noteFolder ? `放在「${folderLabel(noteFolder)}」` : undefined;
+    const nav = (id: WorkspaceId, label: string, icon: LucideIcon, keywords: string): Item => ({
       id: `nav-${id}`,
-      label,
-      hint: "跳转到工作区",
-      icon,
       group: "跳转",
+      icon,
+      label,
+      hint: workspace === id ? "当前" : undefined,
+      keywords: `跳转 打开 ${keywords}`,
       run: () => setWorkspace(id),
     });
+    const themeItem = (pref: typeof theme, label: string, icon: LucideIcon, keywords: string) =>
+      ({
+        id: `theme-${pref}`,
+        group: "外观",
+        icon,
+        label,
+        hint: theme === pref ? "当前" : undefined,
+        keywords: `主题 外观 theme ${keywords}`,
+        run: () => setTheme(pref),
+      }) satisfies Item;
 
     return [
-      nav("notes", "笔记", Copy),
-      nav("today", "今日TODO", Bell),
-      nav("goal", "/GOAL", Target),
-      nav("calendar", "日历", CalendarDays),
-      nav("archive", "归档", Archive),
-      nav("extensions", "扩展", Puzzle),
-
-      ...notes.map<Cmd>((n) => ({
-        id: `note-${n.id}`,
-        label: n.title,
-        hint: animatedEmojiText(n.excerpt),
-        icon: Copy,
-        group: "笔记",
-        run: () => {
-          setWorkspace("notes");
-          selectNote(n.id);
-        },
-      })),
-
-      /* 每篇文档都是笔记文件夹里的一个 .md 文件 */
+      {
+        id: "new-note",
+        group: "操作",
+        icon: Plus,
+        label: "新建笔记",
+        hint: here,
+        keywords: "new note 创建 添加 新笔记 写",
+        run: () => void createNoteNamed(noteFolder),
+      },
       ...(docTarget
         ? [
             {
               id: "reveal-current",
-              label: "在文件夹中显示当前文档",
-              hint: "打开资源管理器并选中这篇的文件",
+              group: "操作",
               icon: FolderSearch,
-              group: "文件",
+              label: "在文件夹中显示当前文档",
+              keywords: "reveal 资源管理器 finder 文件 位置 定位",
               run: () => void revealDocument(docTarget),
-            } satisfies Cmd,
+            } satisfies Item,
+            {
+              id: "history-current",
+              group: "操作",
+              icon: History,
+              label: "历史版本…",
+              hint: "这一篇以前的样子，可以恢复",
+              keywords: "history version 历史 版本 恢复 回退 撤回 以前 旧版 git",
+              run: () => setHistoryFor(docTarget),
+            } satisfies Item,
           ]
         : []),
+
+      nav("notes", "笔记", NotebookPen, "notes 列表"),
+      nav("today", "今日TODO", SquareCheckBig, "today 今天 待办 todo"),
+      nav("goal", "/GOAL", Target, "goal 目标 周 月 年"),
+      nav("calendar", "日历", CalendarDays, "calendar 日期 某天"),
+      nav("archive", "归档", Archive, "archive 存档"),
+
+      themeItem("light", "切换到亮色", Sun, "light 浅色 白天 日间 亮"),
+      themeItem("dark", "切换到暗色", Moon, "dark 深色 夜间 黑 暗"),
+      themeItem("system", "主题跟随系统", Monitor, "system auto 自动 系统"),
+      {
+        id: "reduce-motion",
+        group: "外观",
+        icon: Sparkles,
+        label: reduceMotion ? "开启动画效果" : "减少动画效果",
+        hint: reduceMotion ? "当前：已减少" : undefined,
+        keywords: "动效 动画 motion animation reduce",
+        run: () => setReduceMotion(!reduceMotion),
+      },
+      {
+        id: "toggle-nav",
+        group: "外观",
+        icon: navCollapsed ? PanelLeftOpen : PanelLeftClose,
+        label: navCollapsed ? "展开导航栏" : "收起导航栏",
+        hint: navCollapsed ? undefined : "窄窗口里给正文让地方",
+        keywords: "导航 侧栏 侧边栏 sidebar collapse 收起 展开 图标",
+        run: () => setNavCollapsed(!navCollapsed),
+      },
+
       {
         id: "open-vault",
+        group: "文件",
+        icon: FolderOpen,
         label: "打开笔记文件夹",
         hint: "所有笔记、日记、目标都在这里",
-        icon: FolderOpen,
-        group: "文件",
+        keywords: "vault 仓库 目录 资源管理器 finder",
         run: () => void openVaultFolder(),
       },
       {
         id: "change-vault",
-        label: "更换笔记文件夹…",
-        hint: "选一个文件夹存放所有笔记（可以放进网盘同步）",
-        icon: FolderInput,
         group: "文件",
+        icon: FolderInput,
+        label: "更换笔记文件夹…",
+        hint: "换一个位置存笔记",
+        keywords: "vault 仓库 位置 网盘 迁移",
         run: () => void changeVaultRoot(),
       },
-
+      // 同步（技术方案 §5.9.9）：没开时是开启的入口，开了是状态 + 立即同步
       {
-        id: "theme-light",
-        label: "切换到亮色",
-        hint: "外观",
-        icon: Sun,
-        group: "外观",
-        run: () => setTheme("light"),
+        id: "sync",
+        group: "同步",
+        icon: Cloud,
+        label: syncState === "off" ? "开启同步…" : "同步状态…",
+        hint: syncState === "off" ? "GitHub / Gitee 私有仓库" : undefined,
+        keywords: "sync 同步 github gitee git 备份 云端 多设备 断开 登录 代理",
+        run: () => setSyncOpen(true),
       },
-      {
-        id: "theme-dark",
-        label: "切换到暗色",
-        hint: "外观",
-        icon: Moon,
-        group: "外观",
-        run: () => setTheme("dark"),
-      },
-      {
-        id: "theme-system",
-        label: "主题跟随系统",
-        hint: "外观",
-        icon: Monitor,
-        group: "外观",
-        run: () => setTheme("system"),
-      },
-      {
-        id: "reduce-motion",
-        label: reduceMotion ? "开启动画效果" : "减少动画效果",
-        hint: reduceMotion ? "当前：已减少" : "当前：完整动效",
-        icon: Sparkles,
-        group: "外观",
-        run: () => setReduceMotion(!reduceMotion),
-      },
+      ...(syncState === "off"
+        ? []
+        : [
+            {
+              id: "sync-now",
+              group: "同步",
+              icon: RefreshCw,
+              label: "立即同步",
+              keywords: "sync now 同步 拉取 推送 上传 下载",
+              run: () => void backend().then((api) => api.syncNow()),
+            } satisfies Item,
+          ]),
     ];
   }, [
-    notes,
+    noteFolder,
+    workspace,
     setWorkspace,
-    selectNote,
+    theme,
     setTheme,
     reduceMotion,
     setReduceMotion,
+    navCollapsed,
+    setNavCollapsed,
     docTarget,
     revealDocument,
     openVaultFolder,
+    syncState,
+    setSyncOpen,
+    setHistoryFor,
     changeVaultRoot,
   ]);
 
-  const results = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return commands;
-    return commands.filter(
-      (c) => c.label.toLowerCase().includes(q) || c.hint.toLowerCase().includes(q),
-    );
-  }, [commands, query]);
+  const currentNote = docTarget?.kind === "note" ? docTarget.id : null;
+
+  /** 「最近」：最近改过的几篇，正在看的那篇不算 */
+  const recent = useMemo<Item[]>(
+    () =>
+      [...notes]
+        .filter((note) => note.id !== currentNote)
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, RECENT_COUNT)
+        .map((note) => {
+          const where = folderOf(note);
+          const when = formatRelativeTime(note.updatedAt);
+          return noteItem(note, "最近", { hint: where ? `${folderLabel(where)} · ${when}` : when });
+        }),
+    [notes, currentNote],
+  );
+
+  const results = useMemo<Item[]>(() => {
+    const q = query.trim();
+    if (!q) return [...recent, ...commands];
+
+    const scored: { item: Item; score: number }[] = [];
+    for (const command of commands) {
+      const hit = matchText(command.label, q);
+      if (hit) scored.push({ item: { ...command, ranges: hit.ranges }, score: hit.score });
+      else if (matchKeywords(command.keywords, q)) scored.push({ item: command, score: 55 });
+    }
+
+    const found: { item: Item; score: number }[] = [];
+    for (const note of [...notes, ...archived]) {
+      const where = [note.isArchived ? "归档" : "", folderLabel(folderOf(note))]
+        .filter((part) => part && part !== folderLabel(""))
+        .join(" · ");
+      const title = matchText(note.title, q);
+      if (title) {
+        // 笔记是这里最主要的东西：同样命中时排在命令前面
+        found.push({
+          item: noteItem(note, "笔记", { hint: where, ranges: title.ranges }),
+          score: title.score + 8,
+        });
+        continue;
+      }
+      const snippet = snippetAround(note.contentMd, q);
+      if (snippet)
+        found.push({ item: noteItem(note, "笔记", { hint: where, snippet }), score: 30 });
+    }
+    found.sort((a, b) => b.score - a.score);
+    scored.push(...found.slice(0, NOTE_RESULTS));
+
+    // 日记和目标：标题（「10月6日 · …」「第 41 周目标」）和正文都搜，排在同分的笔记后面
+    const days: { item: Item; score: number }[] = [];
+    for (const entry of journal) {
+      const hint = formatRelativeTime(entry.updatedAt);
+      const title = matchText(entry.title, q);
+      if (title) {
+        days.push({ item: journalItem(entry, { hint, ranges: title.ranges }), score: title.score });
+        continue;
+      }
+      const snippet = snippetAround(entry.contentMd, q);
+      if (snippet) days.push({ item: journalItem(entry, { hint, snippet }), score: 28 });
+    }
+    days.sort((a, b) => b.score - a.score);
+    scored.push(...days.slice(0, NOTE_RESULTS));
+
+    // 分组：组按组里最好的那一项排，组里按分数排
+    const groups = new Map<Group, { best: number; items: { item: Item; score: number }[] }>();
+    for (const entry of scored) {
+      const group = groups.get(entry.item.group) ?? { best: Number.NEGATIVE_INFINITY, items: [] };
+      group.best = Math.max(group.best, entry.score);
+      group.items.push(entry);
+      groups.set(entry.item.group, group);
+    }
+    const ordered = [...groups.values()]
+      .sort((a, b) => b.best - a.best)
+      .flatMap((group) => group.items.sort((a, b) => b.score - a.score).map((entry) => entry.item));
+
+    // 最后一项总是「新建笔记」，标题就是打的字：搜不到也能接着往下走
+    ordered.push({
+      id: "create-from-query",
+      group: "新建",
+      icon: Plus,
+      label: `新建笔记「${q}」`,
+      hint: noteFolder ? `放在「${folderLabel(noteFolder)}」` : undefined,
+      run: () => void createNoteNamed(noteFolder, q),
+    });
+    return ordered;
+  }, [query, recent, commands, notes, archived, journal, noteFolder]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: 输入变化时复位高亮
   useEffect(() => setCursor(0), [query]);
@@ -215,11 +378,14 @@ export function CommandPalette({
     listRef.current?.querySelector(`[data-idx="${cursor}"]`)?.scrollIntoView({ block: "nearest" });
   }, [cursor]);
 
-  const execute = (c: Cmd | undefined) => {
-    if (!c) return;
-    c.run();
+  const execute = (item: Item | undefined) => {
+    if (!item) return;
+    item.run();
     setOpen(false);
   };
+
+  const searching = query.trim() !== "";
+  const matchCount = results.filter((item) => item.group !== "新建").length;
 
   return (
     <AnimatePresence>
@@ -238,6 +404,8 @@ export function CommandPalette({
           <motion.button
             key="scrim"
             type="button"
+            // 在这里换主题时它正要关掉：不进日落 / 日出的旧主题副本（lib/themeTransition.ts）
+            data-ghost-skip
             aria-label="关闭命令面板"
             onClick={() => setOpen(false)}
             initial={{ opacity: 0 }}
@@ -251,6 +419,7 @@ export function CommandPalette({
               它自己不做动画：整块淡入会把面板里的字一起变成半透明的位图 */}
           <div
             key="panel"
+            data-ghost-skip
             className="pointer-events-none fixed inset-0 z-50 flex items-start justify-center
                        pt-[16vh]"
           >
@@ -271,6 +440,8 @@ export function CommandPalette({
               className="pointer-events-auto relative w-[520px] max-w-[calc(100vw-48px)]
                        overflow-clip rounded-2xl bg-canvas shadow-modal ring-1 ring-line-strong"
               onKeyDown={(e) => {
+                // 输入法选字时的回车、上下键是在选字
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === "ArrowDown") {
                   e.preventDefault();
                   setCursor((c) => (c + 1) % Math.max(results.length, 1));
@@ -287,44 +458,55 @@ export function CommandPalette({
                 <Search size={15} strokeWidth={2} className="shrink-0 text-faint" />
                 <input
                   ref={inputRef}
+                  // 焦点一直在输入框里，上下键挪的是列表里的高亮（读屏按 activedescendant 念）
+                  role="combobox"
+                  aria-expanded="true"
+                  aria-controls="palette-results"
+                  aria-activedescendant={results[cursor] ? `palette-option-${cursor}` : undefined}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="搜索命令、笔记…"
+                  placeholder="搜索笔记、命令…"
+                  aria-label="搜索笔记、命令"
+                  spellCheck={false}
                   className="min-w-0 flex-1 bg-transparent text-[14px] text-ink outline-none
                            placeholder:text-faint"
                 />
-                <kbd
-                  className="shrink-0 rounded border border-line-strong px-1.5 py-0.5 font-mono
-                           text-[10px] leading-none text-faint"
-                >
-                  ESC
-                </kbd>
               </div>
 
-              <div ref={listRef} className="scroll-thin max-h-[336px] overflow-y-auto p-1.5">
-                {results.length === 0 ? (
-                  <div className="px-3 py-9 text-center">
-                    <Zap size={17} strokeWidth={1.7} className="mx-auto mb-2 text-faint/60" />
-                    <p className="text-[12.5px] text-muted">没有匹配的命令</p>
-                  </div>
-                ) : (
-                  results.map((c, i) => {
+              <AutoHeight>
+                <div
+                  ref={listRef}
+                  id="palette-results"
+                  role="listbox"
+                  aria-label="结果"
+                  tabIndex={-1}
+                  className="scroll-thin overflow-y-auto p-1.5"
+                  style={{ maxHeight: LIST_MAX }}
+                >
+                  {results.map((item, i) => {
                     const active = i === cursor;
-                    const showGroup = i === 0 || results[i - 1]!.group !== c.group;
-                    const Icon = c.icon;
+                    const showGroup = i === 0 || results[i - 1]!.group !== item.group;
+                    const Icon = item.icon;
                     return (
-                      <div key={c.id}>
+                      <div key={item.id}>
                         {showGroup && (
                           <p className="px-2.5 pb-1 pt-2.5 text-[10.5px] font-medium tracking-[0.05em] text-faint">
-                            {c.group}
+                            {item.group}
                           </p>
                         )}
                         <button
                           type="button"
+                          id={`palette-option-${i}`}
+                          role="option"
+                          aria-selected={active}
+                          tabIndex={-1}
                           data-idx={i}
                           onMouseMove={() => setCursor(i)}
-                          onClick={() => execute(c)}
-                          className="relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left"
+                          onClick={() => execute(item)}
+                          className={cn(
+                            "relative flex w-full items-center gap-2.5 rounded-lg px-2.5 text-left",
+                            item.snippet ? "py-[7px]" : "py-2",
+                          )}
                         >
                           {active && (
                             <motion.span
@@ -337,40 +519,175 @@ export function CommandPalette({
                             size={14}
                             strokeWidth={1.9}
                             className={cn(
-                              "relative z-10 shrink-0",
+                              "relative z-10 shrink-0 self-start",
+                              item.snippet ? "mt-[3px]" : "mt-[2.5px]",
                               active ? "text-accent" : "text-muted",
                             )}
                           />
                           <span className="relative z-10 min-w-0 flex-1">
                             <span
                               className={cn(
-                                "block truncate text-[13px]",
+                                "block truncate text-[13px] leading-[1.45]",
                                 active ? "font-medium text-ink" : "text-body",
                               )}
                             >
-                              {c.label}
+                              <Marked text={item.label} ranges={item.ranges} />
                             </span>
+                            {item.snippet && (
+                              <span className="mt-px block truncate text-[11.5px] leading-[1.45] text-muted">
+                                <Marked text={item.snippet.text} ranges={[item.snippet.range]} />
+                              </span>
+                            )}
                           </span>
-                          <span className="relative z-10 shrink-0 truncate text-[11px] text-faint">
-                            {c.hint}
-                          </span>
+                          {item.hint && (
+                            <span
+                              className={cn(
+                                "relative z-10 max-w-[45%] shrink-0 self-start truncate text-[11px] leading-[1.45]",
+                                "mt-[1.5px]",
+                                item.hint === "当前" ? "text-accent/80" : "text-faint",
+                              )}
+                            >
+                              {item.hint}
+                            </span>
+                          )}
                           {active && (
                             <CornerDownLeft
                               size={11}
                               strokeWidth={2}
-                              className="relative z-10 shrink-0 text-accent/60"
+                              className="relative z-10 mt-[4px] shrink-0 self-start text-accent/60"
                             />
                           )}
                         </button>
                       </div>
                     );
-                  })
-                )}
+                  })}
+                </div>
+              </AutoHeight>
+
+              <div className="flex h-8 items-center gap-3.5 border-t border-line px-4 text-[11px] text-faint">
+                {/* 按键画成图标，不用箭头、回车这类字：正文字体里没有，第一次画它们浏览器要把
+                    系统字体挨个找一遍，打开面板就卡一下（见 editor/popupGlyphs.test.ts） */}
+                <KeyHint keys={[ArrowUp, ArrowDown]} label="选择" />
+                <KeyHint keys={[CornerDownLeft]} label="打开" />
+                <KeyHint keys={["Esc"]} label="关闭" />
+                <span className="ml-auto tabular-nums">
+                  {searching
+                    ? matchCount
+                      ? `${matchCount} 个结果`
+                      : "没有找到，回车新建一篇"
+                    : "笔记、日记、目标的正文都能搜"}
+                </span>
               </div>
             </motion.div>
           </div>
         </>
       )}
     </AnimatePresence>
+  );
+}
+
+function noteItem(note: Note, group: Group, extra: Partial<Item>): Item {
+  return {
+    id: `${group}-note-${note.id}`,
+    group,
+    icon: note.isArchived ? Archive : FileText,
+    label: note.title,
+    ...extra,
+    run: () => {
+      openDocument({ kind: "note", id: note.id });
+      // 列表栏也换到它所在的文件夹、把它滚出来：正文和列表对得上
+      if (!note.isArchived) useApp.getState().openNoteFolder(folderOf(note));
+    },
+  };
+}
+
+/** 某一天 / 某个周期的目标：打开它（今天的在「今日TODO」，别的在日历里） */
+function journalItem(entry: JournalDoc, extra: Partial<Item>): Item {
+  const id =
+    entry.target.kind === "goal"
+      ? `${entry.target.horizon}:${entry.target.periodStart}`
+      : entry.target.id;
+  return {
+    id: `journal-${entry.kind}-${id}`,
+    group: "日记与目标",
+    icon: entry.kind === "goal" ? Target : CalendarDays,
+    label: entry.title,
+    ...extra,
+    run: () => openDocument(entry.target),
+  };
+}
+
+/**
+ * 新建一篇（放在列表栏现在所在的文件夹），有标题就起好名字，然后打开。
+ * 光标跟过去：没标题的落在标题里，起好名字的落在正文开头
+ */
+async function createNoteNamed(folder: string, title?: string) {
+  const data = useData.getState();
+  const id = await data.createNote(folder);
+  if (!id) return;
+  if (title) await data.saveTitle({ kind: "note", id }, title);
+  useApp.getState().setFocusRequest({ docKey: `note-${id}`, at: title ? "body" : "title" });
+  openDocument({ kind: "note", id });
+}
+
+/** 命中的字标成强调色（不加底色：一排高亮块太吵） */
+function Marked({ text, ranges }: { text: string; ranges?: Range[] }) {
+  if (!ranges?.length) return <>{text}</>;
+  const parts: ReactNode[] = [];
+  let at = 0;
+  for (const [from, to] of ranges) {
+    if (from > at) parts.push(text.slice(at, from));
+    parts.push(
+      <mark key={from} className="bg-transparent font-medium text-accent">
+        {text.slice(from, to)}
+      </mark>,
+    );
+    at = to;
+  }
+  if (at < text.length) parts.push(text.slice(at));
+  return <>{parts}</>;
+}
+
+function KeyHint({ keys, label }: { keys: (string | LucideIcon)[]; label: string }) {
+  return (
+    <span className="flex items-center gap-1">
+      {keys.map((Key, index) => (
+        <kbd
+          // biome-ignore lint/suspicious/noArrayIndexKey: 固定的一两个键，不会重排
+          key={index}
+          className="grid h-[17px] min-w-[17px] place-items-center rounded border border-line-strong px-1
+                     font-sans text-[10px] leading-none text-muted"
+        >
+          {typeof Key === "string" ? Key : <Key size={10} strokeWidth={2.2} aria-hidden="true" />}
+        </kbd>
+      ))}
+      <span className="ml-0.5">{label}</span>
+    </span>
+  );
+}
+
+/**
+ * 高度跟着里面的内容平滑地变：结果从十几项变成两三项，面板不会一下缩上去。
+ * 只动这一层的 height（面板是 fixed 的小盒子，每帧只重排它自己），里面的字不缩放、不位移。
+ */
+function AutoHeight({ children }: { children: ReactNode }) {
+  const inner = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | "auto">("auto");
+  useLayoutEffect(() => {
+    const node = inner.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setHeight(node.offsetHeight));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <motion.div
+      initial={false}
+      animate={{ height }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      className="overflow-clip"
+    >
+      <div ref={inner}>{children}</div>
+    </motion.div>
   );
 }

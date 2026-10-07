@@ -3,13 +3,26 @@ import { isTauri } from "@/lib/tauri";
 import type {
   Attachment,
   Backlink,
+  CalendarMarks,
   DayDoc,
+  DocHistory,
   DocumentSaveTarget,
+  FolderDeletion,
   Goal,
   GoalHorizon,
+  JournalDoc,
+  LinkRewrite,
   Note,
   NoteInput,
+  Relink,
   SearchResult,
+  SyncAccount,
+  SyncDeviceCode,
+  SyncPlan,
+  SyncProviderKey,
+  SyncProxy,
+  SyncRemoteRepo,
+  SyncStatus,
   Task,
   VaultChange,
   VaultInfo,
@@ -39,6 +52,29 @@ export interface Backend {
   noteUndelete(id: string): Promise<void>;
   /** 正文里写了 `[[这篇的标题]]` 的文档，最近改过的在前 */
   noteBacklinks(id: string): Promise<Backlink[]>;
+  /** 笔记改了标题之后：别处的 `[[旧标题]]` 改成现在的标题 */
+  noteRelink(id: string, oldTitle: string): Promise<Relink>;
+  /** 撤销 noteRelink：改完之后又被改过的那篇不动。返回换回了几篇 */
+  noteRelinkUndo(rewrites: LinkRewrite[]): Promise<number>;
+  /** 一篇文档的历史版本（同步用的 git 仓库里每次改过它的提交），新的在前 */
+  docHistory(target: DocumentSaveTarget): Promise<DocHistory>;
+  /** 某一版的正文 */
+  docVersionText(blob: string): Promise<string>;
+  /** 在文件夹里新建一篇空笔记（folder 相对「笔记」，空串是「笔记」本身），返回新 id */
+  noteCreate(folder: string, title: string): Promise<string>;
+  /** 挪到另一个文件夹，返回挪完的笔记（relPath 变了，正文里的相对链接可能也改了） */
+  noteMove(id: string, folder: string): Promise<Note>;
+  /** 「笔记」下面所有的子文件夹 */
+  folderList(): Promise<string[]>;
+  /** 返回新文件夹的路径（重名时加了序号） */
+  folderCreate(parent: string, name: string): Promise<string>;
+  /** 返回改名后的路径（重名时加了序号） */
+  folderRename(folder: string, name: string): Promise<string>;
+  /** 里面的笔记进回收站；返回值原样交给 folderUndelete 就能撤销 */
+  folderDelete(folder: string): Promise<FolderDeletion>;
+  folderUndelete(deletion: FolderDeletion): Promise<void>;
+  /** 在系统的文件管理器里打开这个文件夹 */
+  folderReveal(folder: string): Promise<void>;
   searchNotes(query: string, limit: number): Promise<SearchResult>;
   taskToggle(id: string): Promise<Task>;
   /** 某个周期的目标；没写过的周期返回空文档（id 为空） */
@@ -47,7 +83,10 @@ export interface Backend {
   /** carryOver 只在请求「今天」时传 true：今天还没写过就延续之前最近的一天 */
   calendarDay(date: string, carryOver: boolean): Promise<DayDoc>;
   calendarDaySave(date: string, title: string, noteMd: string): Promise<DayDoc>;
-  calendarMarked(from: string, to: string): Promise<string[]>;
+  /** 月网格上的记号：写过记录 / 做过事的日子，和还有待办的日子 */
+  calendarMarks(from: string, to: string): Promise<CalendarMarks>;
+  /** 所有写过的某一天、某个周期的目标，连同正文（命令面板搜它们），最近改过的在前 */
+  journalList(): Promise<JournalDoc[]>;
   vaultInfo(): Promise<VaultInfo>;
   /** 在系统的文件管理器里定位这篇文档的文件 */
   vaultReveal(target: DocumentSaveTarget): Promise<void>;
@@ -63,6 +102,36 @@ export interface Backend {
   vaultAttachPath(target: DocumentSaveTarget, path: string): Promise<Attachment>;
   /** 订阅仓库里别处发生的变化，返回取消订阅的函数 */
   onVaultChanged(listener: (change: VaultChange) => void): Promise<() => void>;
+  /** 同步现在怎么样了（没开同步时 state 是 off） */
+  syncStatus(): Promise<SyncStatus>;
+  /** 立即同步一轮；没开同步返回 false */
+  syncNow(): Promise<boolean>;
+  /** 订阅同步状态的变化 */
+  onSyncStatus(listener: (status: SyncStatus) => void): Promise<() => void>;
+  /** 订阅同步要告诉用户的话（冲突副本、超限文件没同步、仓库快满了） */
+  onSyncNotice(listener: (text: string) => void): Promise<() => void>;
+  /** 登录过、钥匙串里还有令牌的同步账号 */
+  syncAccounts(): Promise<SyncAccount[]>;
+  /** GitHub 设备码登录：领一个码给用户看 */
+  syncGithubLoginStart(): Promise<SyncDeviceCode>;
+  /** 等用户在浏览器里确认（syncLoginCancel 能叫停） */
+  syncGithubLoginWait(): Promise<SyncAccount>;
+  syncLoginCancel(): Promise<void>;
+  /** Gitee：用私人令牌登录 */
+  syncGiteeLogin(token: string): Promise<SyncAccount>;
+  syncLogout(provider: SyncProviderKey): Promise<void>;
+  /** 这个账号自己的仓库，最近更新的在前 */
+  syncRepos(provider: SyncProviderKey): Promise<SyncRemoteRepo[]>;
+  /** 新建一个空的私有仓库 */
+  syncCreateRepo(provider: SyncProviderKey, name: string): Promise<SyncRemoteRepo>;
+  syncProxy(): Promise<SyncProxy>;
+  syncSetProxy(proxy: string | null): Promise<SyncProxy>;
+  /** 开启同步前看一眼云端 */
+  syncInspect(provider: SyncProviderKey, cloneUrl: string): Promise<SyncPlan>;
+  /** 开启同步。返回 true = clone 到了新文件夹、换了仓库（要整页重载） */
+  syncEnable(provider: SyncProviderKey, cloneUrl: string, bringLocal: boolean): Promise<boolean>;
+  /** 断开同步（.git 留着，账号不退出） */
+  syncDisable(): Promise<SyncStatus>;
 }
 
 /* ---------------- Tauri IPC ---------------- */
@@ -93,6 +162,22 @@ const tauriBackend: Backend = {
     await unwrap(commands.noteUndelete(id));
   },
   noteBacklinks: (id) => unwrap(commands.noteBacklinks(id)) as Promise<Backlink[]>,
+  noteRelink: (id, oldTitle) => unwrap(commands.noteRelink(id, oldTitle)),
+  noteRelinkUndo: (rewrites) => unwrap(commands.noteRelinkUndo(rewrites)),
+  docHistory: (target) => unwrap(commands.docHistory(target)),
+  docVersionText: (blob) => unwrap(commands.docVersionText(blob)),
+  noteCreate: (folder, title) => unwrap(commands.noteCreate(folder, title)),
+  noteMove: (id, folder) => unwrap(commands.noteMove(id, folder)) as Promise<Note>,
+  folderList: () => unwrap(commands.folderList()),
+  folderCreate: (parent, name) => unwrap(commands.folderCreate(parent, name)),
+  folderRename: (folder, name) => unwrap(commands.folderRename(folder, name)),
+  folderDelete: (folder) => unwrap(commands.folderDelete(folder)),
+  folderUndelete: async (deletion) => {
+    await unwrap(commands.folderUndelete(deletion));
+  },
+  folderReveal: async (folder) => {
+    await unwrap(commands.folderReveal(folder));
+  },
   searchNotes: (query, limit) =>
     unwrap(commands.searchNotes(query, limit)) as Promise<SearchResult>,
   taskToggle: (id) => unwrap(commands.taskToggle(id)) as Promise<Task>,
@@ -104,7 +189,11 @@ const tauriBackend: Backend = {
     unwrap(commands.calendarDay(date, carryOver)) as Promise<DayDoc>,
   calendarDaySave: (date, title, noteMd) =>
     unwrap(commands.calendarDaySave(date, title, noteMd)) as Promise<DayDoc>,
-  calendarMarked: (from, to) => unwrap(commands.calendarMarked(from, to)),
+  calendarMarks: async (from, to) => {
+    const marks = await unwrap(commands.calendarMarks(from, to));
+    return { written: new Set(marks.written), open: new Set(marks.open) };
+  },
+  journalList: () => unwrap(commands.journalList()) as Promise<JournalDoc[]>,
   vaultInfo: () => unwrap(commands.vaultInfo()),
   vaultReveal: async (target) => {
     await unwrap(commands.vaultReveal(target));
@@ -118,6 +207,29 @@ const tauriBackend: Backend = {
   vaultAttachPath: (target, path) => unwrap(commands.vaultAttachPath(target, path)),
   onVaultChanged: (listener) =>
     events.vaultChanged.listen((event) => listener(event.payload as VaultChange)),
+  syncStatus: () => unwrap(commands.syncStatus()) as Promise<SyncStatus>,
+  syncNow: () => unwrap(commands.syncNow()),
+  onSyncStatus: (listener) =>
+    events.syncStatusChanged.listen((event) => listener(event.payload as SyncStatus)),
+  onSyncNotice: (listener) => events.syncNotice.listen((event) => listener(event.payload)),
+  syncAccounts: () => unwrap(commands.syncAccounts()) as Promise<SyncAccount[]>,
+  syncGithubLoginStart: () => unwrap(commands.syncGithubLoginStart()),
+  syncGithubLoginWait: () => unwrap(commands.syncGithubLoginWait()) as Promise<SyncAccount>,
+  syncLoginCancel: async () => {
+    await unwrap(commands.syncLoginCancel());
+  },
+  syncGiteeLogin: (token) => unwrap(commands.syncGiteeLogin(token)) as Promise<SyncAccount>,
+  syncLogout: async (provider) => {
+    await unwrap(commands.syncLogout(provider));
+  },
+  syncRepos: (provider) => unwrap(commands.syncRepos(provider)),
+  syncCreateRepo: (provider, name) => unwrap(commands.syncCreateRepo(provider, name)),
+  syncProxy: () => unwrap(commands.syncProxy()),
+  syncSetProxy: (proxy) => unwrap(commands.syncSetProxy(proxy)),
+  syncInspect: (provider, cloneUrl) => unwrap(commands.syncInspect(provider, cloneUrl)),
+  syncEnable: (provider, cloneUrl, bringLocal) =>
+    unwrap(commands.syncEnable(provider, cloneUrl, bringLocal)),
+  syncDisable: () => unwrap(commands.syncDisable()) as Promise<SyncStatus>,
 };
 
 /* ---------------- 浏览器 mock ---------------- */

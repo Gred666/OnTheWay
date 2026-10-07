@@ -13,6 +13,7 @@ mod domain;
 mod error;
 #[cfg(any(feature = "desktop-runtime", feature = "typegen"))]
 mod state;
+mod sync;
 mod vault;
 
 #[cfg(feature = "desktop-runtime")]
@@ -29,12 +30,17 @@ use state::AppState;
 ///
 /// tauri.conf.json 里 `visible: false`，等前端首帧渲染完再 show() ——
 /// 否则用户会先看到一个空窗口闪一下，这是桌面应用最常见的廉价感来源。
+///
+/// 这时前端也订阅好了事件：开着同步的话，第一轮从这里开始（技术方案 §5.9.6）。
 #[cfg(feature = "desktop-runtime")]
 #[tauri::command]
 #[specta::specta]
 fn ready(window: WebviewWindow) {
     let _ = window.show();
     let _ = window.set_focus();
+    if let Some(state) = window.try_state::<AppState>() {
+        state.sync.sync_now();
+    }
 }
 
 /* ---------------- 无边框窗口的窗口控制 ---------------- */
@@ -69,12 +75,25 @@ fn win_close(window: WebviewWindow) {
 }
 
 /// 保存完成后真正销毁窗口。只由前端的 close guard 调用，避免再次触发
-/// `onCloseRequested` 形成递归。
+/// `onCloseRequested` 形成递归。开着同步时先提交、推送，最多等 3 秒（技术方案 §5.9.6）——
+/// 窗口先藏起来，用户不用看着一个点不动的窗口等。
 #[cfg(feature = "desktop-runtime")]
 #[tauri::command]
 #[specta::specta]
-fn win_force_close(window: WebviewWindow) {
+async fn win_force_close(
+    window: WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), error::AppError> {
+    if state.sync.is_running() {
+        let _ = window.hide();
+        let hub = state.sync.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            hub.close(std::time::Duration::from_secs(3))
+        })
+        .await;
+    }
     let _ = window.destroy();
+    Ok(())
 }
 
 #[cfg(feature = "desktop-runtime")]
@@ -109,23 +128,55 @@ fn command_builder() -> Builder<tauri::Wry> {
         commands::note_restore,
         commands::note_delete,
         commands::note_undelete,
+        commands::note_create,
+        commands::note_move,
+        commands::folder_list,
+        commands::folder_create,
+        commands::folder_rename,
+        commands::folder_delete,
+        commands::folder_undelete,
+        commands::folder_reveal,
         commands::search_notes,
         commands::task_toggle,
         commands::goal_get,
         commands::goal_save,
         commands::calendar_day,
         commands::calendar_day_save,
-        commands::calendar_marked,
+        commands::calendar_marks,
+        commands::journal_list,
         commands::vault_info,
         commands::vault_reveal,
         commands::vault_open_folder,
         commands::vault_keep_conflict_copy,
         commands::note_backlinks,
+        commands::note_relink,
+        commands::note_relink_undo,
+        commands::doc_history,
+        commands::doc_version_text,
         commands::vault_attach,
         commands::vault_attach_path,
         commands::vault_change_root::<tauri::Wry>,
+        commands::sync_status,
+        commands::sync_now,
+        commands::sync_accounts,
+        commands::sync_github_login_start,
+        commands::sync_github_login_wait,
+        commands::sync_login_cancel,
+        commands::sync_gitee_login,
+        commands::sync_logout,
+        commands::sync_repos,
+        commands::sync_create_repo,
+        commands::sync_proxy,
+        commands::sync_set_proxy,
+        commands::sync_inspect,
+        commands::sync_enable::<tauri::Wry>,
+        commands::sync_disable,
     ])
-    .events(collect_events![commands::VaultChanged])
+    .events(collect_events![
+        commands::VaultChanged,
+        commands::SyncStatusChanged,
+        commands::SyncNotice
+    ])
 }
 
 /// 独立导出命令与领域类型，供 `cargo run --example export_bindings` 和
@@ -144,23 +195,55 @@ pub fn export_typescript_bindings(path: impl AsRef<std::path::Path>) {
         commands::note_restore,
         commands::note_delete,
         commands::note_undelete,
+        commands::note_create,
+        commands::note_move,
+        commands::folder_list,
+        commands::folder_create,
+        commands::folder_rename,
+        commands::folder_delete,
+        commands::folder_undelete,
+        commands::folder_reveal,
         commands::search_notes,
         commands::task_toggle,
         commands::goal_get,
         commands::goal_save,
         commands::calendar_day,
         commands::calendar_day_save,
-        commands::calendar_marked,
+        commands::calendar_marks,
+        commands::journal_list,
         commands::vault_info,
         commands::vault_reveal,
         commands::vault_open_folder,
         commands::vault_keep_conflict_copy,
         commands::note_backlinks,
+        commands::note_relink,
+        commands::note_relink_undo,
+        commands::doc_history,
+        commands::doc_version_text,
         commands::vault_attach,
         commands::vault_attach_path,
         commands::vault_change_root::<tauri::test::MockRuntime>,
+        commands::sync_status,
+        commands::sync_now,
+        commands::sync_accounts,
+        commands::sync_github_login_start,
+        commands::sync_github_login_wait,
+        commands::sync_login_cancel,
+        commands::sync_gitee_login,
+        commands::sync_logout,
+        commands::sync_repos,
+        commands::sync_create_repo,
+        commands::sync_proxy,
+        commands::sync_set_proxy,
+        commands::sync_inspect,
+        commands::sync_enable::<tauri::test::MockRuntime>,
+        commands::sync_disable,
     ])
-    .events(collect_events![commands::VaultChanged]);
+    .events(collect_events![
+        commands::VaultChanged,
+        commands::SyncStatusChanged,
+        commands::SyncNotice
+    ]);
 
     builder
         .export(
@@ -204,6 +287,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(specta_builder.invoke_handler())
+        // 窗口获得焦点：可能刚在别的设备上写过，拉一次（距上一轮不到 1 分钟的不拉）
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(true) = event {
+                if let Some(state) = window.try_state::<AppState>() {
+                    state.sync.focus();
+                }
+            }
+        })
         .setup(move |app| {
             specta_builder.mount_events(app);
 
@@ -229,7 +320,8 @@ pub fn run() {
                 .expect("打开笔记文件夹失败");
             vault.set_announcer(commands::announcer(app.handle().clone()));
             let vault = Arc::new(Mutex::new(vault));
-            let watcher = match vault::watch::start(vault.clone()) {
+            let sync = Arc::new(sync::engine::SyncHub::default());
+            let watcher = match vault::watch::start(vault.clone(), Some(commands::sync_poke(&sync))) {
                 Ok(watcher) => Some(watcher),
                 Err(error) => {
                     // 监听不上只是外部改动不能实时同步，重启时的扫描还会补上
@@ -237,10 +329,17 @@ pub fn run() {
                     None
                 }
             };
+            // 仓库开了同步就起同步线程：先来一轮完整的（技术方案 §5.9.6）
+            let hooks = commands::sync_hooks(app.handle().clone(), data_dir.clone());
+            if let Err(error) = sync.start(vault.clone(), hooks) {
+                eprintln!("同步没能启动: {error}");
+            }
             app.manage(AppState {
                 vault,
                 watcher: Mutex::new(watcher),
                 data_dir,
+                sync,
+                sync_login: Mutex::new(sync::account::LoginSlot::default()),
             });
 
             // jieba 首次初始化约 50ms。仓库是空的时候打开仓库不会用到它，放后台预热

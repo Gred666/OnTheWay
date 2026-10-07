@@ -139,4 +139,6 @@ export const layoutIds = {
   emojiCursor: "emoji-cursor",
   /** 模板选择器里的当前项高亮 */
   templateCursor: "template-cursor",
+  /** `/` 插入菜单、`[[` 笔记链接菜单里的当前项高亮 */
+  suggestCursor: "suggest-cursor",
 } as const;

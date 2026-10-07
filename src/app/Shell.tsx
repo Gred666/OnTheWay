@@ -1,8 +1,12 @@
-import { LIST_WIDTH, RAIL_WIDTH, hasListColumn, startTodayTicker, useApp } from "@/app/store";
+import { ZEN_TRANSITION, navLayoutWidth, navPanelWidth } from "@/app/navMotion";
+import { selectNeighbor } from "@/app/navigate";
+import { LIST_WIDTH, chromeWidth, hasListColumn, startTodayTicker, useApp } from "@/app/store";
 import { CommandPalette } from "@/components/CommandPalette";
 import { DocumentView } from "@/components/DocumentView";
 import { ErrorToast, NoticeToast } from "@/components/ErrorToast";
+import { HistoryDialog } from "@/components/HistoryDialog";
 import { Sidebar } from "@/components/Sidebar";
+import { SyncDialog } from "@/components/SyncDialog";
 import { TitleBar } from "@/components/TitleBar";
 import { UndoToast } from "@/components/UndoToast";
 import { labelToHorizon, labelToScope, useCurrentDocument } from "@/data/adapter";
@@ -14,7 +18,7 @@ import { ArchiveList } from "@/views/ArchiveView";
 import { CalendarPanel } from "@/views/CalendarView";
 import { ExtensionsView } from "@/views/ExtensionsView";
 import { NotesList } from "@/views/NotesView";
-import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { AnimatePresence, MotionConfig, motion, useTransform } from "motion/react";
 import { useEffect } from "react";
 
 /**
@@ -23,7 +27,7 @@ import { useEffect } from "react";
  * 同时发生的，弹簧的尾巴会拖到 600ms 以上，位移早就看不出来了还在跑。
  * 曲线前段快、后段长，收尾时几乎察觉不到停下的那一下。
  */
-const zenTransition = { duration: 0.46, ease: [0.22, 1, 0.36, 1] } as const;
+const zenTransition = ZEN_TRANSITION;
 
 export function Shell() {
   const workspace = useApp((s) => s.workspace);
@@ -39,7 +43,7 @@ export function Shell() {
 
   const notes = useData((s) => s.notes);
   const archived = useData((s) => s.archived);
-  const markedDates = useData((s) => s.markedDates);
+  const marks = useData((s) => s.marks);
   const toggleTask = useData((s) => s.toggleTask);
   const restoreNote = useData((s) => s.restoreNote);
   const deleteNote = useData((s) => s.deleteNote);
@@ -51,6 +55,16 @@ export function Shell() {
 
   const doc = useCurrentDocument();
   const showList = hasListColumn(workspace);
+
+  // 导航栏收起 / 展开时，列表栏贴着导航栏底板的右边缘走（app/navMotion.ts）：
+  // 排版上它已经在新位置了，这里把它推回底板边缘那儿，跟着底板一起滑过去
+  const listOverhang = useTransform([navPanelWidth, navLayoutWidth], ([panel, layout]) =>
+    Math.round((panel as number) - (layout as number)),
+  );
+  // 专注模式要把整条 chrome 推出去有多远。这里不订阅 navCollapsed：Shell 一重渲染，
+  // 列表栏里带 layout 的笔记卡片也跟着测一遍、自己再播一段位移，和上面那段叠在一起。
+  // 专注模式开着时切换导航栏会先退出专注模式（app/store），所以读当时的值就够了
+  const zenShift = zen ? -chromeWidth(useApp.getState().navCollapsed) : 0;
 
   // 零点翻页
   useEffect(() => startTodayTicker(), []);
@@ -119,7 +133,7 @@ export function Shell() {
             都是 chrome 在白色画布上滑动、正文在它旁边跟着挪。 */}
         <motion.div
           className={cn("relative z-30 flex h-full", zen && "absolute inset-y-0 left-0")}
-          animate={{ x: zen ? -RAIL_WIDTH : 0 }}
+          animate={{ x: zenShift }}
           transition={zenTransition}
         >
           <Sidebar />
@@ -141,37 +155,39 @@ export function Shell() {
             一帧（90Hz 屏上只有三分之一帧率），这就是「拉出来时掉帧」。
             而主内容那一头用的也是 popLayout（见下），退场的旧正文被冻结在原
             尺寸上淡出，不会因为这次重排而跳版。 */}
-          <AnimatePresence initial={false} mode="popLayout">
-            {showList && (
-              // key 只跟「有没有列表栏」走，不跟具体工作区走 ——
-              // 否则「笔记 → 日历」会让整条栏先收起再展开，实际只需要换内容。
-              <motion.div
-                key="list-column"
-                initial={{ x: -LIST_WIDTH }}
-                animate={{ x: 0 }}
-                exit={{ x: -LIST_WIDTH }}
-                transition={tween.base}
-                className="z-10 h-full shrink-0 overflow-hidden"
-              >
-                <AnimatePresence mode="wait" initial={false}>
-                  <motion.div
-                    key={workspace}
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -8 }}
-                    transition={tween.base}
-                    className="h-full"
-                  >
-                    {workspace === "notes" && <NotesList notes={notes} />}
-                    {workspace === "calendar" && <CalendarPanel marked={markedDates} />}
-                    {workspace === "archive" && (
-                      <ArchiveList items={archived} onRestore={restoreNote} />
-                    )}
-                  </motion.div>
-                </AnimatePresence>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <motion.div style={{ x: listOverhang }} className="relative z-10 flex h-full shrink-0">
+            <AnimatePresence initial={false} mode="popLayout">
+              {showList && (
+                // key 只跟「有没有列表栏」走，不跟具体工作区走 ——
+                // 否则「笔记 → 日历」会让整条栏先收起再展开，实际只需要换内容。
+                <motion.div
+                  key="list-column"
+                  initial={{ x: -LIST_WIDTH }}
+                  animate={{ x: 0 }}
+                  exit={{ x: -LIST_WIDTH }}
+                  transition={tween.base}
+                  className="z-10 h-full shrink-0 overflow-hidden"
+                >
+                  <AnimatePresence mode="wait" initial={false}>
+                    <motion.div
+                      key={workspace}
+                      initial={{ opacity: 0, x: 10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -8 }}
+                      transition={tween.base}
+                      className="h-full"
+                    >
+                      {workspace === "notes" && <NotesList notes={notes} />}
+                      {workspace === "calendar" && <CalendarPanel marks={marks} />}
+                      {workspace === "archive" && (
+                        <ArchiveList items={archived} onRestore={restoreNote} />
+                      )}
+                    </motion.div>
+                  </AnimatePresence>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.div>
         </motion.div>
 
         {/* ---------- 主内容 ----------
@@ -222,23 +238,33 @@ export function Shell() {
                   doc={doc}
                   onToggleTask={toggleTask}
                   onSegmentChange={handleSegment}
-                  onDelete={() => deleteNote(doc.key.replace("note-", ""))}
+                  onDelete={() => {
+                    // 笔记和归档里的都能删（归档那篇的 key 是 archive-…，id 从目标上取）。
+                    // 选中先挪到列表里的下一篇，再删
+                    const target = doc.editor?.target;
+                    if (target?.kind !== "note") return;
+                    selectNeighbor(target.id);
+                    void deleteNote(target.id);
+                  }}
                   onSaveDocument={saveDocument}
                   onSaveTitle={saveTitle}
                 />
               )}
             </motion.main>
           </AnimatePresence>
-        </div>
 
-        {/* 底部居中的提示条：错误在上、撤销在下。容器不接收指针，只有提示条本身接收。
-            离底 72px：再低就压在文档底部状态栏上了，「保存失败」恰好显示在那一行 */}
-        <div className="pointer-events-none fixed inset-x-0 bottom-[72px] z-40 flex flex-col items-center gap-2">
-          <ErrorToast />
-          <NoticeToast />
-          <UndoToast />
+          {/* 底部居中的提示条：错误在上、撤销在下。容器不接收指针，只有提示条本身接收。
+              在正文区里居中（以前按整个窗口居中，跨在列表栏和正文的分界线上）。
+              离底 72px：再低就压在文档底部状态栏上了，「保存失败」恰好显示在那一行 */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-[72px] z-40 flex flex-col items-center gap-2 px-6">
+            <ErrorToast />
+            <NoticeToast />
+            <UndoToast />
+          </div>
         </div>
         <CommandPalette docTarget={doc.editor?.target} />
+        <SyncDialog />
+        <HistoryDialog />
       </div>
     </MotionConfig>
   );
